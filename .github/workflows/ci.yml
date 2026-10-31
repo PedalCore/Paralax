@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm-cache
+  CTEST_OUTPUT_ON_FAILURE: "1"
+
+jobs:
+  format:
+    name: clang-format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check formatting
+        run: git ls-files '*.h' '*.cpp' | xargs clang-format-18 --dry-run --Werror
+
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "Linux GCC Debug",          os: ubuntu-24.04, cc: gcc,   cxx: g++,     config: Debug,   generator: Ninja }
+          - { name: "Linux Clang Release",      os: ubuntu-24.04, cc: clang, cxx: clang++, config: Release, generator: Ninja }
+          - { name: "Linux Clang Dist",         os: ubuntu-24.04, cc: clang, cxx: clang++, config: Dist,    generator: Ninja, extra: "-DPX_BUILD_EDITOR=OFF" }
+          - { name: "Linux GCC ASan+UBSan",     os: ubuntu-24.04, cc: gcc,   cxx: g++,     config: Debug,   generator: Ninja, extra: "-DPX_SANITIZERS=address,undefined" }
+          - { name: "Linux Clang TSan",         os: ubuntu-24.04, cc: clang, cxx: clang++, config: Debug,   generator: Ninja, extra: "-DPX_SANITIZERS=thread" }
+          - { name: "Windows MSVC Debug",       os: windows-2025, config: Debug,   generator: "Visual Studio 17 2022" }
+          - { name: "Windows MSVC Release",     os: windows-2025, config: Release, generator: "Visual Studio 17 2022" }
+          - { name: "Windows MSVC Dist",        os: windows-2025, config: Dist,    generator: "Visual Studio 17 2022", extra: "-DPX_BUILD_EDITOR=OFF" }
+          - { name: "macOS AppleClang Debug",   os: macos-15,     config: Debug,   generator: Ninja }
+          - { name: "macOS AppleClang Release", os: macos-15,     config: Release, generator: Ninja }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev \
+            libwayland-dev libxkbcommon-dev wayland-protocols
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew list ninja >/dev/null 2>&1 || brew install ninja
+
+      - name: Cache CPM sources
+        uses: actions/cache@v4
+        with:
+          path: .cpm-cache
+          key: cpm-${{ runner.os }}-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }}
+
+      - name: Configure
+        shell: bash
+        run: |
+          args=(-S . -B build -G "${{ matrix.generator }}" -DPX_BUILD_TESTS=ON ${{ matrix.extra }})
+          if [[ "${{ matrix.generator }}" == "Ninja" ]]; then
+            args+=(-DCMAKE_BUILD_TYPE=${{ matrix.config }})
+          fi
+          if [[ -n "${{ matrix.cc }}" ]]; then
+            args+=(-DCMAKE_C_COMPILER=${{ matrix.cc }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }})
+          fi
+          cmake "${args[@]}"
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.config }} --parallel
+
+      - name: Unit tests
+        run: ctest --test-dir build --build-config ${{ matrix.config }} --parallel 4 --timeout 300 --no-tests=error
+
+      - name: Headless smoke test
+        shell: bash
+        run: |
+          bin=build/bin
+          [[ -d "build/bin/${{ matrix.config }}" ]] && bin="build/bin/${{ matrix.config }}"
+          exes=(Paralax-Runtime)
+          [[ "${{ matrix.extra }}" != *"PX_BUILD_EDITOR=OFF"* ]] && exes+=(Paralax-Editor)
+          for exe in "${exes[@]}"; do
+            path="$bin/$exe"
+            [[ -f "$path.exe" ]] && path="$path.exe"
+            if [[ ! -f "$path" ]]; then
+              echo "::error::$exe was not built (looked for $path)"
+              exit 1
+            fi
+            "$path" --headless --frames 10 --fixed-timestep 0.016
+          done

@@ -1,0 +1,110 @@
+# Paralax: Agent & Contributor Guide
+
+Paralax is a production-grade 3D game engine in C++20 for Windows, macOS and Linux (Ubuntu 24.04+).
+It has to be stable and fully tested before anyone ships with it. No hacks, no shortcuts.
+
+This file is the source of truth for how work is done in this repository. Read it before every task.
+
+## Repository layout
+
+| Path | What |
+|---|---|
+| `Paralax/` | Core engine **static library** (`Paralax::Paralax`). All engine code lives here. |
+| `Paralax/src/Paralax/<Module>/` | Engine modules (`Core`, `Events`, and later `Renderer`, `Scene`, `Physics`, `Scripting`, `Audio`, `Asset`). |
+| `Paralax/src/Platform/<Backend>/` | Platform/backend implementations (`GLFW`, later `Vulkan`). Never include these from module headers. |
+| `Paralax/src/pxpch.h` | Precompiled header. Every engine `.cpp` starts with `#include "pxpch.h"`. |
+| `Paralax/src/Paralax.h` | Public umbrella header for client code. |
+| `Paralax-Editor/` | Editor executable. It is excluded from distribution builds. |
+| `Paralax-Runtime/` | Runtime executable that plays exported games. |
+| `Paralax-Tests/` | doctest unit and integration tests (`Paralax-Tests` executable). Each test case is registered with CTest. |
+| `cmake/` | Build modules. `Dependencies.cmake` pins every third-party package. |
+| `.github/workflows/ci.yml` | CI: format check, plus Linux, Windows and macOS builds, tests and headless smoke runs. |
+| `.claude/skills/` | Task playbooks (build/test, pre-commit review, adding features, dependencies). |
+
+Never commit `GameEngineDoc.md` or `papers-inspiration/` (private brief and third-party papers). Both are excluded in `.git/info/exclude`.
+
+## Build & test
+
+Dependencies are fetched by CPM at configure time. Set `CPM_SOURCE_CACHE=~/.cache/CPM` so all build trees share one download.
+
+```bash
+cmake --preset debug && cmake --build build/debug && ctest --preset debug -j8
+```
+
+| Preset | Purpose |
+|---|---|
+| `debug` | Day-to-day development. Asserts and logging on. |
+| `release` | Optimised. Asserts still on. |
+| `dist` | Distribution: asserts compiled out, no editor, no tests. |
+| `asan` | Debug + AddressSanitizer + UndefinedBehaviorSanitizer (GCC/Clang). |
+| `tsan` | Debug + ThreadSanitizer (GCC/Clang). |
+
+- Build configurations are **Debug / Release / Dist** only. They define `PX_DEBUG`, `PX_RELEASE` or `PX_DIST`.
+- Warnings are errors (`PX_WARNINGS_AS_ERRORS=ON`) on every compiler. Fix warnings; never silence them with pragmas unless the warning comes from a third-party header, and comment why.
+- Headless runs need no display server: `Paralax-Editor --headless --frames 10`. Tests always use headless windows (GLFW null platform).
+- Before you commit, build and test at least `debug` (clang) and `asan` (gcc). CI covers MSVC and AppleClang; check CI after you push.
+- Never build on the user's Mac. Everything runs on the dev VM or in CI.
+
+## Code style (Hazel conventions)
+
+The style follows [Hazel](https://github.com/TheCherno/Hazel), and `.clang-format` enforces the layout. Run `clang-format-18 -i` on every file you touch. CI rejects unformatted code.
+
+**Naming**
+
+| Thing | Convention | Example |
+|---|---|---|
+| Namespaces | PascalCase; everything lives in `Paralax` | `namespace Paralax {` |
+| Types (class, struct, enum, alias) | PascalCase | `class LayerStack`, `using KeyCode = uint16_t;` |
+| Functions and methods | PascalCase | `void PushLayer(...)`, `static Application& Get()` |
+| Private/protected member variables | `m_` + PascalCase | `m_LayerStack` |
+| Static member and file-static variables | `s_` + PascalCase | `s_Instance` |
+| Global variables (avoid) | `g_` + PascalCase | `g_Allocator` |
+| Public struct fields (data/specification structs) | PascalCase, no prefix | `WindowSpecification::Width` |
+| Local variables and parameters | camelCase | `frameCount`, `const Event& event` |
+| Enum values | PascalCase (`enum class` preferred) | `EventType::WindowResize` |
+| Compile-time constants | PascalCase | `inline constexpr KeyCode Count = 349;` |
+| Macros | `PX_` + UPPER_SNAKE | `PX_CORE_ASSERT`, `PX_BIND_EVENT_FN` |
+| Template parameters | PascalCase | `template<typename T, typename... Args>` |
+| Files | PascalCase, named after the main type | `LayerStack.h` / `LayerStack.cpp` |
+
+**Layout**
+- Indent with tabs (width 4). Braces go on their own line (Allman), except `namespace Paralax {`. Namespace contents are indented.
+- Use `#pragma once`. No include guards.
+- Include order in `.cpp` files: `pxpch.h`, then the file's own header, then other Paralax headers, then third-party, then the standard library. Separate the groups with blank lines.
+- Engine headers include engine headers as `"Paralax/..."`. Client code (editor, runtime, tests) uses `<Paralax/...>` or `<Paralax.h>`.
+- Specification structs (`XxxSpecification`) configure objects at creation, as in `WindowSpecification` and `ApplicationSpecification`.
+- Use `Scope<T>` / `CreateScope` (unique ownership) and `Ref<T>` / `CreateRef` (shared ownership). Use no raw owning pointers. Raw pointers and references are non-owning.
+- Prefer `enum class`. Unscoped enums are only for bit flags, like `EventCategory`.
+- Mark single-argument constructors `explicit` unless implicit conversion is the point (`Timestep`, `UUID`).
+- Delete copy operations on types that own resources.
+
+## Engineering rules
+
+1. **Testing is mandatory.** Every behaviour change ships with unit tests in `Paralax-Tests/src/<Module>/<Thing>Tests.cpp`. Name tests `"<Thing>: <behaviour in plain English>"`. Cover:
+   - edge cases
+   - invalid input
+   - the asserted precondition, with `ScopedAssertionCapture` + `CHECK_THROWS_AS(..., AssertionFailedError)`
+   - Dist behaviour where it differs
+2. **Feature test scene.** Once scenes exist, every component, system and scripting API function must also appear in the feature test scene, which is run headless in CI. That scene is the integration test for "everything the engine can do". If you add a feature, extend the scene.
+3. **Asserts vs verifies vs errors.**
+   - `PX_CORE_ASSERT` / `PX_ASSERT`: programmer-error preconditions. Compiled out in Dist, and must not have side effects.
+   - `PX_CORE_VERIFY` / `PX_VERIFY`: always evaluated and checked. Use them where continuing would be undefined behaviour or would lose data.
+   - Expected runtime failures (missing files, bad user data, malformed command lines, no display server) are *not* asserts. Return `bool`, `std::optional`, `nullptr` from a `Create()` factory, or an error result, and log with `PX_CORE_ERROR`. `Window::Create` and `Application::IsInitialized()` show the pattern.
+   - A failed assert or verify never continues. A custom `Assertion` handler must throw or terminate; if it returns, the process aborts.
+4. **No exceptions in engine code paths.** Use the `std::error_code` overloads of `std::filesystem`. Where a third-party API throws, catch it at the boundary. Tests may use exceptions through the assertion capture.
+5. **Threading.** Engine objects are main-thread-only unless documented otherwise. To get work onto the main thread from another thread, use `Application::SubmitToMainThread`. Document thread-safety on every public class that is not main-thread-only.
+6. **Determinism.** Simulation must be reproducible under `ApplicationSpecification::FixedTimestep`. Tests and golden images depend on it. Never read wall-clock time in simulation code; use the `Timestep`.
+7. **Layer stack changes are deferred while iterating.** Calling `Application::PushLayer`/`PopLayer` from `OnUpdate`/`OnEvent` is safe: the change applies when that iteration finishes. Never hold iterators into the layer stack across user callbacks.
+8. **Input is event-driven.** Read input only through `Paralax::Input`, never by polling GLFW directly. That keeps synthetic events from agents, tests and replays identical to real input.
+9. **Agent-controllable.** Every editor action must be reachable programmatically: through the command registry, scripting and the CLI. A feature an agent can't drive is unfinished.
+10. **Cross-platform.** No platform `#ifdef`s outside `Platform/` and `Core/PlatformDetection.h` / `Core/Config.h`. macOS has no Vulkan ray tracing and no mesh shaders, so every renderer feature needs a non-RT path.
+11. **Dependencies** are pinned to exact versions in `cmake/Dependencies.cmake` (see the `dependency-update` skill). Never use code from elsewhere on the machine as a reference.
+12. **Comments** explain *why*, not *what*. Public API gets a short doc comment that states ownership, threading and failure behaviour.
+
+## Commit workflow
+
+1. Build and test (see above). All tests must pass. Never commit with failing or skipped tests.
+2. Run the **pre-commit review** (`.claude/skills/pre-commit-review`). It covers correctness, style compliance, test coverage and production quality. Fix everything it finds before committing.
+3. `clang-format-18 --dry-run --Werror` must be clean.
+4. Make small, focused commits. Write the message in the imperative mood: one summary line, a blank line, then the why.
+5. Push to `origin` (`git@github.com:PedalCore/Paralax.git`), then check CI. A red CI is fixed before anything else.

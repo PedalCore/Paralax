@@ -1,0 +1,21 @@
+# Build output
+/build/
+/out/
+/bin/
+/bin-int/
+/.cache/
+
+# IDE / tooling
+/.vs/
+/.vscode/
+/.idea/
+*.user
+compile_commands.json
+CMakeUserPresets.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Engine runtime output
+*.log
