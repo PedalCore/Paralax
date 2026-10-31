@@ -547,14 +547,16 @@ namespace Paralax {
 		float intensity = m_Settings.DefaultEnvironmentIntensity;
 		m_EnvironmentRotation = 0.0f;
 		m_ShowSky = true;
-		for (entt::entity handle : scene.GetAllEntitiesWith<SkyLightComponent>())
+		// The first sky light defines the environment.
+		auto skyLights = scene.GetAllEntitiesWith<SkyLightComponent>();
+		if (auto first = skyLights.begin(); first != skyLights.end())
 		{
+			const entt::entity handle = *first;
 			const SkyLightComponent& sky = scene.GetRegistry().get<SkyLightComponent>(handle);
 			environment = sky.Environment;
 			intensity = sky.Intensity;
 			m_EnvironmentRotation = glm::radians(sky.RotationDegrees);
 			m_ShowSky = sky.ShowBackground;
-			break;
 		}
 		m_EnvironmentIntensity = intensity;
 
@@ -763,15 +765,17 @@ namespace Paralax {
 		glm::vec3 sunColor(0.0f);
 		bool hasSun = false;
 		bool sunShadows = false;
-		for (entt::entity handle : scene.GetAllEntitiesWith<DirectionalLightComponent>())
+		// The first directional light is the sun.
+		auto directionalLights = scene.GetAllEntitiesWith<DirectionalLightComponent>();
+		if (auto first = directionalLights.begin(); first != directionalLights.end())
 		{
+			const entt::entity handle = *first;
 			Entity entity(handle, &scene);
 			const auto& light = entity.GetComponent<DirectionalLightComponent>();
 			sunDirection = glm::normalize(glm::vec3(scene.GetWorldTransform(entity) * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f)));
 			sunColor = light.Color * light.Intensity;
 			hasSun = true;
 			sunShadows = light.CastShadows && m_Settings.Shadows;
-			break;
 		}
 
 		m_Lights.clear();

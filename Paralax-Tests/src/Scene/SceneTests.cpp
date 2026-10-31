@@ -4,6 +4,7 @@
 
 #include <Paralax/Scene/Entity.h>
 #include <Paralax/Scene/Scene.h>
+#include <Paralax/Scene/SceneSerializer.h>
 
 #include <glm/gtc/epsilon.hpp>
 
@@ -250,16 +251,16 @@ TEST_CASE("Scene: ForEachEntity tolerates destruction of the visited entity")
 
 TEST_CASE("Scene: very deep hierarchies are handled iteratively (no stack overflow)")
 {
-	constexpr int depth = 20000;
+	// Built through the linear-time loader: building it with SetParent would be quadratic (each call walks the
+	// ancestor chain to reject cycles), which is too slow under sanitizers for this depth.
+	constexpr uint64_t depth = 20000;
+	nlohmann::json entities = nlohmann::json::array();
+	for (uint64_t i = 1; i <= depth + 1; i++)
+		entities.push_back({{"ID", std::to_string(i)}, {"Parent", std::to_string(i - 1)}});
 	Scene scene;
-	Entity root = scene.CreateEntity("Root");
-	Entity current = root;
-	for (int i = 0; i < depth; i++)
-	{
-		Entity next = scene.CreateEntity();
-		REQUIRE(scene.SetParent(next, current, false));
-		current = next;
-	}
+	std::string error;
+	REQUIRE(SceneSerializer::Deserialize(scene, {{"Paralax", {{"Type", "Scene"}, {"Version", 1}}}, {"Entities", entities}}, error));
+	Entity root = scene.GetEntityByUUID(UUID(1));
 
 	size_t visited = 0;
 	scene.ForEachEntity([&](Entity) { visited++; });
