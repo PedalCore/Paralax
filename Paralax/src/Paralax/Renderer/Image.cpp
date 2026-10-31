@@ -17,8 +17,8 @@
 #elif defined(_MSC_VER)
 	#pragma warning(push, 0)
 #endif
-#if defined(__SANITIZE_ADDRESS__)
-	// GCC cannot compile stb_image's SSE2 intrinsics at -O0 with AddressSanitizer (non-immediate shift operands).
+#if defined(__GNUC__) && !defined(__clang__) && (!defined(__OPTIMIZE__) || defined(__SANITIZE_ADDRESS__))
+	// GCC cannot compile stb_image's SSE2 intrinsics without optimisation (non-immediate shift operands).
 	#define STBI_NO_SIMD
 #endif
 #define STB_IMAGE_WRITE_IMPLEMENTATION

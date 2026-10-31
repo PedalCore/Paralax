@@ -60,6 +60,22 @@ jobs:
           # GPU tests run on lavapipe (software Vulkan) and must not be skipped on Linux.
           echo "PX_REQUIRE_GPU=1" >> "$GITHUB_ENV"
 
+      - name: Install Windows Vulkan driver (lavapipe)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Mesa's software Vulkan driver, pinned by SHA-256. The loader ignores VK_DRIVER_FILES in elevated
+          # processes, so the driver is registered in HKLM instead.
+          $url = "https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z"
+          Invoke-WebRequest $url -OutFile "$env:RUNNER_TEMP\mesa.7z"
+          $hash = (Get-FileHash "$env:RUNNER_TEMP\mesa.7z" -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne "351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695") { throw "mesa archive hash mismatch: $hash" }
+          7z x "$env:RUNNER_TEMP\mesa.7z" "-o$env:RUNNER_TEMP\mesa" "x64\lvp_icd.x86_64.json" "x64\vulkan_lvp.dll" | Out-Null
+          $icd = "$env:RUNNER_TEMP\mesa\x64\lvp_icd.x86_64.json"
+          New-Item -Path "HKLM:\SOFTWARE\Khronos\Vulkan\Drivers" -Force | Out-Null
+          New-ItemProperty -Path "HKLM:\SOFTWARE\Khronos\Vulkan\Drivers" -Name $icd -Value 0 -PropertyType DWord -Force | Out-Null
+          "PX_REQUIRE_GPU=1" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
         run: |
