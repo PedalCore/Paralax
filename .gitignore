@@ -27,3 +27,6 @@ EditorLayout.ini
 # Python
 __pycache__/
 *.pyc
+
+# Test images (written to the test working directory; CI uploads them as artifacts)
+TestOutput/
