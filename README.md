@@ -34,3 +34,7 @@ Run the editor without a display (CI, agents): `build/debug/bin/Paralax-Editor -
 ## Contributing
 
 See [AGENTS.md](AGENTS.md) for the code style (Hazel conventions), testing rules and the commit workflow.
+
+## License
+
+Paralax is released under the [MIT License](LICENSE). Third-party dependencies keep their own licences.
