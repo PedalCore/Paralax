@@ -36,6 +36,8 @@ namespace Paralax {
 		void* GetNativeWindow() const override { return m_Window; }
 
 		void GetFramebufferSize(uint32_t& width, uint32_t& height) const override;
+		std::string GetClipboardText() const override;
+		void SetClipboardText(const std::string& text) override;
 		std::vector<std::string> GetRequiredVulkanInstanceExtensions() const override;
 		void* CreateVulkanSurface(void* vkInstance) const override;
 

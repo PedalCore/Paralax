@@ -52,6 +52,11 @@ namespace Paralax {
 		// Size of the drawable area in pixels (differs from GetWidth/GetHeight on high-DPI displays).
 		virtual void GetFramebufferSize(uint32_t& width, uint32_t& height) const = 0;
 
+		// System clipboard text (UTF-8). Headless windows keep a private in-process clipboard. Returns an empty
+		// string if the clipboard holds no text.
+		virtual std::string GetClipboardText() const = 0;
+		virtual void SetClipboardText(const std::string& text) = 0;
+
 		// Vulkan instance extensions needed to present to this window (empty for headless windows).
 		virtual std::vector<std::string> GetRequiredVulkanInstanceExtensions() const = 0;
 		// Creates a VkSurfaceKHR for this window on the given VkInstance. Returns nullptr (with an error logged) on

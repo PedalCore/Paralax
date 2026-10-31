@@ -122,3 +122,13 @@ TEST_CASE("Window: SetSize with a zero dimension is an asserted precondition")
 	CHECK(window->GetWidth() == 320);
 }
 #endif
+
+TEST_CASE("Window: headless windows keep an in-process clipboard")
+{
+	Scope<Window> window = Window::Create(HeadlessSpecification());
+	REQUIRE(window);
+	window->SetClipboardText("Paralax \xE2\x9C\x93");
+	CHECK(window->GetClipboardText() == "Paralax \xE2\x9C\x93");
+	window->SetClipboardText("");
+	CHECK(window->GetClipboardText().empty());
+}

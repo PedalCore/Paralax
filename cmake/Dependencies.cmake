@@ -170,12 +170,10 @@ if(imgui_ADDED AND NOT TARGET imgui)
 		"${imgui_SOURCE_DIR}/imgui_widgets.cpp"
 		"${imgui_SOURCE_DIR}/imgui_demo.cpp"
 		"${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp"
-		"${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp"
 		"${ImGuizmo_SOURCE_DIR}/src/ImGuizmo.cpp")
 	add_library(imgui::imgui ALIAS imgui)
-	target_include_directories(imgui SYSTEM PUBLIC "${imgui_SOURCE_DIR}" "${imgui_SOURCE_DIR}/backends" "${imgui_SOURCE_DIR}/misc/cpp" "${ImGuizmo_SOURCE_DIR}/src")
+	target_include_directories(imgui SYSTEM PUBLIC "${imgui_SOURCE_DIR}" "${imgui_SOURCE_DIR}/misc/cpp" "${ImGuizmo_SOURCE_DIR}/src")
 	target_compile_definitions(imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS IMGUI_DEFINE_MATH_OPERATORS)
-	target_link_libraries(imgui PRIVATE glfw)
 	set_target_properties(imgui PROPERTIES FOLDER "Dependencies")
 endif()
 

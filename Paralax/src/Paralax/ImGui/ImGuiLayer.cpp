@@ -14,7 +14,6 @@
 #include <imgui.h>
 // ImGuizmo.h relies on imgui.h being included first.
 #include <ImGuizmo.h>
-#include <imgui_impl_glfw.h>
 
 namespace Paralax::EmbeddedFonts {
 
@@ -26,6 +25,9 @@ namespace Paralax::EmbeddedFonts {
 namespace Paralax {
 
 	namespace {
+
+		// Backing store for the text returned to ImGui by the clipboard callback (one ImGui context per process).
+		std::string s_ClipboardText;
 
 		ImFont* AddEmbeddedFont(ImGuiIO& io, const char* name, float size)
 		{
@@ -150,17 +152,23 @@ namespace Paralax {
 
 		ApplyTheme();
 
-		// The GLFW backend only provides the clipboard: input arrives as Paralax events (OnEvent) so synthetic events
-		// from agents, tests and replays drive the UI exactly like real ones, and frame timing comes from the
-		// application's Timestep so UI behaviour is reproducible under a fixed timestep.
-		ImGui_ImplGlfw_InitForOther(static_cast<GLFWwindow*>(app.GetWindow().GetNativeWindow()), false);
+		// No ImGui platform backend: input arrives as Paralax events (OnEvent), so synthetic events from agents, tests
+		// and replays drive the UI exactly like real ones; frame timing comes from the application's Timestep so UI
+		// behaviour is reproducible under a fixed timestep; the clipboard goes through the Window abstraction.
+		io.BackendPlatformName = "Paralax";
+		ImGuiPlatformIO& platform = ImGui::GetPlatformIO();
+		platform.Platform_GetClipboardTextFn = [](ImGuiContext*) -> const char* {
+			// ImGui copies the text before the next call, so one buffer suffices.
+			s_ClipboardText = Application::Get().GetWindow().GetClipboardText();
+			return s_ClipboardText.c_str();
+		};
+		platform.Platform_SetClipboardTextFn = [](ImGuiContext*, const char* text) { Application::Get().GetWindow().SetClipboardText(text ? text : ""); };
 
 		m_Renderer = CreateScope<ImGuiRenderer>(app.GetGraphicsDevice().GetDevice());
 		if (!m_Renderer->Initialize())
 		{
 			PX_CORE_ERROR("Failed to initialise the ImGui renderer");
 			m_Renderer.reset();
-			ImGui_ImplGlfw_Shutdown();
 			ImGui::DestroyContext();
 			return;
 		}
@@ -173,7 +181,6 @@ namespace Paralax {
 			return;
 		m_Renderer->Shutdown();
 		m_Renderer.reset();
-		ImGui_ImplGlfw_Shutdown();
 		ImGui::DestroyContext();
 		m_Initialized = false;
 	}

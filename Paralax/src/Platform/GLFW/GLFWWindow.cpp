@@ -173,6 +173,18 @@ namespace Paralax {
 		height = static_cast<uint32_t>(std::max(h, 0));
 	}
 
+	std::string GLFWWindow::GetClipboardText() const
+	{
+		// GLFW's null platform keeps the clipboard in process, which is what headless windows want.
+		const char* text = glfwGetClipboardString(m_Window);
+		return text ? std::string(text) : std::string();
+	}
+
+	void GLFWWindow::SetClipboardText(const std::string& text)
+	{
+		glfwSetClipboardString(m_Window, text.c_str());
+	}
+
 	std::vector<std::string> GLFWWindow::GetRequiredVulkanInstanceExtensions() const
 	{
 		if (m_Headless)
