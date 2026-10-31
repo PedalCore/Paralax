@@ -45,17 +45,28 @@ function(px_add_embedded_shaders target)
 		list(APPEND spirv_files "${spirv}")
 	endforeach()
 
-	set(embedded_source "${CMAKE_CURRENT_BINARY_DIR}/EmbeddedShaders.cpp")
-	add_custom_command(
-		OUTPUT "${embedded_source}"
-		COMMAND "${CMAKE_COMMAND}" "-DOUTPUT=${embedded_source}" "-DINPUTS=${spirv_files}" -P "${PROJECT_SOURCE_DIR}/cmake/EmbedShaders.cmake"
-		DEPENDS ${spirv_files} "${PROJECT_SOURCE_DIR}/cmake/EmbedShaders.cmake"
-		COMMENT "Embedding compiled shaders"
-		VERBATIM)
-
-	target_sources(${target} PRIVATE "${embedded_source}")
-	set_source_files_properties("${embedded_source}" PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+	px_embed_files(${target} NAMESPACE EmbeddedShaders FILES ${spirv_files})
 	source_group("Shaders" FILES ${shader_all_files})
 	target_sources(${target} PRIVATE ${shader_all_files})
 	set_source_files_properties(${shader_all_files} PROPERTIES HEADER_FILE_ONLY ON)
+endfunction()
+
+# px_embed_files(<target> NAMESPACE <ns> FILES <file>...)
+#
+# Compiles the files into <target> as a table of Paralax::EmbeddedFile in namespace Paralax::<ns> (g_Entries,
+# g_EntryCount), named by file stem. Regenerated whenever an input changes.
+function(px_embed_files target)
+	cmake_parse_arguments(PARSE_ARGV 1 ARG "" "NAMESPACE" "FILES")
+	if(NOT ARG_NAMESPACE)
+		message(FATAL_ERROR "px_embed_files: NAMESPACE is required")
+	endif()
+	set(embedded_source "${CMAKE_CURRENT_BINARY_DIR}/Embedded_${ARG_NAMESPACE}.cpp")
+	add_custom_command(
+		OUTPUT "${embedded_source}"
+		COMMAND "${CMAKE_COMMAND}" "-DOUTPUT=${embedded_source}" "-DINPUTS=${ARG_FILES}" "-DNAMESPACE=${ARG_NAMESPACE}" -P "${PROJECT_SOURCE_DIR}/cmake/EmbedFiles.cmake"
+		DEPENDS ${ARG_FILES} "${PROJECT_SOURCE_DIR}/cmake/EmbedFiles.cmake"
+		COMMENT "Embedding ${ARG_NAMESPACE}"
+		VERBATIM)
+	target_sources(${target} PRIVATE "${embedded_source}")
+	set_source_files_properties("${embedded_source}" PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endfunction()

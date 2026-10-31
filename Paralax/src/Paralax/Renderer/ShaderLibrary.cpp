@@ -7,13 +7,7 @@ namespace Paralax {
 
 	std::span<const uint8_t> ShaderLibrary::GetModule(std::string_view name)
 	{
-		for (size_t i = 0; i < EmbeddedShaders::g_EntryCount; i++)
-		{
-			const EmbeddedShaders::Entry& entry = EmbeddedShaders::g_Entries[i];
-			if (name == entry.Name)
-				return {entry.Data, entry.Size};
-		}
-		return {};
+		return FindEmbeddedFile(EmbeddedShaders::g_Entries, EmbeddedShaders::g_EntryCount, name);
 	}
 
 	std::vector<std::string_view> ShaderLibrary::GetModuleNames()
