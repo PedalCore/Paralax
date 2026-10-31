@@ -16,12 +16,17 @@ target_link_libraries(Paralax
 		nvrhi
 		EnTT::EnTT
 		nlohmann_json::nlohmann_json
+		imgui::imgui
 	PRIVATE
 		glfw
 		nvrhi_vk
 		Vulkan::Headers
 		stb::stb
 		fastgltf::fastgltf)
+if(WIN32)
+	# Winsock, for the loopback agent server (Network/TcpSocket).
+	target_link_libraries(Paralax PRIVATE ws2_32)
+endif()
 
 target_compile_definitions(Paralax PUBLIC
 	GLM_FORCE_DEPTH_ZERO_TO_ONE
@@ -29,6 +34,7 @@ target_compile_definitions(Paralax PUBLIC
 	GLM_ENABLE_EXPERIMENTAL)
 
 px_add_embedded_shaders(Paralax DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
+px_embed_files(Paralax NAMESPACE EmbeddedFonts FILES ${PX_UI_FONTS})
 
 target_precompile_headers(Paralax PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/pxpch.h")
 set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/Paralax/Renderer/StbImplementation.cpp" PROPERTIES SKIP_PRECOMPILE_HEADERS ON)

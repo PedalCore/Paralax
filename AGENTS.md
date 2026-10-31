@@ -14,11 +14,12 @@ This file is the source of truth for how work is done in this repository. Read i
 | `Paralax/src/Platform/<Backend>/` | Platform/backend implementations (`GLFW`, later `Vulkan`). Never include these from module headers. |
 | `Paralax/src/pxpch.h` | Precompiled header. Every engine `.cpp` starts with `#include "pxpch.h"`. |
 | `Paralax/src/Paralax.h` | Public umbrella header for client code. |
-| `Paralax-Editor/` | Editor executable. It is excluded from distribution builds. |
+| `Paralax-Editor/` | Editor executable. It is excluded from distribution builds. `src/EditorCore/` is the UI-independent part (context, commands, undo, agent server) and is linked into the tests. |
 | `Paralax-Runtime/` | Runtime executable that plays exported games. |
 | `Paralax-Tests/` | doctest unit and integration tests (`Paralax-Tests` executable). Each test case is registered with CTest. |
 | `cmake/` | Build modules. `Dependencies.cmake` pins every third-party package. |
 | `.github/workflows/ci.yml` | CI: format check, plus Linux, Windows and macOS builds, tests and headless smoke runs. |
+| `tools/agent/` | Python client (`paralax_agent.py`) and MCP server (`paralax_mcp.py`) for driving the editor; standard library only. |
 | `.claude/skills/` | Task playbooks (build/test, pre-commit review, adding features, dependencies). |
 
 Never commit `GameEngineDoc.md` or `papers-inspiration/` (private brief and third-party papers). Both are excluded in `.git/info/exclude`.
@@ -73,6 +74,14 @@ cmake --preset debug && cmake --build build/debug && ctest --preset debug -j8
   - cap sizes and depths
 
   Add a hostile-input test for each new loader.
+
+## Editor and agent control
+
+- **Commands.** Every editor action is a command in `EditorCore/CommandRegistry` (JSON parameters in, JSON result out), registered in `BuiltinCommands.cpp` or, for UI-owned state such as the camera and renderer settings, by `EditorLayer` while it is attached. The UI, the console, the agent server and the MCP bridge all go through `EditorContext::Execute`. A command that sets `ModifiesScene` gets an undo step and is rolled back if it fails.
+- **Undo** stores serialized scene snapshots. Rollback, undo and redo *replace* the `Scene` object, so never hold a `Scene&` or component reference across `Execute`. UI panels call `EditorContext::Defer` while drawing; `EditorLayer` runs the queue after all panels. Multi-frame UI edits (drags, typing, the gizmo) use `ApplyInteractiveEdit`/`TouchInteractiveEdit` so one interaction is one undo step.
+- **Paths from commands** are untrusted: resolve scene paths with `EditorContext::ResolveProjectPath` and output files with `ResolveOutputPath`.
+- **Agent server.** `Paralax-Editor --agent-port 0` serves JSON-RPC 2.0 on 127.0.0.1 (one request per line) and writes the port and token to `<project>/.paralax/AgentServer.json` (or `--agent-info <file>`). The first request must be `session.authenticate`. Every command is a method; `help` lists them. `editor.quit` exits.
+- **MCP.** `python3 tools/agent/paralax_mcp.py --launch <Paralax-Editor> -- --headless --project <dir>` (or `--info <AgentServer.json>`) exposes every command as an MCP tool; `render_capture` returns the image. The CTest smoke test drives the editor through both.
 
 ## Code style (Hazel conventions)
 
@@ -135,5 +144,6 @@ The style follows [Hazel](https://github.com/TheCherno/Hazel), and `.clang-forma
 1. Build and test (see above). All tests must pass. Never commit with failing or skipped tests.
 2. Run the **pre-commit review** (`.claude/skills/pre-commit-review`). It covers correctness, style compliance, test coverage and production quality. Fix everything it finds before committing.
 3. `clang-format-18 --dry-run --Werror` must be clean.
-4. Make small, focused commits. Write the message in the imperative mood: one summary line, a blank line, then the why.
-5. Push to `origin` (`git@github.com:PedalCore/Paralax.git`), then check CI. A red CI is fixed before anything else.
+4. Before committing, check `git diff --cached --stat` and confirm only the intended files are staged; `git mv` stages immediately. When committing part of the working tree, build and test the commit in a clean worktree (`git worktree add`) before pushing.
+5. Make small, focused commits. Write the message in the imperative mood: one summary line, a blank line, then the why.
+6. Push to `origin` (`git@github.com:PedalCore/Paralax.git`), then check CI. A red CI is fixed before anything else.

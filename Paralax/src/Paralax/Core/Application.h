@@ -7,6 +7,7 @@
 #include "Paralax/Core/Window.h"
 #include "Paralax/Renderer/GraphicsDevice.h"
 #include "Paralax/Renderer/Swapchain.h"
+
 #include "Paralax/Events/ApplicationEvent.h"
 
 #include <cstdint>
@@ -17,6 +18,8 @@
 #include <vector>
 
 namespace Paralax {
+
+	class ImGuiLayer;
 
 	struct ApplicationSpecification
 	{
@@ -34,6 +37,9 @@ namespace Paralax {
 		// When non-empty, log output is additionally written to this file (relative to WorkingDirectory) for the
 		// lifetime of the application.
 		std::filesystem::path LogFile;
+		// When set (with graphics enabled and MaxFrames set), the last rendered frame of the run is saved here as a
+		// PNG. An error is logged at startup if it cannot be honoured.
+		std::filesystem::path ScreenshotPath;
 
 		struct GraphicsOptions
 		{
@@ -45,6 +51,14 @@ namespace Paralax {
 			bool FailOnValidationErrors = false;
 			std::string PreferredAdapter;
 		} Graphics;
+
+		struct ImGuiOptions
+		{
+			// Creates an ImGuiLayer overlay (requires Graphics.Enabled); Layer::OnImGuiRender is then called each frame.
+			bool Enabled = false;
+			// Layout persistence file; empty disables it.
+			std::filesystem::path IniFile;
+		} ImGui;
 	};
 
 	// Owns the main window and the layer stack and drives the main loop. Exactly one may exist at a time.
@@ -99,6 +113,9 @@ namespace Paralax {
 			return static_cast<T*>(PushOverlay(CreateScope<T>(std::forward<Args>(args)...)));
 		}
 
+		// Saves the next fully rendered frame (scene and UI, as presented) as a PNG. Main thread only; requires graphics.
+		void CaptureNextFrame(std::filesystem::path path) { m_PendingScreenshot = std::move(path); }
+
 		// Queues a function to run on the main thread at the start of the next frame. Thread-safe.
 		void SubmitToMainThread(std::function<void()> function);
 
@@ -107,6 +124,8 @@ namespace Paralax {
 		// Verified to exist; only call when HasGraphics().
 		GraphicsDevice& GetGraphicsDevice();
 		Swapchain& GetSwapchain();
+		// The ImGui overlay, or nullptr when ImGui is disabled or failed to initialise.
+		ImGuiLayer* GetImGuiLayer() const { return m_ImGuiLayer; }
 		const ApplicationSpecification& GetSpecification() const { return m_Specification; }
 		uint64_t GetFrameCount() const { return m_FrameCount; }
 		// Frames for which a back buffer was acquired, rendered and presented.
@@ -164,6 +183,8 @@ namespace Paralax {
 		Scope<Window> m_Window;
 		Scope<GraphicsDevice> m_GraphicsDevice;
 		Scope<Swapchain> m_Swapchain;
+		ImGuiLayer* m_ImGuiLayer = nullptr;
+		std::filesystem::path m_PendingScreenshot;
 		bool m_Initialized = false;
 		int m_ExitCode = 0;
 		LayerStack m_LayerStack;
@@ -188,6 +209,7 @@ namespace Paralax {
 	//   --fixed-timestep <sec>   advance every frame by a fixed, positive number of seconds
 	//   --validation             enable graphics validation; validation errors make the process exit non-zero
 	//   --gpu <name>             prefer the graphics adapter whose name contains <name>
+	//   --screenshot <file.png>  save the final frame of the run (use with --frames)
 	// Returns false (and logs an error) if an option is malformed; the specification is then left unchanged.
 	bool ApplyCommandLineOptions(ApplicationSpecification& specification);
 

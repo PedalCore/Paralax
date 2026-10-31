@@ -2,6 +2,7 @@
 
 #include "Paralax/Asset/AssetHandle.h"
 #include "Paralax/Core/Base.h"
+#include "Paralax/Core/Reflection.h"
 #include "Paralax/Math/AABB.h"
 #include "Paralax/Renderer/EnvironmentLighting.h"
 #include "Paralax/Renderer/GPUResourceCache.h"
@@ -10,7 +11,9 @@
 #include <glm/glm.hpp>
 #include <nvrhi/nvrhi.h>
 
+#include <algorithm>
 #include <optional>
+#include <span>
 #include <unordered_map>
 #include <vector>
 
@@ -36,12 +39,20 @@ namespace Paralax {
 		BaseColor = 2
 	};
 
+	enum class ShadowQuality
+	{
+		Low = 0,    // 1024 texels per cascade
+		Medium = 1, // 2048
+		High = 2,   // 4096
+	};
+
+	// Renderer settings. Reflected (GetFields) so the editor UI, scene tooling and agents share one description.
 	struct SceneRendererSettings
 	{
 		float Exposure = 1.2f;
 		TonemapOperator Tonemapper = TonemapOperator::AgX;
 		bool Shadows = true;
-		uint32_t ShadowMapSize = 2048;
+		ShadowQuality ShadowResolution = ShadowQuality::Medium;
 		float ShadowDistance = 80.0f;
 		// PCF filter radius in shadow-map texels (larger = softer).
 		// Penumbra size in world units (larger = softer shadows).
@@ -49,6 +60,9 @@ namespace Paralax {
 		// Environment intensity when the scene has no SkyLight (procedural sky lit by the sun).
 		float DefaultEnvironmentIntensity = 0.45f;
 		RenderDebugView DebugView = RenderDebugView::None;
+
+		uint32_t GetShadowMapSize() const { return 1024u << std::clamp(static_cast<int>(ShadowResolution), 0, 2); }
+		static std::span<const FieldInfo> GetFields();
 	};
 
 	// A camera to render from (view and projection are D3D-style, reversed Z).

@@ -27,6 +27,8 @@ namespace Paralax {
 		virtual void OnUpdate([[maybe_unused]] Timestep ts) {}
 		// Records rendering for this frame. Only called when graphics is enabled and a back buffer was acquired.
 		virtual void OnRender() {}
+		// Builds ImGui UI for this frame. Only called when the application has an ImGui layer.
+		virtual void OnImGuiRender() {}
 		virtual void OnEvent([[maybe_unused]] Event& event) {}
 
 		const std::string& GetName() const { return m_DebugName; }

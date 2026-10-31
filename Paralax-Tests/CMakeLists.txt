@@ -1,12 +1,19 @@
 file(GLOB_RECURSE PX_TEST_SOURCES CONFIGURE_DEPENDS
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/*.h")
+# Editor tests only exist when the editor is built.
+if(NOT TARGET Paralax-EditorCore)
+	list(FILTER PX_TEST_SOURCES EXCLUDE REGEX "/src/Editor/")
+endif()
 
 add_executable(Paralax-Tests ${PX_TEST_SOURCES})
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/src" FILES ${PX_TEST_SOURCES})
 
 target_include_directories(Paralax-Tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(Paralax-Tests PRIVATE Paralax::Paralax doctest::doctest nvrhi)
+if(TARGET Paralax-EditorCore)
+	target_link_libraries(Paralax-Tests PRIVATE Paralax-EditorCore)
+endif()
 target_compile_definitions(Paralax-Tests PRIVATE DOCTEST_CONFIG_SUPER_FAST_ASSERTS)
 px_configure_target(Paralax-Tests)
 
@@ -34,6 +41,19 @@ if(PX_XVFB_RUN AND PX_REGISTER_WINDOWED_TESTS AND TARGET Paralax-Editor)
 		TIMEOUT 300
 		LABELS "smoke;gpu"
 		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp")
+endif()
+
+# Agent control end to end: a Python agent launches the headless editor and drives it over JSON-RPC and MCP.
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND AND TARGET Paralax-Editor)
+	add_test(NAME "Smoke: an agent drives the headless editor over JSON-RPC and MCP"
+		COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/agent/tests/agent_smoke_test.py"
+			$<TARGET_FILE:Paralax-Editor> "${CMAKE_CURRENT_BINARY_DIR}/TestOutput/Agent")
+	# PYTHONDONTWRITEBYTECODE keeps __pycache__ out of the source tree.
+	set_tests_properties("Smoke: an agent drives the headless editor over JSON-RPC and MCP" PROPERTIES
+		TIMEOUT 300
+		LABELS "smoke;gpu"
+		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp;PYTHONDONTWRITEBYTECODE=1")
 endif()
 
 # Windowed tests: native windows and real swapchains. They need a display, so they are registered as one CTest

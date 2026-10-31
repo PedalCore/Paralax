@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""End-to-end test: an agent launches the editor headless, builds a small scene over JSON-RPC and through the MCP
+bridge, renders it and quits. Run by CTest: agent_smoke_test.py <Paralax-Editor> <output dir>."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from paralax_agent import AgentClient, AgentError, EditorSession  # noqa: E402
+
+
+def check(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
+
+
+def exercise_rpc(editor: AgentClient, output: Path) -> None:
+    commands = {c["name"] for c in editor.call("help")["commands"]}
+    check({"entity.create", "component.set", "render.capture", "editor.quit"} <= commands, f"missing commands: {commands}")
+
+    editor.call("scene.new", name="AgentScene")
+    ground = editor.call("entity.create", name="Ground", components={
+        "Transform": {"Scale": [10, 1, 10]}, "Mesh": {"Mesh": "3"}})["id"]
+    ball = editor.call("entity.create", name="Ball", components={
+        "Transform": {"Translation": [0, 1, 0]}, "Mesh": {"Mesh": "2"}})["id"]
+    editor.call("entity.create", name="Sun", components={"DirectionalLight": {}})
+    camera = editor.call("entity.create", name="Camera", components={"Transform": {"Translation": [0, 2, 6]}, "Camera": {}})["id"]
+    check(editor.call("scene.info")["entities"] == 4, "expected four entities")
+
+    editor.call("entity.set_parent", id=ball, parent=ground)
+    check(editor.call("entity.get", id=ball)["parent"] == ground, "parenting failed")
+    editor.call("edit.undo")
+    check(editor.call("entity.get", id=ball).get("parent") in (None, "", "0"), "undo did not restore the parent")
+
+    try:
+        editor.call("entity.get", id="12345")
+        raise AssertionError("expected an error for an unknown entity")
+    except AgentError as error:
+        check(error.code == -32000, f"unexpected error code {error.code}")
+
+    # One frame, several commands.
+    results = editor.batch([("entity.rename", {"id": camera, "name": "Main Camera"}), ("no.such.command", {}), ("scene.info", {})])
+    check(isinstance(results[1], AgentError) and results[1].code == -32601, "batch error not reported")
+    check(results[2]["entities"] == 4, "batch did not run in order")
+
+    # UI-owned state is drivable too: editor camera, gizmo and renderer settings (registered by the editor layer).
+    camera_state = editor.call("editor.camera.set", {"position": [4, 3, 6], "target": [0, 0.5, 0]})
+    check(abs(camera_state["position"][0] - 4) < 1e-3, "editor camera was not placed")
+    editor.call("editor.camera.focus", id=ball)
+    editor.call("editor.gizmo.set", operation="rotate", space="world")
+    try:
+        editor.call("editor.gizmo.set", operation="explode")
+        raise AssertionError("expected an invalid gizmo operation to fail")
+    except AgentError:
+        pass
+    settings = editor.call("render.settings.set", {"settings": {"Exposure": 1.5, "Tonemapper": "ACES"}})
+    check(settings["Exposure"] == 1.5 and settings["Tonemapper"] == "ACES", f"settings not applied: {settings}")
+    try:
+        editor.call("render.settings.set", {"settings": {"Exposure": 1.0, "Bogus": 1}})
+        raise AssertionError("expected an unknown setting to fail")
+    except AgentError:
+        pass
+    check(editor.call("render.settings.get")["Exposure"] == 1.5, "a failed settings change must change nothing")
+
+    image = output / "AgentCapture.png"
+    capture = editor.call("render.capture", path=str(image), width=320, height=180)
+    check(capture["width"] == 320 and image.stat().st_size > 1000, "capture failed")
+    editor_image = output / "AgentCaptureEditorCamera.png"
+    editor.call("render.capture", path=str(editor_image), width=160, height=90, camera="editor")
+    check(editor_image.exists(), "editor camera capture failed")
+    try:
+        editor.call("render.capture", path=str(output / "notes.txt"))
+        raise AssertionError("expected a non-PNG capture path to fail")
+    except AgentError:
+        pass
+
+
+def exercise_mcp(info_file: Path, output: Path) -> None:
+    bridge = subprocess.Popen([sys.executable, str(Path(__file__).resolve().parent.parent / "paralax_mcp.py"), "--info", str(info_file)],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8")
+    assert bridge.stdin and bridge.stdout
+
+    def request(message_id: int, method: str, params: dict) -> dict:
+        bridge.stdin.write(json.dumps({"jsonrpc": "2.0", "id": message_id, "method": method, "params": params}) + "\n")
+        bridge.stdin.flush()
+        response = json.loads(bridge.stdout.readline())
+        check(response.get("id") == message_id, f"mismatched response {response}")
+        return response
+
+    try:
+        init = request(1, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}})
+        check(init["result"]["capabilities"]["tools"] is not None, "no tools capability")
+        bridge.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
+
+        tools = {t["name"]: t for t in request(2, "tools/list", {})["result"]["tools"]}
+        check("entity_create" in tools and "render_capture" in tools, "tools missing")
+        check("path" in tools["render_capture"]["inputSchema"]["required"], "schema lacks required parameters")
+
+        created = request(3, "tools/call", {"name": "entity_create", "arguments": {"name": "FromMCP"}})["result"]
+        check(not created.get("isError") and "id" in created["structuredContent"], f"entity_create failed: {created}")
+
+        failed = request(4, "tools/call", {"name": "entity_rename", "arguments": {"id": "1"}})["result"]
+        check(failed.get("isError") is True, "a failing command must be reported as a tool error")
+
+        captured = request(5, "tools/call", {"name": "render_capture", "arguments": {"path": str(output / "McpCapture.png"), "width": 64, "height": 64}})["result"]
+        check(any(c["type"] == "image" and c["mimeType"] == "image/png" for c in captured["content"]), "capture image not attached")
+    finally:
+        bridge.stdin.close()
+        bridge.wait(30)
+    check(bridge.returncode == 0, f"bridge exited with {bridge.returncode}")
+
+
+def main() -> int:
+    executable, output = Path(sys.argv[1]), Path(sys.argv[2])
+    output.mkdir(parents=True, exist_ok=True)
+    editor = None
+    try:
+        editor = EditorSession.launch(executable, ["--headless", "--validation"], cwd=output)
+        exercise_rpc(editor, output)
+        info = output / "AgentServer.json"
+        info.write_text(json.dumps({"port": editor.port, "token": editor.token}), encoding="utf-8")
+        exercise_mcp(info, output)
+    except BaseException:
+        if editor is not None:
+            editor.process.kill()
+            editor.process.wait()
+        raise
+    code = editor.quit()
+    # --validation turns any Vulkan validation error into exit code 3.
+    check(code == 0, f"editor exited with code {code}")
+    print("agent smoke test passed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

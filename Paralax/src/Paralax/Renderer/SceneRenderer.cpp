@@ -18,6 +18,23 @@
 
 namespace Paralax {
 
+	std::span<const FieldInfo> SceneRendererSettings::GetFields()
+	{
+		using Reflection::FieldOptions;
+		using Reflection::MakeField;
+		static const std::vector<FieldInfo> s_Fields = {
+			MakeField<&SceneRendererSettings::Exposure>("Exposure", FieldOptions().Range(0.05f, 8.0f).Describe("Exposure multiplier applied before tonemapping.")),
+			MakeField<&SceneRendererSettings::Tonemapper>("Tonemapper", FieldOptions().Enum({"AgX", "ACES", "None"})),
+			MakeField<&SceneRendererSettings::Shadows>("Shadows", FieldOptions().Describe("Directional light shadows.")),
+			MakeField<&SceneRendererSettings::ShadowResolution>("ShadowResolution", FieldOptions().Enum({"Low", "Medium", "High"}).Describe("Shadow map size per cascade: 1024, 2048 or 4096.")),
+			MakeField<&SceneRendererSettings::ShadowDistance>("ShadowDistance", FieldOptions().Range(5.0f, 500.0f).Describe("Distance covered by the shadow cascades, in meters.")),
+			MakeField<&SceneRendererSettings::ShadowSoftness>("ShadowSoftness", FieldOptions().Range(0.0f, 0.5f).Describe("Penumbra size in meters.")),
+			MakeField<&SceneRendererSettings::DefaultEnvironmentIntensity>("SkyIntensity", FieldOptions().Range(0.0f, 3.0f).Describe("Environment intensity when the scene has no SkyLight.")),
+			MakeField<&SceneRendererSettings::DebugView>("DebugView", FieldOptions().Enum({"Lit", "Normals", "BaseColor"})),
+		};
+		return s_Fields;
+	}
+
 	namespace {
 
 		constexpr nvrhi::Format s_HDRFormat = nvrhi::Format::RGBA16_FLOAT;
@@ -250,7 +267,7 @@ namespace Paralax {
 	void SceneRenderer::EnsureTargets(uint32_t width, uint32_t height)
 	{
 		const bool sizeChanged = width != m_Width || height != m_Height;
-		const bool shadowChanged = m_ShadowMapSize != std::max(m_Settings.ShadowMapSize, 256u);
+		const bool shadowChanged = m_ShadowMapSize != m_Settings.GetShadowMapSize();
 		if (!sizeChanged && !shadowChanged && m_HDRTarget && m_ShadowMap)
 			return;
 
@@ -288,7 +305,7 @@ namespace Paralax {
 
 		if (shadowChanged || !m_ShadowMap)
 		{
-			m_ShadowMapSize = std::max(m_Settings.ShadowMapSize, 256u);
+			m_ShadowMapSize = m_Settings.GetShadowMapSize();
 			nvrhi::TextureDesc shadow;
 			shadow.width = m_ShadowMapSize;
 			shadow.height = m_ShadowMapSize;

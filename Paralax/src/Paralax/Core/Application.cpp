@@ -2,6 +2,8 @@
 #include "Paralax/Core/Application.h"
 
 #include "Paralax/Core/Input.h"
+#include "Paralax/ImGui/ImGuiLayer.h"
+#include "Paralax/Renderer/TextureReadback.h"
 
 #include <cctype>
 #include <cerrno>
@@ -62,10 +64,36 @@ namespace Paralax {
 			m_ExitCode = 1;
 		}
 
+		if (m_Initialized && !m_Specification.ScreenshotPath.empty())
+		{
+			// The screenshot is taken on the last frame of a frame-limited run, of the swapchain image.
+			if (!m_Swapchain)
+				PX_CORE_ERROR("A screenshot was requested, but graphics are disabled; no screenshot will be written");
+			else if (m_Specification.MaxFrames == 0)
+				PX_CORE_ERROR("A screenshot was requested without a frame limit (--frames); no screenshot will be written");
+		}
+
 		m_LastFrameTime = GetTimeSeconds();
 
 		// Registered last so a constructor that exits early never leaves a dangling instance behind.
 		s_Instance = this;
+
+		// Layers may use Application::Get() in OnAttach, so the ImGui overlay is pushed after registration.
+		if (m_Initialized && m_Specification.ImGui.Enabled)
+		{
+			if (!m_Swapchain)
+			{
+				PX_CORE_ERROR("ImGui requires graphics; ImGui is disabled");
+			}
+			else
+			{
+				ImGuiLayerSpecification imguiSpecification;
+				imguiSpecification.IniFile = m_Specification.ImGui.IniFile;
+				auto* layer = static_cast<ImGuiLayer*>(PushOverlay(CreateScope<ImGuiLayer>(imguiSpecification)));
+				if (layer->IsInitialized())
+					m_ImGuiLayer = layer;
+			}
+		}
 	}
 
 	bool Application::InitWindowAndGraphics()
@@ -117,6 +145,7 @@ namespace Paralax {
 			(*it)->OnDetach();
 		m_PendingLayerOperations.clear();
 		m_LayerStack.Clear();
+		m_ImGuiLayer = nullptr;
 		m_LayerIterationDepth--;
 
 		// Layers (and their GPU objects) are gone; release the swapchain and device before the window.
@@ -213,7 +242,11 @@ namespace Paralax {
 				const bool isLayer = operation.Type == LayerOperationType::PopLayer;
 				Scope<Layer> removed = isLayer ? m_LayerStack.PopLayer(operation.Target) : m_LayerStack.PopOverlay(operation.Target);
 				if (removed)
+				{
+					if (removed.get() == m_ImGuiLayer)
+						m_ImGuiLayer = nullptr;
 					removed->OnDetach();
+				}
 				else
 					PX_CORE_WARN("Pop{} ignored: the {} is not in the layer stack", isLayer ? "Layer" : "Overlay", isLayer ? "layer" : "overlay");
 				break;
@@ -338,6 +371,32 @@ namespace Paralax {
 						if (!IsPendingRemoval(layer.get()))
 							layer->OnRender();
 					}
+				}
+				if (m_ImGuiLayer)
+				{
+					m_ImGuiLayer->Begin(timestep);
+					{
+						LayerIterationScope iteration(*this);
+						for (auto& layer : m_LayerStack)
+						{
+							if (!IsPendingRemoval(layer.get()))
+								layer->OnImGuiRender();
+						}
+					}
+					m_ImGuiLayer->End();
+				}
+
+				const bool lastFrame = m_Specification.MaxFrames != 0 && m_FrameCount + 1 >= m_Specification.MaxFrames;
+				if (lastFrame && !m_Specification.ScreenshotPath.empty() && m_PendingScreenshot.empty())
+					m_PendingScreenshot = m_Specification.ScreenshotPath;
+				if (!m_PendingScreenshot.empty())
+				{
+					Image image = ReadbackTexture(m_GraphicsDevice->GetDevice(), m_Swapchain->GetCurrentBackBuffer());
+					if (image.IsEmpty() || !image.SavePNG(m_PendingScreenshot))
+						PX_CORE_ERROR("Could not save the screenshot to '{}'", m_PendingScreenshot.string());
+					else
+						PX_CORE_INFO("Saved screenshot '{}'", m_PendingScreenshot.string());
+					m_PendingScreenshot.clear();
 				}
 				m_Swapchain->Present();
 				m_RenderedFrameCount++;
@@ -468,6 +527,8 @@ namespace Paralax {
 		}
 		if (std::optional<std::string> gpu = args.GetOption("gpu"))
 			result.Graphics.PreferredAdapter = *gpu;
+		if (std::optional<std::string> screenshot = args.GetOption("screenshot"))
+			result.ScreenshotPath = *screenshot;
 
 		specification = std::move(result);
 		return true;

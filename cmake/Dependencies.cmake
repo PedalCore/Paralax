@@ -150,6 +150,45 @@ CPMAddPackage(
 		"FASTGLTF_COMPILE_AS_CPP20 ON"
 		"FASTGLTF_ENABLE_INSTALL OFF")
 
+# --- Dear ImGui (editor UI; docking branch) + ImGuizmo (transform gizmos) --------------------------
+CPMAddPackage(
+	NAME imgui
+	GITHUB_REPOSITORY ocornut/imgui
+	GIT_TAG v1.93.0-docking
+	DOWNLOAD_ONLY YES)
+# ImGuizmo publishes no recent tags; pinned to a reviewed commit (2026-10-10) compatible with imgui 1.93.
+CPMAddPackage(
+	NAME ImGuizmo
+	GITHUB_REPOSITORY CedricGuillemet/ImGuizmo
+	GIT_TAG 105e4fde45e4e74aae8973d98750820ef7aca7e2
+	DOWNLOAD_ONLY YES)
+if(imgui_ADDED AND NOT TARGET imgui)
+	add_library(imgui STATIC
+		"${imgui_SOURCE_DIR}/imgui.cpp"
+		"${imgui_SOURCE_DIR}/imgui_draw.cpp"
+		"${imgui_SOURCE_DIR}/imgui_tables.cpp"
+		"${imgui_SOURCE_DIR}/imgui_widgets.cpp"
+		"${imgui_SOURCE_DIR}/imgui_demo.cpp"
+		"${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp"
+		"${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp"
+		"${ImGuizmo_SOURCE_DIR}/src/ImGuizmo.cpp")
+	add_library(imgui::imgui ALIAS imgui)
+	target_include_directories(imgui SYSTEM PUBLIC "${imgui_SOURCE_DIR}" "${imgui_SOURCE_DIR}/backends" "${imgui_SOURCE_DIR}/misc/cpp" "${ImGuizmo_SOURCE_DIR}/src")
+	target_compile_definitions(imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS IMGUI_DEFINE_MATH_OPERATORS)
+	target_link_libraries(imgui PRIVATE glfw)
+	set_target_properties(imgui PROPERTIES FOLDER "Dependencies")
+endif()
+
+# --- Inter (UI font, SIL Open Font License) ------------------------------------------------------
+CPMAddPackage(
+	NAME InterFont
+	URL "https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip"
+	URL_HASH "SHA256=9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e"
+	DOWNLOAD_ONLY YES)
+set(PX_UI_FONTS
+	"${InterFont_SOURCE_DIR}/extras/ttf/Inter-Regular.ttf"
+	"${InterFont_SOURCE_DIR}/extras/ttf/Inter-SemiBold.ttf")
+
 # --- doctest (unit tests) -----------------------------------------------------------------------
 if(PX_BUILD_TESTS)
 	CPMAddPackage(
