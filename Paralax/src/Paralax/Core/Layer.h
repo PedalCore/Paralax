@@ -25,6 +25,8 @@ namespace Paralax {
 		virtual void OnAttach() {}
 		virtual void OnDetach() {}
 		virtual void OnUpdate([[maybe_unused]] Timestep ts) {}
+		// Records rendering for this frame. Only called when graphics is enabled and a back buffer was acquired.
+		virtual void OnRender() {}
 		virtual void OnEvent([[maybe_unused]] Event& event) {}
 
 		const std::string& GetName() const { return m_DebugName; }

@@ -39,6 +39,74 @@ CPMAddPackage(
 		"SPDLOG_INSTALL OFF"
 		"SPDLOG_FMT_EXTERNAL OFF")
 
+# --- Vulkan-Headers (Vulkan API headers incl. vulkan.hpp) -------------------------------------
+# The Vulkan loader is not linked: NVRHI and Paralax load it at runtime, so no SDK is needed to build.
+CPMAddPackage(
+	NAME VulkanHeaders
+	GITHUB_REPOSITORY KhronosGroup/Vulkan-Headers
+	GIT_TAG v1.4.352
+	OPTIONS
+		"VULKAN_HEADERS_ENABLE_TESTS OFF"
+		"VULKAN_HEADERS_ENABLE_INSTALL OFF")
+
+# --- NVRHI (rendering hardware interface) -------------------------------------------------------
+# NVRHI publishes no release tags; pinned to a reviewed commit on main (2026-10-05).
+CPMAddPackage(
+	NAME nvrhi
+	GITHUB_REPOSITORY NVIDIA-RTX/NVRHI
+	GIT_TAG 6b96fb03e07539f08327aea76c56d55f1de9d906
+	OPTIONS
+		"NVRHI_WITH_VULKAN ON"
+		"NVRHI_WITH_VALIDATION ON"
+		"NVRHI_WITH_DX11 OFF"
+		"NVRHI_WITH_DX12 OFF"
+		"NVRHI_WITH_RTXMU OFF"
+		"NVRHI_WITH_AFTERMATH OFF"
+		"NVRHI_BUILD_SHARED OFF"
+		"NVRHI_INSTALL OFF"
+		"NVRHI_FETCH_VULKAN_HEADERS OFF")
+# The static Vulkan backend uses symbols from the core library but does not declare it; make link order correct.
+target_link_libraries(nvrhi_vk PUBLIC nvrhi)
+
+# --- Slang (shader compiler; prebuilt release binaries) -----------------------------------------
+# Only the host compiler is used at build time; shaders are compiled to SPIR-V and embedded.
+set(PX_SLANG_VERSION "2026.18.3")
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
+	set(PX_SLANG_ASSET "windows-x86_64.zip")
+	set(PX_SLANG_SHA256 "1339d7b3050ae680c11152b8ccff977173591ce8e9c1d2a5cff2eb904d52e50d")
+elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+	set(PX_SLANG_ASSET "macos-aarch64.zip")
+	set(PX_SLANG_SHA256 "d06187a6f90aaee68a5ceef453cf973016e2d3adfc61ce51b1cd6a0d204cfca2")
+elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+	set(PX_SLANG_ASSET "linux-x86_64.tar.gz")
+	set(PX_SLANG_SHA256 "4d664ca905124ae68204ee05170f5acd8dc53956baf850b2e7b23215cfb78f7b")
+else()
+	message(FATAL_ERROR "No pinned Slang binaries for host ${CMAKE_HOST_SYSTEM_NAME}")
+endif()
+CPMAddPackage(
+	NAME slang
+	URL "https://github.com/shader-slang/slang/releases/download/v${PX_SLANG_VERSION}/slang-${PX_SLANG_VERSION}-${PX_SLANG_ASSET}"
+	URL_HASH "SHA256=${PX_SLANG_SHA256}"
+	DOWNLOAD_ONLY YES)
+# A plain variable (not find_program's cache entry) so a version bump never keeps using a stale compiler.
+set(PX_SLANGC "${slang_SOURCE_DIR}/bin/slangc${CMAKE_EXECUTABLE_SUFFIX}")
+if(NOT EXISTS "${PX_SLANGC}")
+	message(FATAL_ERROR "slangc not found at ${PX_SLANGC}")
+endif()
+
+# --- stb (image writing) ------------------------------------------------------------------------
+# stb publishes no release tags; pinned to a reviewed commit (2026-08-02).
+CPMAddPackage(
+	NAME stb
+	GITHUB_REPOSITORY nothings/stb
+	GIT_TAG 2c980bb59875b0d32144a71867fbdebb2f77cd20
+	DOWNLOAD_ONLY YES)
+if(stb_ADDED)
+	add_library(stb INTERFACE)
+	add_library(stb::stb ALIAS stb)
+	target_include_directories(stb SYSTEM INTERFACE "${stb_SOURCE_DIR}")
+endif()
+
 # --- doctest (unit tests) -----------------------------------------------------------------------
 if(PX_BUILD_TESTS)
 	CPMAddPackage(
@@ -55,7 +123,7 @@ endif()
 
 # Treat third-party headers as system headers so Paralax's strict warnings don't apply to them,
 # and group third-party targets in IDEs.
-foreach(dep glfw glm glm-header-only spdlog)
+foreach(dep glfw glm glm-header-only spdlog nvrhi nvrhi_vk Vulkan-Headers)
 	if(TARGET ${dep})
 		set_target_properties(${dep} PROPERTIES SYSTEM TRUE FOLDER "Dependencies")
 	endif()

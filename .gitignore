@@ -12,6 +12,7 @@
 *.user
 compile_commands.json
 CMakeUserPresets.json
+.claude/settings.local.json
 
 # OS
 .DS_Store

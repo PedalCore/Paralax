@@ -54,15 +54,12 @@ namespace Paralax {
 
 		Input::Reset();
 
-		m_Window = Window::Create(m_Specification.Window);
-		if (!m_Window)
+		m_Initialized = InitWindowAndGraphics();
+		if (!m_Initialized)
 		{
-			PX_CORE_ERROR("Application '{}' failed to initialise: could not create the main window", m_Specification.Name);
+			PX_CORE_ERROR("Application '{}' failed to initialise", m_Specification.Name);
 			m_Running = false;
-		}
-		else
-		{
-			m_Window->SetEventCallback(PX_BIND_EVENT_FN(OnEvent));
+			m_ExitCode = 1;
 		}
 
 		m_LastFrameTime = GetTimeSeconds();
@@ -71,8 +68,48 @@ namespace Paralax {
 		s_Instance = this;
 	}
 
+	bool Application::InitWindowAndGraphics()
+	{
+		m_Window = Window::Create(m_Specification.Window);
+		if (!m_Window)
+		{
+			PX_CORE_ERROR("Could not create the main window");
+			return false;
+		}
+		m_Window->SetEventCallback(PX_BIND_EVENT_FN(OnEvent));
+
+		const ApplicationSpecification::GraphicsOptions& graphics = m_Specification.Graphics;
+		if (!graphics.Enabled)
+			return true;
+
+		GraphicsDeviceSpecification deviceSpecification;
+		deviceSpecification.EnableValidation = graphics.Validation;
+		deviceSpecification.Headless = m_Window->IsHeadless();
+		deviceSpecification.PreferredAdapter = graphics.PreferredAdapter;
+		deviceSpecification.InstanceExtensions = m_Window->GetRequiredVulkanInstanceExtensions();
+		m_GraphicsDevice = GraphicsDevice::Create(deviceSpecification);
+		if (!m_GraphicsDevice)
+		{
+			PX_CORE_ERROR("Could not create a graphics device");
+			return false;
+		}
+
+		SwapchainSpecification swapchainSpecification;
+		swapchainSpecification.VSync = m_Specification.Window.VSync;
+		m_Swapchain = Swapchain::Create(*m_GraphicsDevice, *m_Window, swapchainSpecification);
+		if (!m_Swapchain)
+		{
+			PX_CORE_ERROR("Could not create the swapchain");
+			return false;
+		}
+		return true;
+	}
+
 	Application::~Application()
 	{
+		if (m_GraphicsDevice)
+			m_GraphicsDevice->WaitForIdle();
+
 		// Treat teardown as an iteration so layer changes requested from OnDetach are deferred (and then discarded)
 		// instead of mutating the stack mid-loop.
 		m_LayerIterationDepth++;
@@ -82,6 +119,9 @@ namespace Paralax {
 		m_LayerStack.Clear();
 		m_LayerIterationDepth--;
 
+		// Layers (and their GPU objects) are gone; release the swapchain and device before the window.
+		m_Swapchain.reset();
+		m_GraphicsDevice.reset();
 		m_Window.reset();
 		Input::Reset();
 
@@ -101,6 +141,18 @@ namespace Paralax {
 	{
 		PX_CORE_VERIFY(m_Window, "Application has no window (initialisation failed)");
 		return *m_Window;
+	}
+
+	GraphicsDevice& Application::GetGraphicsDevice()
+	{
+		PX_CORE_VERIFY(m_GraphicsDevice, "Application has no graphics device (graphics disabled or initialisation failed)");
+		return *m_GraphicsDevice;
+	}
+
+	Swapchain& Application::GetSwapchain()
+	{
+		PX_CORE_VERIFY(m_Swapchain, "Application has no swapchain (graphics disabled or initialisation failed)");
+		return *m_Swapchain;
 	}
 
 	Layer* Application::PushLayer(Scope<Layer> layer)
@@ -260,7 +312,12 @@ namespace Paralax {
 			m_LastFrameTime = time;
 
 			ExecuteMainThreadQueue();
-			m_Window->PollEvents();
+			// While minimised nothing is drawn; block for events instead of spinning (unless frame-limited, as in
+			// automated runs, which must keep advancing).
+			if (m_Minimized && m_Specification.MaxFrames == 0)
+				m_Window->WaitEvents(0.1);
+			else
+				m_Window->PollEvents();
 
 			if (!m_Minimized)
 			{
@@ -272,11 +329,39 @@ namespace Paralax {
 				}
 			}
 
+			if (m_Swapchain && !m_Minimized && m_Swapchain->BeginFrame())
+			{
+				{
+					LayerIterationScope iteration(*this);
+					for (auto& layer : m_LayerStack)
+					{
+						if (!IsPendingRemoval(layer.get()))
+							layer->OnRender();
+					}
+				}
+				m_Swapchain->Present();
+				m_RenderedFrameCount++;
+			}
+
 			Input::EndFrame();
 			m_FrameCount++;
 
 			if (m_Specification.MaxFrames != 0 && m_FrameCount >= m_Specification.MaxFrames)
 				m_Running = false;
+		}
+
+		PX_CORE_INFO("Main loop finished after {} frames ({} rendered)", m_FrameCount, m_RenderedFrameCount);
+
+		if (m_GraphicsDevice)
+		{
+			m_GraphicsDevice->WaitForIdle();
+			const uint32_t validationErrors = m_GraphicsDevice->GetValidationErrorCount();
+			if (validationErrors > 0)
+			{
+				PX_CORE_ERROR("{} graphics validation error(s) were reported", validationErrors);
+				if (m_Specification.Graphics.FailOnValidationErrors)
+					m_ExitCode = 3;
+			}
 		}
 	}
 
@@ -289,6 +374,8 @@ namespace Paralax {
 	bool Application::OnWindowResize(WindowResizeEvent& e)
 	{
 		m_Minimized = e.GetWidth() == 0 || e.GetHeight() == 0;
+		if (m_Swapchain)
+			m_Swapchain->RequestResize();
 		return false;
 	}
 
@@ -334,7 +421,7 @@ namespace Paralax {
 
 	const std::vector<std::string>& GetStandardFlagOptions()
 	{
-		static const std::vector<std::string> s_Flags = {"headless"};
+		static const std::vector<std::string> s_Flags = {"headless", "validation"};
 		return s_Flags;
 	}
 
@@ -373,6 +460,14 @@ namespace Paralax {
 			}
 			result.FixedTimestep = *seconds;
 		}
+
+		if (args.HasOption("validation"))
+		{
+			result.Graphics.Validation = true;
+			result.Graphics.FailOnValidationErrors = true;
+		}
+		if (std::optional<std::string> gpu = args.GetOption("gpu"))
+			result.Graphics.PreferredAdapter = *gpu;
 
 		specification = std::move(result);
 		return true;

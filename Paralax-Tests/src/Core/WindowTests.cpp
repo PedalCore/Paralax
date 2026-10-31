@@ -33,11 +33,6 @@ TEST_CASE("Window: headless window reports its specification")
 	CHECK(window->GetWidth() == 320);
 	CHECK(window->GetHeight() == 240);
 	CHECK(window->GetTitle() == "Window Test");
-	CHECK(window->IsVSync());
-
-	window->SetVSync(false);
-	CHECK_FALSE(window->IsVSync());
-
 	window->SetTitle("Renamed");
 	CHECK(window->GetTitle() == "Renamed");
 

@@ -4,8 +4,11 @@
 #include "Paralax/Events/ApplicationEvent.h"
 #include "Paralax/Events/KeyEvent.h"
 #include "Paralax/Events/MouseEvent.h"
+#include "Platform/Vulkan/VulkanLoader.h"
 
-// The engine renders through Vulkan (GLFW_NO_API); never pull in OpenGL headers.
+// The engine renders through Vulkan (GLFW_NO_API); never pull in OpenGL headers. Including the Vulkan core header
+// first makes GLFW declare its Vulkan surface functions.
+#include <vulkan/vulkan_core.h>
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
@@ -38,6 +41,12 @@ namespace Paralax {
 
 			glfwSetErrorCallback(GLFWErrorCallback);
 			glfwInitHint(GLFW_PLATFORM, headless ? GLFW_PLATFORM_NULL : GLFW_ANY_PLATFORM);
+			// Make GLFW use the same Vulkan loader as the graphics device (GLFW's own search misses some installs).
+			if (!headless)
+			{
+				if (PFN_vkGetInstanceProcAddr getInstanceProcAddr = VulkanLoader::GetInstanceProcAddr())
+					glfwInitVulkanLoader(getInstanceProcAddr);
+			}
 			if (!glfwInit())
 			{
 				PX_CORE_ERROR("Failed to initialise GLFW{}", headless ? "" : " (is a display server available? use --headless otherwise)");
@@ -89,7 +98,6 @@ namespace Paralax {
 		m_Data.Title = specification.Title;
 		m_Data.Width = specification.Width;
 		m_Data.Height = specification.Height;
-		m_Data.VSync = specification.VSync;
 
 		PX_CORE_INFO("Creating {}window '{}' ({}x{})", m_Headless ? "headless " : "", m_Data.Title, m_Data.Width, m_Data.Height);
 
@@ -144,12 +152,61 @@ namespace Paralax {
 		glfwPollEvents();
 	}
 
+	void GLFWWindow::WaitEvents(double timeoutSeconds)
+	{
+		glfwWaitEventsTimeout(timeoutSeconds);
+	}
+
 	void GLFWWindow::SetSize(uint32_t width, uint32_t height)
 	{
 		PX_CORE_ASSERT(width > 0 && height > 0, "Window size must be non-zero");
 		if (width == 0 || height == 0)
 			return;
 		glfwSetWindowSize(m_Window, static_cast<int>(width), static_cast<int>(height));
+	}
+
+	void GLFWWindow::GetFramebufferSize(uint32_t& width, uint32_t& height) const
+	{
+		int w = 0, h = 0;
+		glfwGetFramebufferSize(m_Window, &w, &h);
+		width = static_cast<uint32_t>(std::max(w, 0));
+		height = static_cast<uint32_t>(std::max(h, 0));
+	}
+
+	std::vector<std::string> GLFWWindow::GetRequiredVulkanInstanceExtensions() const
+	{
+		if (m_Headless)
+			return {};
+		if (!glfwVulkanSupported())
+		{
+			PX_CORE_ERROR("GLFW reports no Vulkan support; the window cannot be rendered to");
+			return {};
+		}
+
+		uint32_t count = 0;
+		const char** names = glfwGetRequiredInstanceExtensions(&count);
+		std::vector<std::string> extensions;
+		for (uint32_t i = 0; names && i < count; i++)
+			extensions.emplace_back(names[i]);
+		return extensions;
+	}
+
+	void* GLFWWindow::CreateVulkanSurface(void* vkInstance) const
+	{
+		if (m_Headless)
+		{
+			PX_CORE_ERROR("Cannot create a Vulkan surface for a headless window");
+			return nullptr;
+		}
+
+		VkSurfaceKHR surface = VK_NULL_HANDLE;
+		const VkResult result = glfwCreateWindowSurface(static_cast<VkInstance>(vkInstance), m_Window, nullptr, &surface);
+		if (result != VK_SUCCESS)
+		{
+			PX_CORE_ERROR("glfwCreateWindowSurface failed ({})", static_cast<int>(result));
+			return nullptr;
+		}
+		return reinterpret_cast<void*>(surface);
 	}
 
 	void GLFWWindow::SetTitle(const std::string& title)
@@ -185,6 +242,14 @@ namespace Paralax {
 				WindowLostFocusEvent event;
 				DispatchEvent(window, event);
 			} });
+
+		// The drawable size can change without a window-size change (e.g. moving to a monitor with a different
+		// scale), so a framebuffer change also produces a resize event; the swapchain sizes itself from it.
+		glfwSetFramebufferSizeCallback(m_Window, [](GLFWwindow* window, [[maybe_unused]] int width, [[maybe_unused]] int height) {
+			WindowData& data = *static_cast<WindowData*>(glfwGetWindowUserPointer(window));
+			WindowResizeEvent event(data.Width, data.Height);
+			DispatchEvent(window, event);
+		});
 
 		// Not every platform reports minimisation as a 0x0 resize (macOS does not), so track iconify explicitly.
 		glfwSetWindowIconifyCallback(m_Window, [](GLFWwindow* window, int iconified) {

@@ -13,13 +13,19 @@ target_link_libraries(Paralax
 	PUBLIC
 		glm::glm
 		spdlog::spdlog
+		nvrhi
 	PRIVATE
-		glfw)
+		glfw
+		nvrhi_vk
+		Vulkan::Headers
+		stb::stb)
 
 target_compile_definitions(Paralax PUBLIC
 	GLM_FORCE_DEPTH_ZERO_TO_ONE
 	GLM_FORCE_RADIANS
 	GLM_ENABLE_EXPERIMENTAL)
+
+px_add_embedded_shaders(Paralax DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
 
 target_precompile_headers(Paralax PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/pxpch.h")
 

@@ -8,6 +8,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <cstdlib>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -50,6 +51,39 @@ namespace Paralax::Testing {
 		std::filesystem::create_directories(directory, error);
 		return directory;
 	}
+
+	// Sets (or, with std::nullopt, unsets) an environment variable for the lifetime of the object.
+	class ScopedEnvironmentVariable
+	{
+	public:
+		ScopedEnvironmentVariable(std::string name, std::optional<std::string> value)
+			: m_Name(std::move(name))
+		{
+			if (const char* previous = std::getenv(m_Name.c_str()))
+				m_Previous = previous;
+			Set(value);
+		}
+		~ScopedEnvironmentVariable() { Set(m_Previous); }
+
+		ScopedEnvironmentVariable(const ScopedEnvironmentVariable&) = delete;
+		ScopedEnvironmentVariable& operator=(const ScopedEnvironmentVariable&) = delete;
+
+	private:
+		void Set(const std::optional<std::string>& value)
+		{
+#if defined(_WIN32)
+			_putenv_s(m_Name.c_str(), value ? value->c_str() : "");
+#else
+			if (value)
+				setenv(m_Name.c_str(), value->c_str(), 1);
+			else
+				unsetenv(m_Name.c_str());
+#endif
+		}
+
+		std::string m_Name;
+		std::optional<std::string> m_Previous;
+	};
 
 	// Thrown by ScopedAssertionCapture when an assertion fails.
 	class AssertionFailedError : public std::runtime_error

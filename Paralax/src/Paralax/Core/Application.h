@@ -5,6 +5,8 @@
 #include "Paralax/Core/LayerStack.h"
 #include "Paralax/Core/Timestep.h"
 #include "Paralax/Core/Window.h"
+#include "Paralax/Renderer/GraphicsDevice.h"
+#include "Paralax/Renderer/Swapchain.h"
 #include "Paralax/Events/ApplicationEvent.h"
 
 #include <cstdint>
@@ -32,13 +34,27 @@ namespace Paralax {
 		// When non-empty, log output is additionally written to this file (relative to WorkingDirectory) for the
 		// lifetime of the application.
 		std::filesystem::path LogFile;
+
+		struct GraphicsOptions
+		{
+			// Creates a GraphicsDevice and a Swapchain for the main window. Off by default so non-rendering
+			// applications and unit tests need no GPU.
+			bool Enabled = false;
+			bool Validation = false;
+			// Exit with a non-zero code if any graphics validation error was reported (automated runs).
+			bool FailOnValidationErrors = false;
+			std::string PreferredAdapter;
+		} Graphics;
 	};
 
 	// Owns the main window and the layer stack and drives the main loop. Exactly one may exist at a time.
 	// All member functions are main-thread-only except SubmitToMainThread.
 	//
-	// Construction can fail at runtime (e.g. no display server); check IsInitialized() before Run(). A failed
-	// application logs the reason, owns no window and Run() returns immediately.
+	// Construction can fail at runtime (e.g. no display server or GPU); check IsInitialized() before Run(). A failed
+	// application logs the reason and Run() returns immediately.
+	//
+	// Frame order: main-thread queue, OS events, Layer::OnUpdate, then (when graphics is enabled and a back
+	// buffer was acquired) Layer::OnRender and present.
 	class Application
 	{
 	public:
@@ -48,7 +64,9 @@ namespace Paralax {
 		Application(const Application&) = delete;
 		Application& operator=(const Application&) = delete;
 
-		bool IsInitialized() const { return m_Window != nullptr; }
+		bool IsInitialized() const { return m_Initialized; }
+		// Process exit code requested by the application (0 unless something failed, see GraphicsOptions).
+		int GetExitCode() const { return m_ExitCode; }
 
 		// Runs the main loop until Close() is called, the window is closed, or MaxFrames is reached.
 		// Returns immediately if the application failed to initialise.
@@ -85,8 +103,14 @@ namespace Paralax {
 		void SubmitToMainThread(std::function<void()> function);
 
 		Window& GetWindow();
+		bool HasGraphics() const { return m_Swapchain != nullptr; }
+		// Verified to exist; only call when HasGraphics().
+		GraphicsDevice& GetGraphicsDevice();
+		Swapchain& GetSwapchain();
 		const ApplicationSpecification& GetSpecification() const { return m_Specification; }
 		uint64_t GetFrameCount() const { return m_FrameCount; }
+		// Frames for which a back buffer was acquired, rendered and presented.
+		uint64_t GetRenderedFrameCount() const { return m_RenderedFrameCount; }
 		bool IsRunning() const { return m_Running; }
 
 		// Returns the current application. Verifies that one exists.
@@ -94,6 +118,7 @@ namespace Paralax {
 		static bool Exists() { return s_Instance != nullptr; }
 
 	private:
+		bool InitWindowAndGraphics();
 		bool OnWindowClose(WindowCloseEvent& e);
 		bool OnWindowResize(WindowResizeEvent& e);
 		bool OnWindowMinimize(WindowMinimizeEvent& e);
@@ -137,6 +162,10 @@ namespace Paralax {
 	private:
 		ApplicationSpecification m_Specification;
 		Scope<Window> m_Window;
+		Scope<GraphicsDevice> m_GraphicsDevice;
+		Scope<Swapchain> m_Swapchain;
+		bool m_Initialized = false;
+		int m_ExitCode = 0;
 		LayerStack m_LayerStack;
 		std::vector<LayerOperation> m_PendingLayerOperations;
 		uint32_t m_LayerIterationDepth = 0;
@@ -144,6 +173,7 @@ namespace Paralax {
 		bool m_Running = true;
 		bool m_Minimized = false;
 		uint64_t m_FrameCount = 0;
+		uint64_t m_RenderedFrameCount = 0;
 		double m_LastFrameTime = 0.0;
 
 		std::vector<std::function<void()>> m_MainThreadQueue;
@@ -156,6 +186,8 @@ namespace Paralax {
 	//   --headless[=true|false]  run without a visible window or display server
 	//   --frames <n>             exit after n frames (0 = run until closed, the default)
 	//   --fixed-timestep <sec>   advance every frame by a fixed, positive number of seconds
+	//   --validation             enable graphics validation; validation errors make the process exit non-zero
+	//   --gpu <name>             prefer the graphics adapter whose name contains <name>
 	// Returns false (and logs an error) if an option is malformed; the specification is then left unchanged.
 	bool ApplyCommandLineOptions(ApplicationSpecification& specification);
 

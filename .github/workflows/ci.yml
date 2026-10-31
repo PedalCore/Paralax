@@ -55,11 +55,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ninja-build \
             libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev \
-            libwayland-dev libxkbcommon-dev wayland-protocols
+            libwayland-dev libxkbcommon-dev wayland-protocols \
+            mesa-vulkan-drivers vulkan-validationlayers libvulkan1 xvfb xauth
+          # GPU tests run on lavapipe (software Vulkan) and must not be skipped on Linux.
+          echo "PX_REQUIRE_GPU=1" >> "$GITHUB_ENV"
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
-        run: brew list ninja >/dev/null 2>&1 || brew install ninja
+        run: |
+          brew list ninja >/dev/null 2>&1 || brew install ninja
+          # Best effort: MoltenVK over the runner's paravirtual GPU. GPU tests skip with a warning if unavailable.
+          brew install vulkan-loader molten-vk || true
 
       - name: Cache CPM sources
         uses: actions/cache@v4
@@ -104,3 +110,12 @@ jobs:
             fi
             .github/scripts/run-step.sh "Smoke test $exe" "$path" --headless --frames 10 --fixed-timestep 0.016
           done
+
+      - name: Upload test images
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output-${{ matrix.os }}-${{ matrix.config }}-${{ strategy.job-index }}
+          path: build/Paralax-Tests/TestOutput
+          if-no-files-found: ignore
+          retention-days: 7

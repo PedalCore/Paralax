@@ -45,6 +45,17 @@ cmake --preset debug && cmake --build build/debug && ctest --preset debug -j8
 - Before you commit, build and test at least `debug` (clang) and `asan` (gcc). CI covers MSVC and AppleClang; check CI after you push.
 - Never build on the user's Mac. Everything runs on the dev VM or in CI.
 
+## Renderer conventions
+
+- **API.** Rendering goes through NVRHI over Vulkan 1.3. Only `Paralax/src/Platform/Vulkan/` touches raw Vulkan, and it does so through function pointers loaded at runtime (no SDK or loader linked). Only one `GraphicsDevice` may exist per process.
+- **Shaders.** Shaders are written in **Slang** in `Paralax/shaders/*.slang`. Each file is one module with one or more `[shader("...")]` entry points, compiled to SPIR-V at build time and embedded (look them up with `ShaderLibrary`). Shared code goes in `Paralax/shaders/Common/` as `module`s, pulled in with `import Common.X;`. Bindings use HLSL `register(tN|sN|bN|uN)` syntax; the build shifts them to NVRHI's Vulkan binding offsets.
+- **Conventions.** Clip space is D3D-style: +Y up and depth 0..1. Texture UV (0,0) is the top-left. Matrices are column-major (glm). Back buffers are 8-bit sRGB: write linear colour and the hardware encodes it.
+- **GPU tests.**
+  - Use `GPUTestContext.h`. GPU tests run on lavapipe headless with validation, and must leave the validation error count unchanged.
+  - If no Vulkan device is available they pass with a warning, unless `PX_REQUIRE_GPU=1` is set, as it is on Linux CI.
+  - Tests write images to `TestOutput/` in the test working directory. CI uploads them as artifacts.
+- **Automated runs.** `--validation` makes any validation error exit with code 3. The Xvfb smoke test exercises real swapchain presentation.
+
 ## Code style (Hazel conventions)
 
 The style follows [Hazel](https://github.com/TheCherno/Hazel), and `.clang-format` enforces the layout. Run `clang-format-18 -i` on every file you touch. CI rejects unformatted code.

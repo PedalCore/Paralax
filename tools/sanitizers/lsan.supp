@@ -1,0 +1,6 @@
+# LeakSanitizer suppressions for third-party system libraries only. Never suppress Paralax code here.
+#
+# libX11/libxkbcommon allocate per-connection state during XOpenDisplay/XKB setup that they never free; GLFW
+# dlcloses the libraries at glfwTerminate, so the frames are attributed to GLFW's X11 init functions.
+leak:_glfwInitX11
+leak:_glfwConnectX11

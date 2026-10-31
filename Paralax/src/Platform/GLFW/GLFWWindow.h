@@ -21,6 +21,7 @@ namespace Paralax {
 		GLFWWindow& operator=(const GLFWWindow&) = delete;
 
 		void PollEvents() override;
+		void WaitEvents(double timeoutSeconds) override;
 
 		uint32_t GetWidth() const override { return m_Data.Width; }
 		uint32_t GetHeight() const override { return m_Data.Height; }
@@ -30,12 +31,13 @@ namespace Paralax {
 		void SetTitle(const std::string& title) override;
 
 		void SetEventCallback(const EventCallbackFn& callback) override { m_Data.EventCallback = callback; }
-		// Stored preference; applied by the renderer when it (re)creates the swapchain.
-		void SetVSync(bool enabled) override { m_Data.VSync = enabled; }
-		bool IsVSync() const override { return m_Data.VSync; }
 		bool IsHeadless() const override { return m_Headless; }
 
 		void* GetNativeWindow() const override { return m_Window; }
+
+		void GetFramebufferSize(uint32_t& width, uint32_t& height) const override;
+		std::vector<std::string> GetRequiredVulkanInstanceExtensions() const override;
+		void* CreateVulkanSurface(void* vkInstance) const override;
 
 	private:
 		GLFWWindow() = default;
@@ -54,7 +56,6 @@ namespace Paralax {
 			std::string Title;
 			uint32_t Width = 0;
 			uint32_t Height = 0;
-			bool VSync = true;
 			EventCallbackFn EventCallback;
 		};
 

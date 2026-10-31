@@ -16,9 +16,14 @@ int main(int argc, char** argv)
 	{
 		Paralax::Scope<Paralax::Application> app = Paralax::CreateApplication(Paralax::CommandLine(argc, argv, Paralax::GetStandardFlagOptions()));
 		if (app && app->IsInitialized())
+		{
 			app->Run();
+			exitCode = app->GetExitCode();
+		}
 		else
+		{
 			exitCode = EXIT_FAILURE;
+		}
 	}
 
 	Paralax::Log::Shutdown();
