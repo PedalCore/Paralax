@@ -56,6 +56,24 @@ cmake --preset debug && cmake --build build/debug && ctest --preset debug -j8
   - Tests write images to `TestOutput/` in the test working directory. CI uploads them as artifacts.
 - **Automated runs.** `--validation` makes any validation error exit with code 3. The Xvfb smoke test exercises real swapchain presentation.
 
+## Scenes, components and assets
+
+- **Components** are plain structs in `Scene/Components.h`. To add one:
+  1. Register it in `Scene/ComponentRegistry.cpp`, with reflected fields via `Reflection::MakeField`.
+  2. Give it tests, including a JSON round trip.
+  3. Add it to the feature test scene.
+
+  The reflection layer is the single source for scene files, the inspector, scripting and the agent API; never hand-write per-component serialization.
+- **Hierarchy** goes through `Scene` (`SetParent`, `SetSiblingIndex`, `DestroyEntity`). Never edit `RelationshipComponent` directly. Tree walks must be iterative, because hierarchies can be very deep.
+- **Assets** are referenced by `AssetHandle` (UUID). Handles 1–1023 are reserved for built-ins (see `AssetManager`). Files live under the project's asset directory and are listed in `AssetRegistry.json`. glTF materials and textures are sub-assets with deterministic handles.
+- **Untrusted input.** Every loader (scene, material, registry, glTF, image) treats files as untrusted:
+  - check JSON types before reading (nlohmann's `value()` throws)
+  - bounds-check every buffer access
+  - keep paths inside the project
+  - cap sizes and depths
+
+  Add a hostile-input test for each new loader.
+
 ## Code style (Hazel conventions)
 
 The style follows [Hazel](https://github.com/TheCherno/Hazel), and `.clang-format` enforces the layout. Run `clang-format-18 -i` on every file you touch. CI rejects unformatted code.

@@ -1,0 +1,145 @@
+#include <doctest/doctest.h>
+
+#include <Paralax/Scene/ComponentRegistry.h>
+#include <Paralax/Scene/Entity.h>
+
+#include <set>
+
+using namespace Paralax;
+using json = nlohmann::json;
+
+TEST_CASE("ComponentRegistry: component and field names are unique and lookups work")
+{
+	std::set<std::string> names;
+	for (const ComponentInfo& info : ComponentRegistry::GetAll())
+	{
+		CHECK(names.insert(info.Name).second);
+		std::set<std::string> fields;
+		for (const FieldInfo& field : info.Fields)
+		{
+			CHECK(fields.insert(field.Name).second);
+			CHECK(field.Access != nullptr);
+		}
+		CHECK(ComponentRegistry::Find(info.Name) == &info);
+	}
+	CHECK(ComponentRegistry::Find("Transform") != nullptr);
+	CHECK(ComponentRegistry::Find("NoSuchComponent") == nullptr);
+	CHECK(ComponentRegistry::Find("Transform")->FindField("Translation") != nullptr);
+	CHECK(ComponentRegistry::Find("Transform")->FindField("Nope") == nullptr);
+}
+
+TEST_CASE("ComponentRegistry: every component round-trips through JSON")
+{
+	Scene scene;
+	Entity entity = scene.CreateEntity("Source");
+	Entity target = scene.CreateEntity("Target");
+	entt::registry& registry = scene.GetRegistry();
+
+	for (const ComponentInfo& info : ComponentRegistry::GetAll())
+	{
+		CAPTURE(info.Name);
+		void* source = info.Add(registry, entity.GetHandle());
+		const json original = ComponentRegistry::ToJson(info, source);
+		CHECK(original.is_object());
+		CHECK(original.size() == info.Fields.size());
+
+		void* destination = info.Add(registry, target.GetHandle());
+		std::string error;
+		CHECK(ComponentRegistry::FromJson(info, destination, original, error));
+		CHECK(error.empty());
+		CHECK(ComponentRegistry::ToJson(info, destination) == original);
+	}
+}
+
+TEST_CASE("ComponentRegistry: SetField validates types, ranges and enums without modifying on failure")
+{
+	CameraComponent camera;
+	const ComponentInfo& info = *ComponentRegistry::Find("Camera");
+	std::string error;
+
+	const FieldInfo& fov = *info.FindField("FieldOfView");
+	const float before = camera.Camera.PerspectiveFOV;
+	CHECK_FALSE(ComponentRegistry::SetField(fov, &camera, "wide", error));
+	CHECK(error.find("FieldOfView") != std::string::npos);
+	CHECK_FALSE(ComponentRegistry::SetField(fov, &camera, 10.0, error)); // radians, > 179 degrees
+	CHECK(camera.Camera.PerspectiveFOV == before);
+	CHECK(ComponentRegistry::SetField(fov, &camera, 1.0, error));
+	CHECK(camera.Camera.PerspectiveFOV == 1.0f);
+
+	const FieldInfo& projection = *info.FindField("Projection");
+	CHECK(ComponentRegistry::GetField(projection, &camera) == "Perspective");
+	CHECK(ComponentRegistry::SetField(projection, &camera, "Orthographic", error));
+	CHECK(camera.Camera.Projection == SceneCamera::ProjectionType::Orthographic);
+	CHECK_FALSE(ComponentRegistry::SetField(projection, &camera, "Fisheye", error));
+	CHECK(error.find("Perspective, Orthographic") != std::string::npos);
+	CHECK_FALSE(ComponentRegistry::SetField(projection, &camera, 1, error));
+
+	const FieldInfo& primary = *info.FindField("Primary");
+	CHECK_FALSE(ComponentRegistry::SetField(primary, &camera, 1, error));
+	CHECK(ComponentRegistry::SetField(primary, &camera, false, error));
+	CHECK_FALSE(camera.Primary);
+}
+
+TEST_CASE("ComponentRegistry: vectors, quaternions and asset handles are validated and normalised")
+{
+	TransformComponent transform;
+	const ComponentInfo& info = *ComponentRegistry::Find("Transform");
+	std::string error;
+
+	CHECK(ComponentRegistry::SetField(*info.FindField("Translation"), &transform, json::array({1, 2.5, -3}), error));
+	CHECK(transform.Translation == glm::vec3(1.0f, 2.5f, -3.0f));
+	CHECK_FALSE(ComponentRegistry::SetField(*info.FindField("Translation"), &transform, json::array({1, 2}), error));
+	CHECK_FALSE(ComponentRegistry::SetField(*info.FindField("Translation"), &transform, json::array({1, "a", 3}), error));
+
+	CHECK(ComponentRegistry::SetField(*info.FindField("Rotation"), &transform, json::array({0, 0, 0, 2}), error));
+	CHECK(transform.Rotation == glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+	CHECK_FALSE(ComponentRegistry::SetField(*info.FindField("Rotation"), &transform, json::array({0, 0, 0, 0}), error));
+
+	MeshComponent mesh;
+	const ComponentInfo& meshInfo = *ComponentRegistry::Find("Mesh");
+	CHECK(ComponentRegistry::SetField(*meshInfo.FindField("Mesh"), &mesh, "18446744073709551615", error));
+	CHECK(static_cast<uint64_t>(mesh.Mesh) == UINT64_MAX);
+	CHECK(ComponentRegistry::GetField(*meshInfo.FindField("Mesh"), &mesh) == "18446744073709551615");
+	CHECK_FALSE(ComponentRegistry::SetField(*meshInfo.FindField("Mesh"), &mesh, "12x", error));
+	CHECK_FALSE(ComponentRegistry::SetField(*meshInfo.FindField("Mesh"), &mesh, -5, error));
+	CHECK(ComponentRegistry::SetField(*meshInfo.FindField("Materials"), &mesh, json::array({"1", "2"}), error));
+	CHECK(mesh.Materials.size() == 2);
+	CHECK_FALSE(ComponentRegistry::SetField(*meshInfo.FindField("Materials"), &mesh, json::array({"1", true}), error));
+	CHECK(mesh.Materials.size() == 2);
+}
+
+TEST_CASE("ComponentRegistry: FromJson applies valid fields and reports unknown or invalid ones")
+{
+	PointLightComponent light;
+	const ComponentInfo& info = *ComponentRegistry::Find("PointLight");
+	std::string error;
+	CHECK_FALSE(ComponentRegistry::FromJson(info, &light, json{{"Intensity", 42}, {"Bogus", 1}, {"Range", "far"}}, error));
+	CHECK(light.Intensity == 42.0f);
+	CHECK(error.find("Bogus") != std::string::npos);
+	CHECK(error.find("Range") != std::string::npos);
+	CHECK_FALSE(ComponentRegistry::FromJson(info, &light, json::array(), error));
+}
+
+TEST_CASE("ComponentRegistry: numbers beyond float range are rejected")
+{
+	TransformComponent transform;
+	const ComponentInfo& info = *ComponentRegistry::Find("Transform");
+	std::string error;
+	CHECK_FALSE(ComponentRegistry::SetField(*info.FindField("Translation"), &transform, json::array({1e300, 0, 0}), error));
+	CHECK(transform.Translation == glm::vec3(0.0f));
+
+	CameraComponent camera;
+	CHECK_FALSE(ComponentRegistry::SetField(*ComponentRegistry::Find("Camera")->FindField("OrthographicNear"), &camera, -1e300, error));
+}
+
+TEST_CASE("ComponentRegistry: engine-managed components cannot be removed through the registry")
+{
+	for (const char* name : {"Tag", "Transform", "PrefabInstance"})
+	{
+		CAPTURE(name);
+		CHECK(ComponentRegistry::Find(name)->Remove == nullptr);
+	}
+	CHECK(ComponentRegistry::Find("PointLight")->Remove != nullptr);
+	for (const ComponentInfo& info : ComponentRegistry::GetAll())
+		CHECK(info.Copy != nullptr);
+}

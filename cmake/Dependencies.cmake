@@ -107,6 +107,49 @@ if(stb_ADDED)
 	target_include_directories(stb SYSTEM INTERFACE "${stb_SOURCE_DIR}")
 endif()
 
+# --- EnTT (entity-component-system) ------------------------------------------------------------
+CPMAddPackage(
+	NAME EnTT
+	GITHUB_REPOSITORY skypjack/entt
+	VERSION 3.16.0
+	DOWNLOAD_ONLY YES)
+if(EnTT_ADDED)
+	add_library(EnTT INTERFACE)
+	add_library(EnTT::EnTT ALIAS EnTT)
+	target_include_directories(EnTT SYSTEM INTERFACE "${EnTT_SOURCE_DIR}/src")
+endif()
+
+# --- nlohmann/json (scene, asset and agent-protocol serialization) -----------------------------
+CPMAddPackage(
+	NAME nlohmann_json
+	GITHUB_REPOSITORY nlohmann/json
+	VERSION 3.12.0
+	OPTIONS
+		"JSON_BuildTests OFF"
+		"JSON_Install OFF")
+
+# --- simdjson (JSON parser used by fastgltf) ----------------------------------------------------
+# Provided here so fastgltf does not download its own (unhashed) copy at configure time.
+CPMAddPackage(
+	NAME simdjson
+	GITHUB_REPOSITORY simdjson/simdjson
+	GIT_TAG v4.6.11
+	OPTIONS
+		"SIMDJSON_DEVELOPER_MODE OFF"
+		"BUILD_SHARED_LIBS OFF")
+
+# --- fastgltf (glTF 2.0 import) ----------------------------------------------------------------
+CPMAddPackage(
+	NAME fastgltf
+	GITHUB_REPOSITORY spnda/fastgltf
+	GIT_TAG v0.9.1
+	OPTIONS
+		"FASTGLTF_ENABLE_TESTS OFF"
+		"FASTGLTF_ENABLE_EXAMPLES OFF"
+		"FASTGLTF_ENABLE_DOCS OFF"
+		"FASTGLTF_COMPILE_AS_CPP20 ON"
+		"FASTGLTF_ENABLE_INSTALL OFF")
+
 # --- doctest (unit tests) -----------------------------------------------------------------------
 if(PX_BUILD_TESTS)
 	CPMAddPackage(
@@ -123,7 +166,7 @@ endif()
 
 # Treat third-party headers as system headers so Paralax's strict warnings don't apply to them,
 # and group third-party targets in IDEs.
-foreach(dep glfw glm glm-header-only spdlog nvrhi nvrhi_vk Vulkan-Headers)
+foreach(dep glfw glm glm-header-only spdlog nvrhi nvrhi_vk Vulkan-Headers nlohmann_json fastgltf simdjson)
 	if(TARGET ${dep})
 		set_target_properties(${dep} PROPERTIES SYSTEM TRUE FOLDER "Dependencies")
 	endif()

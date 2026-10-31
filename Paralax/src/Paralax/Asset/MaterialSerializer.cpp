@@ -1,0 +1,98 @@
+#include "pxpch.h"
+#include "Paralax/Asset/MaterialSerializer.h"
+
+#include "Paralax/Scene/SceneSerializer.h"
+
+namespace Paralax {
+
+	using json = nlohmann::json;
+	using Reflection::FieldOptions;
+	using Reflection::MakeField;
+
+	std::span<const FieldInfo> MaterialSerializer::GetMaterialFields()
+	{
+		static const std::vector<FieldInfo> s_Fields = {
+			MakeField<&MaterialAsset::BaseColorFactor>("BaseColor", FieldOptions().Color().Describe("Linear base color (albedo) and alpha.")),
+			MakeField<&MaterialAsset::BaseColorTexture>("BaseColorTexture"),
+			MakeField<&MaterialAsset::MetallicFactor>("Metallic", FieldOptions().Range(0.0f, 1.0f)),
+			MakeField<&MaterialAsset::RoughnessFactor>("Roughness", FieldOptions().Range(0.0f, 1.0f)),
+			MakeField<&MaterialAsset::MetallicRoughnessTexture>("MetallicRoughnessTexture", FieldOptions().Describe("Roughness in G, metallic in B.")),
+			MakeField<&MaterialAsset::NormalTexture>("NormalTexture"),
+			MakeField<&MaterialAsset::NormalScale>("NormalScale", FieldOptions().Range(0.0f, 10.0f)),
+			MakeField<&MaterialAsset::OcclusionTexture>("OcclusionTexture"),
+			MakeField<&MaterialAsset::OcclusionStrength>("OcclusionStrength", FieldOptions().Range(0.0f, 1.0f)),
+			MakeField<&MaterialAsset::EmissiveFactor>("Emissive", FieldOptions().Color()),
+			MakeField<&MaterialAsset::EmissiveStrength>("EmissiveStrength", FieldOptions().Range(0.0f, 10000.0f)),
+			MakeField<&MaterialAsset::EmissiveTexture>("EmissiveTexture"),
+			MakeField<&MaterialAsset::HeightTexture>("HeightTexture", FieldOptions().Describe("Height map for parallax occlusion mapping (R, 1 = top).")),
+			MakeField<&MaterialAsset::HeightScale>("HeightScale", FieldOptions().Range(0.0f, 0.5f)),
+			MakeField<&MaterialAsset::Alpha>("AlphaMode", FieldOptions().Enum({"Opaque", "Mask", "Blend"})),
+			MakeField<&MaterialAsset::AlphaCutoff>("AlphaCutoff", FieldOptions().Range(0.0f, 1.0f)),
+			MakeField<&MaterialAsset::DoubleSided>("DoubleSided"),
+		};
+		return s_Fields;
+	}
+
+	json MaterialSerializer::Serialize(const MaterialAsset& material)
+	{
+		json document = Reflection::ToJson(GetMaterialFields(), &material);
+		document["Paralax"] = {{"Type", "Material"}, {"Version", CurrentVersion}};
+		return document;
+	}
+
+	bool MaterialSerializer::Deserialize(MaterialAsset& material, const json& document, std::string& outError)
+	{
+		outError.clear();
+		// Type-checked reads only: nlohmann's value() throws on mismatched types.
+		const json* header = document.is_object() && document.contains("Paralax") ? &document["Paralax"] : nullptr;
+		if (!header || !header->is_object() || !header->contains("Type") || !(*header)["Type"].is_string() || (*header)["Type"].get<std::string>() != "Material")
+		{
+			outError = "Not a Paralax material (missing \"Paralax\": { \"Type\": \"Material\" })";
+			return false;
+		}
+		const int version = header->contains("Version") && (*header)["Version"].is_number_integer() ? (*header)["Version"].get<int>() : 0;
+		if (version < 1 || version > CurrentVersion)
+		{
+			outError = fmt::format("Unsupported material version {}", version);
+			return false;
+		}
+
+		json fields = document;
+		fields.erase("Paralax");
+		Reflection::FromJson(GetMaterialFields(), "Material", &material, fields, outError);
+		return true;
+	}
+
+	bool MaterialSerializer::SaveToFile(const MaterialAsset& material, const std::filesystem::path& path)
+	{
+		return WriteFileAtomically(path, Serialize(material).dump(1, '\t') + "\n");
+	}
+
+	Ref<MaterialAsset> MaterialSerializer::LoadFromFile(const std::filesystem::path& path)
+	{
+		std::string text;
+		if (!ReadTextFile(path, text))
+		{
+			PX_CORE_ERROR("Cannot open material '{}'", path.string());
+			return nullptr;
+		}
+		const json document = json::parse(text, nullptr, false);
+		if (document.is_discarded())
+		{
+			PX_CORE_ERROR("Material '{}' is not valid JSON", path.string());
+			return nullptr;
+		}
+
+		auto material = CreateRef<MaterialAsset>();
+		std::string error;
+		if (!Deserialize(*material, document, error))
+		{
+			PX_CORE_ERROR("Cannot load material '{}': {}", path.string(), error);
+			return nullptr;
+		}
+		if (!error.empty())
+			PX_CORE_WARN("Material '{}': {}", path.string(), error);
+		return material;
+	}
+
+}

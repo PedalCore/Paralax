@@ -1,0 +1,89 @@
+#pragma once
+
+// C++ mirrors of the GPU data layouts in Paralax/shaders/Common/SceneData.slang. Keep both in sync.
+
+#include <glm/glm.hpp>
+
+#include <cstdint>
+
+namespace Paralax::GPU {
+
+	inline constexpr uint32_t MaxCascades = 4;
+	inline constexpr uint32_t MaxLights = 256;
+
+	struct ViewConstants
+	{
+		glm::mat4 ViewProjection;
+		glm::mat4 View;
+		glm::mat4 Projection;
+		glm::mat4 InverseViewProjection;
+		glm::vec4 CameraPosition;
+		glm::vec4 SunDirection;
+		glm::vec4 SunColor;
+		glm::mat4 CascadeViewProjection[MaxCascades];
+		glm::vec4 CascadeSplits;
+		glm::vec4 CascadeTexelWorldSize;
+		glm::vec4 ShadowParams;
+		glm::vec4 EnvironmentParams;
+		glm::vec2 ViewportSize;
+		float Exposure;
+		uint32_t LightCount;
+		float Time;
+		uint32_t DebugView;
+		glm::vec2 Padding;
+	};
+	static_assert(sizeof(ViewConstants) == 4 * 64 + 3 * 16 + MaxCascades * 64 + 4 * 16 + 32, "ViewConstants layout mismatch");
+
+	struct Light
+	{
+		glm::vec4 PositionRange;
+		glm::vec4 ColorIntensity;
+		glm::vec4 DirectionCos;
+		glm::vec4 Params;
+	};
+	static_assert(sizeof(Light) == 64);
+
+	struct MaterialConstants
+	{
+		glm::vec4 BaseColorFactor;
+		glm::vec4 EmissiveFactor;
+		float MetallicFactor;
+		float RoughnessFactor;
+		float NormalScale;
+		float OcclusionStrength;
+		float AlphaCutoff;
+		uint32_t AlphaMode;
+		float HeightScale;
+		uint32_t TextureFlags;
+	};
+	static_assert(sizeof(MaterialConstants) == 64);
+
+	struct DrawConstants
+	{
+		glm::mat4 World;
+		glm::vec4 NormalMatrix0;
+		glm::vec4 NormalMatrix1;
+		glm::vec4 NormalMatrix2;
+	};
+	static_assert(sizeof(DrawConstants) == 112, "Must fit the 128-byte push constant minimum");
+
+	struct IBLConstants
+	{
+		glm::vec4 SunDirection;
+		glm::vec4 SkyParams;
+		glm::vec4 SunColor;
+		uint32_t MipLevel;
+		uint32_t SourceMipCount;
+		float SourceSize;
+		float Padding;
+	};
+	static_assert(sizeof(IBLConstants) == 64);
+
+	struct TonemapConstants
+	{
+		float Exposure;
+		uint32_t Operator;
+		glm::vec2 Padding;
+	};
+
+}

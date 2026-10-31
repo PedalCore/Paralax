@@ -3,35 +3,8 @@
 
 #include <glm/vec4.hpp>
 
-// stb is compiled into exactly this translation unit.
-#if defined(__clang__) || defined(__GNUC__)
-	#pragma GCC diagnostic push
-	#pragma GCC diagnostic ignored "-Wold-style-cast"
-	#pragma GCC diagnostic ignored "-Wcast-align"
-	#pragma GCC diagnostic ignored "-Wdouble-promotion"
-	#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
-	#pragma GCC diagnostic ignored "-Wshadow"
-	#pragma GCC diagnostic ignored "-Wsign-compare"
-	#pragma GCC diagnostic ignored "-Wunused-function"
-	#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
-#elif defined(_MSC_VER)
-	#pragma warning(push, 0)
-#endif
-#if defined(__GNUC__) && !defined(__clang__) && (!defined(__OPTIMIZE__) || defined(__SANITIZE_ADDRESS__))
-	// GCC cannot compile stb_image's SSE2 intrinsics without optimisation (non-immediate shift operands).
-	#define STBI_NO_SIMD
-#endif
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#define STB_IMAGE_IMPLEMENTATION
-#define STBI_WINDOWS_UTF8
-#define STBIW_WINDOWS_UTF8
 #include <stb_image.h>
 #include <stb_image_write.h>
-#if defined(__clang__) || defined(__GNUC__)
-	#pragma GCC diagnostic pop
-#elif defined(_MSC_VER)
-	#pragma warning(pop)
-#endif
 
 #include <algorithm>
 #include <cstdlib>

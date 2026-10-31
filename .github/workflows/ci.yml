@@ -39,7 +39,7 @@ jobs:
           - { name: "Linux Clang Release",      os: ubuntu-24.04, cc: clang, cxx: clang++, config: Release, generator: Ninja }
           - { name: "Linux Clang Dist",         os: ubuntu-24.04, cc: clang, cxx: clang++, config: Dist,    generator: Ninja, extra: "-DPX_BUILD_EDITOR=OFF" }
           - { name: "Linux GCC ASan+UBSan",     os: ubuntu-24.04, cc: gcc,   cxx: g++,     config: Debug,   generator: Ninja, extra: "-DPX_SANITIZERS=address,undefined" }
-          - { name: "Linux Clang TSan",         os: ubuntu-24.04, cc: clang, cxx: clang++, config: Debug,   generator: Ninja, extra: "-DPX_SANITIZERS=thread" }
+          - { name: "Linux Clang TSan",         os: ubuntu-24.04, cc: clang, cxx: clang++, config: Debug,   generator: Ninja, extra: "-DPX_SANITIZERS=thread", tsan: true }
           - { name: "Windows MSVC Debug",       os: windows-2025, config: Debug,   generator: "Visual Studio" }
           - { name: "Windows MSVC Release",     os: windows-2025, config: Release, generator: "Visual Studio" }
           - { name: "Windows MSVC Dist",        os: windows-2025, config: Dist,    generator: "Visual Studio", extra: "-DPX_BUILD_EDITOR=OFF" }
@@ -105,6 +105,11 @@ jobs:
       - name: Build
         shell: bash
         run: .github/scripts/run-step.sh Build cmake --build build --config ${{ matrix.config }} --parallel
+
+      - name: Configure sanitizer suppressions
+        if: matrix.tsan
+        shell: bash
+        run: echo "TSAN_OPTIONS=suppressions=${{ github.workspace }}/tools/sanitizers/tsan.supp" >> "$GITHUB_ENV"
 
       - name: Unit tests
         shell: bash

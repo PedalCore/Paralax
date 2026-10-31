@@ -19,7 +19,14 @@ doctest_discover_tests(Paralax-Tests
 # Windowed smoke test: real Vulkan swapchain presentation under a virtual X server, with validation enabled
 # (validation errors make the editor exit non-zero). Only registered where xvfb-run is available (Linux).
 find_program(PX_XVFB_RUN xvfb-run)
-if(PX_XVFB_RUN AND TARGET Paralax-Editor)
+# X11/xcb are uninstrumented and report spurious lock errors under ThreadSanitizer; the windowed tests cover
+# windowing and presentation (not engine threading), so they are not registered in TSan builds.
+if(PX_SANITIZERS MATCHES "thread")
+	set(PX_REGISTER_WINDOWED_TESTS OFF)
+else()
+	set(PX_REGISTER_WINDOWED_TESTS ON)
+endif()
+if(PX_XVFB_RUN AND PX_REGISTER_WINDOWED_TESTS AND TARGET Paralax-Editor)
 	add_test(NAME "Smoke: windowed editor presents 120 frames under Xvfb with validation"
 		COMMAND "${PX_XVFB_RUN}" -a -s "-screen 0 1280x720x24" $<TARGET_FILE:Paralax-Editor> --frames 120 --validation
 		WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
@@ -39,7 +46,7 @@ target_include_directories(Paralax-WindowedTests PRIVATE "${CMAKE_CURRENT_SOURCE
 target_link_libraries(Paralax-WindowedTests PRIVATE Paralax::Paralax doctest::doctest nvrhi)
 px_configure_target(Paralax-WindowedTests)
 
-if(PX_XVFB_RUN)
+if(PX_XVFB_RUN AND PX_REGISTER_WINDOWED_TESTS)
 	add_test(NAME "Windowed: swapchain tests under Xvfb"
 		COMMAND "${PX_XVFB_RUN}" -a -s "-screen 0 1280x720x24" $<TARGET_FILE:Paralax-WindowedTests>
 		WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
