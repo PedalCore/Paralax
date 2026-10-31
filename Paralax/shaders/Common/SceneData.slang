@@ -23,7 +23,8 @@ public struct ViewConstants
 	public uint LightCount;
 	public float Time;
 	public uint DebugView;
-	public float2 Padding;
+	public float CascadeBlend;         // Fraction of each cascade blended into the next (last fades to unshadowed).
+	public float CascadeNear;          // First cascade start in view space.
 };
 
 // Point and spot lights. Type: 0 = point, 1 = spot.

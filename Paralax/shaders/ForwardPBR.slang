@@ -112,24 +112,9 @@ float InterleavedGradientNoise(float2 pixel)
 	return frac(52.9829189 * frac(dot(pixel, float2(0.06711056, 0.00583715))));
 }
 
-// Soft shadow from the sun: cascade selection by view depth, normal-offset biasing and a rotated 16-tap Poisson PCF.
-float SunShadow(float3 worldPosition, float3 normal, float viewDepth, float2 pixel)
+// Normal-offset biasing and a rotated 16-tap Poisson PCF, evaluated independently in each cascade's space.
+float SampleSunCascade(uint cascade, float3 worldPosition, float3 normal, float3 receiverNormal, float2 pixel)
 {
-	if (g_View.SunColor.w < 0.5)
-		return 1.0;
-
-	uint cascade = MaxCascades - 1;
-	for (uint c = 0; c < MaxCascades; c++)
-	{
-		if (viewDepth < g_View.CascadeSplits[c])
-		{
-			cascade = c;
-			break;
-		}
-	}
-	if (viewDepth >= g_View.CascadeSplits[MaxCascades - 1])
-		return 1.0;
-
 	// Normal offset and filter radius are expressed per cascade in world units, so the bias and the penumbra size
 	// match across cascade boundaries.
 	float texelWorld = g_View.CascadeTexelWorldSize[cascade];
@@ -147,14 +132,47 @@ float SunShadow(float3 worldPosition, float3 normal, float viewDepth, float2 pix
 	float2x2 rotation = float2x2(cos(angle), -sin(angle), sin(angle), cos(angle));
 	float radius = max(g_View.ShadowParams.w / texelWorld, 1.0) * g_View.ShadowParams.x;
 
+	// Compare each tap against the receiver plane at that UV, not the center depth. Otherwise a wide
+	// world-space filter shadows its own sloping receiver and creates cascade-dependent speckling.
+	float3 tangent = cross(receiverNormal, abs(receiverNormal.y) < 0.99 ? float3(0, 1, 0) : float3(1, 0, 0));
+	float3 bitangent = cross(receiverNormal, tangent);
+	float3 lightTangent = mul(g_View.CascadeViewProjection[cascade], float4(tangent, 0)).xyz;
+	float3 lightBitangent = mul(g_View.CascadeViewProjection[cascade], float4(bitangent, 0)).xyz;
+	float3 plane = cross(lightTangent, lightBitangent);
+	float2 depthGradient = abs(plane.z) > 1e-4 * length(plane) ? float2(-2.0 * plane.x, 2.0 * plane.y) / plane.z : float2(0, 0);
+
+	// Hardware PCF compares the four texel centers around each tap with a single reference depth.
+	depth -= dot(abs(depthGradient), float2(0.5, 0.5) * g_View.ShadowParams.x);
+
 	float lit = 0.0;
 	[unroll]
 	for (int i = 0; i < 16; i++)
 	{
 		float2 offset = mul(rotation, PoissonDisk[i]) * radius;
-		lit += g_ShadowMap.SampleCmpLevelZero(g_ShadowSampler, float3(shadowUV + offset, float(cascade)), depth);
+		lit += g_ShadowMap.SampleCmpLevelZero(g_ShadowSampler, float3(shadowUV + offset, float(cascade)), depth + dot(depthGradient, offset));
 	}
 	return lit / 16.0;
+}
+
+float SunShadow(float3 worldPosition, float3 normal, float3 receiverNormal, float viewDepth, float2 pixel)
+{
+	if (g_View.SunColor.w < 0.5 || viewDepth >= g_View.CascadeSplits[MaxCascades - 1])
+		return 1.0;
+
+	uint cascade = 0;
+	while (cascade + 1 < MaxCascades && viewDepth >= g_View.CascadeSplits[cascade])
+		cascade++;
+	float shadow = SampleSunCascade(cascade, worldPosition, normal, receiverNormal, pixel);
+	float start = cascade == 0 ? g_View.CascadeNear : g_View.CascadeSplits[cascade - 1];
+	float end = g_View.CascadeSplits[cascade];
+	float blendWidth = (end - start) * g_View.CascadeBlend;
+	if (blendWidth > 0.0 && viewDepth > end - blendWidth)
+	{
+		// The last cascade fades out too, so the shadow distance never introduces another hard seam.
+		float next = cascade + 1 < MaxCascades ? SampleSunCascade(cascade + 1, worldPosition, normal, receiverNormal, pixel) : 1.0;
+		shadow = lerp(shadow, next, smoothstep(end - blendWidth, end, viewDepth));
+	}
+	return shadow;
 }
 
 float3 RotateY(float3 v, float angle)
@@ -201,6 +219,12 @@ float4 MainPS(VertexOutput input, bool isFrontFace: SV_IsFrontFace) : SV_Target
 	float3 N = normalize(input.Normal);
 	if (!isFrontFace)
 		N = -N;
+	// Derivatives must be evaluated before discard or cascade selection; interpolated shading normals do not
+	// describe the rasterized triangle's receiver plane (notably on smooth spheres and normal-mapped meshes).
+	float3 receiverNormal = cross(ddx(input.WorldPosition), ddy(input.WorldPosition));
+	float receiverLength = length(receiverNormal);
+	receiverNormal = receiverLength > 1e-12 ? receiverNormal / receiverLength : N;
+	float3 shadowNormal = N;
 	float3 T = normalize(input.Tangent.xyz - N * dot(N, input.Tangent.xyz));
 	float3 B = cross(N, T) * input.Tangent.w;
 	float3 V = normalize(g_View.CameraPosition.xyz - input.WorldPosition);
@@ -258,7 +282,7 @@ float4 MainPS(VertexOutput input, bool isFrontFace: SV_IsFrontFace) : SV_Target
 
 	if (g_View.SunDirection.w > 0.5)
 	{
-		float shadow = SunShadow(surface.Position, normalize(input.Normal), input.ViewDepth, input.Position.xy);
+		float shadow = SunShadow(surface.Position, shadowNormal, receiverNormal, input.ViewDepth, input.Position.xy);
 		color += EvaluateLight(surface, -g_View.SunDirection.xyz, g_View.SunColor.rgb * shadow);
 	}
 

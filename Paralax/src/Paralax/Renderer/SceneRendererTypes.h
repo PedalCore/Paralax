@@ -30,7 +30,8 @@ namespace Paralax::GPU {
 		uint32_t LightCount;
 		float Time;
 		uint32_t DebugView;
-		glm::vec2 Padding;
+		float CascadeBlend;
+		float CascadeNear;
 	};
 	static_assert(sizeof(ViewConstants) == 4 * 64 + 3 * 16 + MaxCascades * 64 + 4 * 16 + 32, "ViewConstants layout mismatch");
 

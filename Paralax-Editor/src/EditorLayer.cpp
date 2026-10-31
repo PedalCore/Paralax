@@ -206,8 +206,8 @@ namespace Paralax::Editor {
 	void EditorLayer::CreateDemoScene(EditorContext& context)
 	{
 		auto mesh = [](uint64_t handle) { return json{{"Mesh", std::to_string(handle)}}; };
-		context.Execute("entity.create", {{"name", "Sun"}, {"components", {{"DirectionalLight", {{"Intensity", 3.5}}}, {"Transform", {{"Rotation", {-0.40, 0.30, 0.14, 0.85}}}}}}});
-		context.Execute("entity.create", {{"name", "Ground"}, {"components", {{"Mesh", mesh(AssetManager::BuiltinPlane)}}}});
+		context.Execute("entity.create", {{"name", "Sun"}, {"components", {{"DirectionalLight", {{"Intensity", 2.8}}}, {"Transform", {{"Rotation", {-0.40, 0.30, 0.14, 0.85}}}}}}});
+		context.Execute("entity.create", {{"name", "Ground"}, {"components", {{"Mesh", {{"Mesh", std::to_string(AssetManager::BuiltinPlane)}, {"Materials", {std::to_string(AssetManager::BuiltinGroundMaterial)}}}}}}});
 		context.Execute("entity.create", {{"name", "Sphere"}, {"components", {{"Mesh", mesh(AssetManager::BuiltinSphere)}, {"Transform", {{"Translation", {-1.2, 0.5, 0}}}}}}});
 		context.Execute("entity.create", {{"name", "Cube"}, {"components", {{"Mesh", mesh(AssetManager::BuiltinCube)}, {"Transform", {{"Translation", {1.2, 0.5, 0.3}}}}}}});
 		context.Execute("entity.create", {{"name", "Capsule"}, {"components", {{"Mesh", mesh(AssetManager::BuiltinCapsule)}, {"Transform", {{"Translation", {0, 1, -1.5}}}}}}});

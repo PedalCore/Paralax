@@ -50,6 +50,20 @@ namespace Paralax {
 
 	}
 
+	std::span<const BuiltinAssetInfo> AssetManager::GetBuiltinAssets()
+	{
+		static constexpr BuiltinAssetInfo builtins[] = {
+			{BuiltinCube, AssetType::Mesh, "Cube"},
+			{BuiltinSphere, AssetType::Mesh, "Sphere"},
+			{BuiltinPlane, AssetType::Mesh, "Plane"},
+			{BuiltinCylinder, AssetType::Mesh, "Cylinder"},
+			{BuiltinCapsule, AssetType::Mesh, "Capsule"},
+			{BuiltinDefaultMaterial, AssetType::Material, "Default"},
+			{BuiltinGroundMaterial, AssetType::Material, "Ground"},
+		};
+		return builtins;
+	}
+
 	AssetManager::AssetManager(std::filesystem::path assetDirectory)
 		: m_AssetDirectory(std::move(assetDirectory))
 	{
@@ -185,7 +199,7 @@ namespace Paralax {
 	bool AssetManager::IsBuiltin(AssetHandle handle) const
 	{
 		const uint64_t value = handle;
-		return (value >= BuiltinCube && value <= BuiltinCapsule) || value == BuiltinDefaultMaterial;
+		return std::ranges::any_of(GetBuiltinAssets(), [value](const BuiltinAssetInfo& info) { return info.Handle == value; });
 	}
 
 	const AssetMetadata* AssetManager::GetMetadata(AssetHandle handle) const
@@ -214,8 +228,9 @@ namespace Paralax {
 			return metadata->Type;
 		if (auto it = m_Loaded.find(handle); it != m_Loaded.end())
 			return it->second->GetType();
-		if (IsBuiltin(handle))
-			return static_cast<uint64_t>(handle) == BuiltinDefaultMaterial ? AssetType::Material : AssetType::Mesh;
+		for (const BuiltinAssetInfo& info : GetBuiltinAssets())
+			if (info.Handle == static_cast<uint64_t>(handle))
+				return info.Type;
 		return AssetType::None;
 	}
 
@@ -344,6 +359,15 @@ namespace Paralax {
 				// Light grey: a physically plausible albedo (pure white would blow out lit surfaces).
 				auto material = CreateRef<MaterialAsset>();
 				material->BaseColorFactor = glm::vec4(0.8f, 0.8f, 0.8f, 1.0f);
+				asset = material;
+				break;
+			}
+			case BuiltinGroundMaterial:
+			{
+				// Mid-grey stone leaves headroom for sunlight and grazing-angle sky reflections.
+				auto material = CreateRef<MaterialAsset>();
+				material->BaseColorFactor = glm::vec4(0.22f, 0.24f, 0.27f, 1.0f);
+				material->RoughnessFactor = 0.4f;
 				asset = material;
 				break;
 			}
