@@ -30,6 +30,8 @@ namespace Paralax {
 		bool Initialize(nvrhi::ICommandList* commandList);
 
 		nvrhi::ITexture* GetBRDFLut() const { return m_BRDFLut; }
+		// Temporary main-thread diagnostic view, owned here; null before pipeline creation succeeds.
+		nvrhi::IComputePipeline* GetBRDFLutPipeline() const { return m_LutPipeline; }
 
 		// Fills maps with a procedural clear sky lit by a sun travelling along sunDirection.
 		// sunDiskIntensity of 0 draws no sun disk.

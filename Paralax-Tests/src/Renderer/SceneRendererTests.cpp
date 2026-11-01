@@ -7,6 +7,7 @@
 #include <Paralax/Asset/MaterialAsset.h>
 #include <Paralax/Renderer/GraphicsDevice.h>
 #include <Paralax/Renderer/SceneRenderer.h>
+#include <Paralax/Renderer/SceneRendererTypes.h>
 #include <Paralax/Renderer/TextureReadback.h>
 #include <Paralax/Scene/Entity.h>
 
@@ -251,6 +252,53 @@ namespace {
 		CheckLightingTexture(graphics.GetDevice(), maps.Radiance, 4, "Radiance", directory, report);
 		// The caller already checked appearance; HDR environments need not have the procedural sky's gold hue.
 		CheckMetalLighting(graphics, renderer, scene, camera, output, image, name, false);
+
+		// Preserve all original evidence before changing the failed texture. This is a diagnostic, never a recovery path.
+		auto* device = graphics.GetDevice();
+		auto* lut = renderer.GetBRDFLut();
+		auto* pipeline = renderer.GetBRDFLutPipeline();
+		REQUIRE(pipeline);
+		REQUIRE(pipeline->getDesc().bindingLayouts.size() == 1);
+		report << "Probe: same texture and compute pipeline; fresh binding set and command list\n";
+		report << "LUT description: format=" << static_cast<uint32_t>(lut->getDesc().format) << " isUAV=" << lut->getDesc().isUAV << '\n';
+		report << "Sentinel expected per texel: R=4 G=8\n";
+		auto backupDesc = lut->getDesc();
+		backupDesc.isUAV = false;
+		backupDesc.debugName = "BRDFLutDiagnosticBackup";
+		auto backup = device->createTexture(backupDesc);
+		REQUIRE(backup);
+		auto commands = device->createCommandList();
+		REQUIRE(commands);
+		commands->open();
+		commands->copyTexture(backup, nvrhi::TextureSlice(), lut, nvrhi::TextureSlice());
+		commands->clearTextureFloat(lut, nvrhi::AllSubresources, nvrhi::Color(4.0f, 8.0f, 0.0f, 0.0f));
+		commands->close();
+		device->executeCommandList(commands);
+		CheckLightingTexture(device, lut, 2, "BRDFLutSentinel", directory, report);
+
+		nvrhi::BindingSetDesc bindingDesc;
+		bindingDesc.bindings = {nvrhi::BindingSetItem::PushConstants(0, sizeof(GPU::IBLConstants)), nvrhi::BindingSetItem::Texture_UAV(1, lut)};
+		auto bindings = device->createBindingSet(bindingDesc, pipeline->getDesc().bindingLayouts[0]);
+		REQUIRE(bindings);
+		commands->open();
+		nvrhi::ComputeState state;
+		state.pipeline = pipeline;
+		state.bindings = {bindings};
+		commands->setComputeState(state);
+		GPU::IBLConstants constants{};
+		commands->setPushConstants(&constants, sizeof(constants));
+		commands->dispatch(16, 16, 1);
+		commands->close();
+		device->executeCommandList(commands);
+		CheckLightingTexture(device, lut, 2, "BRDFLutRedispatched", directory, report);
+		renderer.Render(scene, camera, output.Framebuffer);
+		REQUIRE(ReadbackTexture(device, output.Texture).SavePNG(directory / "Redispatched.png"));
+		// Later checks in the same test must still observe the original contents, even if redispatch repaired this LUT.
+		commands->open();
+		commands->copyTexture(lut, nvrhi::TextureSlice(), backup, nvrhi::TextureSlice());
+		commands->close();
+		device->executeCommandList(commands);
+		CheckLightingTexture(device, lut, 2, "BRDFLutRestored", directory, report);
 	}
 
 }

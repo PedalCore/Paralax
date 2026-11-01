@@ -117,6 +117,8 @@ namespace Paralax {
 		const EnvironmentMaps& GetEnvironmentMaps() const { return m_EnvironmentMaps; }
 		// Temporary main-thread diagnostic view, owned by the renderer; null before initialization succeeds.
 		nvrhi::ITexture* GetBRDFLut() const { return m_Environment.GetBRDFLut(); }
+		// Temporary main-thread diagnostic view, owned by the renderer; null before pipeline creation succeeds.
+		nvrhi::IComputePipeline* GetBRDFLutPipeline() const { return m_Environment.GetBRDFLutPipeline(); }
 		GPUResourceCache& GetResourceCache() { return m_Resources; }
 
 	private:
