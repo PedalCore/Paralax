@@ -2,6 +2,7 @@
 
 #include <Paralax/Core/Assert.h>
 #include <Paralax/Core/Log.h>
+#include <Paralax/Core/UUID.h>
 
 #include <spdlog/sinks/base_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -84,10 +85,19 @@ namespace Paralax::Testing {
 		return bytes;
 	}
 
-	// Returns a fresh, empty per-test scratch directory under the system temp directory.
+	// This test process's scratch root: unique per process (a random UUID), so test runs in parallel on one machine
+	// (several build configurations, other developers' or agents' runs) never touch each other's files. Removed by
+	// TestMain when the run ends.
+	inline const std::filesystem::path& GetTestRoot()
+	{
+		static const std::filesystem::path s_Root = std::filesystem::temp_directory_path() / "ParalaxTests" / std::to_string(static_cast<uint64_t>(UUID()));
+		return s_Root;
+	}
+
+	// Returns a fresh, empty per-test scratch directory under this process's test root.
 	inline std::filesystem::path CreateTestDirectory(const std::string& name)
 	{
-		std::filesystem::path directory = std::filesystem::temp_directory_path() / "ParalaxTests" / name;
+		std::filesystem::path directory = GetTestRoot() / name;
 		std::error_code error;
 		std::filesystem::remove_all(directory, error);
 		std::filesystem::create_directories(directory, error);

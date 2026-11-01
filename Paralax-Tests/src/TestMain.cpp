@@ -16,5 +16,7 @@ int main(int argc, char** argv)
 	Paralax::Testing::ReleaseTestGraphicsDevice();
 
 	Paralax::Log::Shutdown();
+	std::error_code error;
+	std::filesystem::remove_all(Paralax::Testing::GetTestRoot(), error);
 	return result;
 }
