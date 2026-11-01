@@ -6,7 +6,9 @@
 #include "Paralax/Asset/MeshAsset.h"
 #include "Paralax/Asset/MeshImporter.h"
 #include "Paralax/Asset/TextureAsset.h"
+#include "Paralax/Scene/Prefab.h"
 #include "Paralax/Scene/SceneSerializer.h"
+#include "Paralax/Scripting/ScriptAsset.h"
 
 #include <nlohmann/json.hpp>
 
@@ -100,6 +102,8 @@ namespace Paralax {
 
 	AssetHandle AssetManager::ImportAsset(const std::filesystem::path& path)
 	{
+		// A newly imported (or re-imported) file may fix a handle that failed before.
+		m_Failed.clear();
 		const std::optional<std::filesystem::path> registryPath = ToRegistryPath(path);
 		if (!registryPath)
 		{
@@ -163,6 +167,7 @@ namespace Paralax {
 
 	bool AssetManager::RemoveAsset(AssetHandle handle)
 	{
+		m_Failed.erase(handle);
 		auto it = m_Registry.find(handle);
 		if (it == m_Registry.end())
 			return false;
@@ -254,6 +259,10 @@ namespace Paralax {
 			return nullptr;
 		if (auto it = m_Loaded.find(handle); it != m_Loaded.end())
 			return it->second;
+		// Failures are reported once; renderers ask for assets every frame, and retrying a missing or broken file
+		// each time would flood the log and hit the disk. Importing or reloading clears this.
+		if (m_Failed.contains(handle))
+			return nullptr;
 
 		if (IsBuiltin(handle))
 		{
@@ -266,6 +275,7 @@ namespace Paralax {
 		if (!metadata)
 		{
 			PX_CORE_ERROR("Unknown asset {}", static_cast<uint64_t>(handle));
+			m_Failed.insert(handle);
 			return nullptr;
 		}
 
@@ -274,11 +284,15 @@ namespace Paralax {
 			// Loading the parent registers its sub-assets in the cache.
 			const AssetHandle parent = metadata->Parent;
 			if (!GetAsset(parent))
+			{
+				m_Failed.insert(handle);
 				return nullptr;
+			}
 			auto it = m_Loaded.find(handle);
 			if (it == m_Loaded.end())
 			{
 				PX_CORE_ERROR("Asset {} is no longer produced by its source file", static_cast<uint64_t>(handle));
+				m_Failed.insert(handle);
 				return nullptr;
 			}
 			return it->second;
@@ -287,6 +301,8 @@ namespace Paralax {
 		Ref<Asset> asset = LoadAsset(*metadata);
 		if (asset)
 			m_Loaded[handle] = asset;
+		else
+			m_Failed.insert(handle);
 		return asset;
 	}
 
@@ -332,6 +348,17 @@ namespace Paralax {
 					m_LastSubAssets.emplace_back(texture->Handle, AssetType::Texture);
 				}
 				asset = result.Mesh;
+				break;
+			}
+			case AssetType::Prefab:
+				asset = PrefabAsset::LoadFromFile(path);
+				break;
+			case AssetType::Script:
+			{
+				Ref<ScriptAsset> script = ScriptAsset::LoadFromFile(path);
+				if (script)
+					script->Name = metadata.FilePath.generic_string(); // Project-relative names read better in errors.
+				asset = script;
 				break;
 			}
 			default:
@@ -387,6 +414,7 @@ namespace Paralax {
 
 	bool AssetManager::ReloadAsset(AssetHandle handle)
 	{
+		m_Failed.erase(handle);
 		const AssetMetadata* metadata = GetMetadata(handle);
 		if (!metadata || metadata->Parent.IsValid())
 			return false;
@@ -459,6 +487,7 @@ namespace Paralax {
 	bool AssetManager::LoadRegistry()
 	{
 		m_Registry.clear();
+		m_Failed.clear();
 		const std::filesystem::path path = m_AssetDirectory / RegistryFileName;
 		std::error_code error;
 		if (!std::filesystem::exists(path, error))

@@ -97,7 +97,13 @@ namespace Paralax {
 		bool CastShadows = true;
 	};
 
-	// Template data copied into every component of a new entity created from a prefab.
+	// Runs a Lua script on the entity while the scene is running (see ScriptSystem).
+	struct ScriptComponent
+	{
+		AssetHandle Script = 0;
+	};
+
+	// Marks the root entity of a prefab instance (set by PrefabAsset::Instantiate).
 	struct PrefabInstanceComponent
 	{
 		AssetHandle Prefab = 0;

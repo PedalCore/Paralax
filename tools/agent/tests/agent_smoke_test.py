@@ -5,6 +5,7 @@ bridge, renders it and quits. Run by CTest: agent_smoke_test.py <Paralax-Editor>
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -66,6 +67,18 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
         pass
     check(editor.call("render.settings.get")["Exposure"] == 1.5, "a failed settings change must change nothing")
 
+    # Without a project there is nowhere to write scripts; play mode still runs and stops cleanly.
+    try:
+        editor.call("script.create", path="Scripts/Mover.lua")
+        raise AssertionError("script.create needs a project")
+    except AgentError:
+        pass
+    editor.call("play.start")
+    editor.call("play.step", frames=5)
+    check(editor.call("script.eval", code="Scene.GetEntityCount()")["result"] == "4", "script.eval did not see the running scene")
+    check(editor.call("script.errors")["errors"] == [], "unexpected script errors")
+    editor.call("play.stop")
+
     image = output / "AgentCapture.png"
     capture = editor.call("render.capture", path=str(image), width=320, height=180)
     check(capture["width"] == 320 and image.stat().st_size > 1000, "capture failed")
@@ -77,6 +90,55 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
         raise AssertionError("expected a non-PNG capture path to fail")
     except AgentError:
         pass
+
+
+def exercise_project(editor: AgentClient, project: Path) -> None:
+    """The game-building loop an agent follows: script, prefab, play, inspect, save, capture."""
+    editor.call("scene.new", name="Game")  # A new project opens with the demo scene.
+    mover = editor.call("script.create", path="Scripts/Mover.lua", source="""
+        local Mover = { speed = 2 }
+        function Mover:OnUpdate(dt)
+            local t = self.entity:GetComponent("Transform")
+            t.Translation = t.Translation + vec3(self.speed * dt, 0, 0)
+        end
+        return Mover
+    """)
+    spawner = editor.call("script.create", path="Scripts/Spawner.lua", source="""
+        local Spawner = {}
+        function Spawner:OnCreate()
+            for i = 1, 3 do Scene.Instantiate("Prefabs/Crate.pxprefab", { position = vec3(i * 2, 0, 0) }) end
+        end
+        return Spawner
+    """)
+    crate = editor.call("entity.create", name="Crate", components={"Mesh": {"Mesh": "1"}})["id"]
+    editor.call("prefab.create", id=crate, path="Prefabs/Crate")
+    editor.call("entity.destroy", id=crate)
+    editor.call("entity.create", name="Mover", components={"Script": {"Script": mover["handle"]}, "Mesh": {"Mesh": "2"}})
+    editor.call("entity.create", name="Spawner", components={"Script": {"Script": spawner["handle"]}})
+    editor.call("entity.create", name="Sun", components={"DirectionalLight": {}})
+    editor.call("entity.create", name="Camera", components={"Camera": {}, "Transform": {"Translation": [3, 3, 10]}})
+
+    # Paused: the game advances only through play.step, so results are exact.
+    editor.call("play.start", paused=True)
+    editor.call("play.step", frames=60, dt=1 / 60)
+    x = float(editor.call("script.eval", code="Scene.FindEntityByName('Mover'):GetComponent('Transform').Translation.x")["result"])
+    check(abs(x - 2.0) < 1e-3, f"the Mover script did not move its entity (x = {x})")
+    count = editor.call("script.eval", code="Scene.GetEntityCount()")["result"]
+    check(count == "7", f"the Spawner script did not instantiate three crates ({count} entities)")
+    check(editor.call("script.errors")["errors"] == [], f"script errors: {editor.call('script.errors')}")
+    capture = editor.call("render.capture", path="Captures/Playing.png", width=320, height=180)
+    check((project / "Captures" / "Playing.png").stat().st_size > 1000, f"capture failed: {capture}")
+    editor.call("play.stop")
+
+    editor.call("scene.save", path="Scenes/Main")
+    check((project / "Assets" / "Scenes" / "Main.pxscene").exists(), "scene was not saved")
+    check(editor.call("scene.open", path="Scenes/Main.pxscene")["entities"] == 4, "saved scene did not reload")
+    for bad in ("../Escaped.png", str(project.parent / "Escaped.png")):
+        try:
+            editor.call("render.capture", path=bad)
+            raise AssertionError(f"capture outside the project was allowed: {bad}")
+        except AgentError:
+            pass
 
 
 def exercise_mcp(info_file: Path, output: Path) -> None:
@@ -132,6 +194,20 @@ def main() -> int:
     code = editor.quit()
     # --validation turns any Vulkan validation error into exit code 3.
     check(code == 0, f"editor exited with code {code}")
+
+    project = output / "Project"
+    shutil.rmtree(project, ignore_errors=True)
+    editor = None
+    try:
+        editor = EditorSession.launch(executable, ["--headless", "--validation", "--new-project", str(project)], cwd=output)
+        exercise_project(editor, project)
+    except BaseException:
+        if editor is not None:
+            editor.process.kill()
+            editor.process.wait()
+        raise
+    code = editor.quit()
+    check(code == 0, f"editor (project session) exited with code {code}")
     print("agent smoke test passed")
     return 0
 

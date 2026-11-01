@@ -259,3 +259,30 @@ TEST_CASE("AssetManager: ground material is distinct, cached and protected from 
 	CHECK(neutral->BaseColorFactor.r == neutral->BaseColorFactor.g);
 	CHECK(neutral->BaseColorFactor.g == neutral->BaseColorFactor.b);
 }
+
+TEST_CASE("AssetManager: unknown and broken assets are reported once, then retried after a re-import")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("AssetFailures");
+	AssetManager assets(directory);
+	Paralax::Testing::ScopedLogCapture log;
+	CHECK_FALSE(assets.GetAsset(AssetHandle(987654)));
+	CHECK_FALSE(assets.GetAsset(AssetHandle(987654)));
+	size_t reports = 0;
+	for (const auto& entry : log.GetEntries())
+		reports += entry.Message.find("Unknown asset 987654") != std::string::npos ? 1 : 0;
+	CHECK(reports == 1);
+
+	// A broken material is not re-read every time it is requested, but is once it has been re-imported.
+	{
+		std::ofstream(directory / "Broken.pxmat") << "{ not json";
+	}
+	const AssetHandle handle = assets.ImportAsset("Broken.pxmat");
+	REQUIRE(handle.IsValid());
+	CHECK_FALSE(assets.GetAsset(handle));
+	{
+		std::ofstream(directory / "Broken.pxmat") << R"({"Paralax": {"Type": "Material", "Version": 1}})";
+	}
+	CHECK_FALSE(assets.GetAsset(handle)); // Cached failure.
+	CHECK(assets.ImportAsset("Broken.pxmat") == handle);
+	CHECK(assets.GetAsset(handle));
+}

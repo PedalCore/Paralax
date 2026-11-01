@@ -136,6 +136,14 @@ namespace Paralax {
 		static Application& Get();
 		static bool Exists() { return s_Instance != nullptr; }
 
+		// Requests a process exit code (e.g. a runtime reporting failed scripts). An earlier non-zero code (such as
+		// a validation failure) is kept, so the first failure wins. Main thread only.
+		void SetExitCode(int code)
+		{
+			if (m_ExitCode == 0)
+				m_ExitCode = code;
+		}
+
 	private:
 		bool InitWindowAndGraphics();
 		bool OnWindowClose(WindowCloseEvent& e);

@@ -3,6 +3,7 @@
 #include "Paralax/Core/Base.h"
 #include "Paralax/Core/Timestep.h"
 #include "Paralax/Core/UUID.h"
+#include "Paralax/Scene/SceneSystem.h"
 
 #include <entt/entt.hpp>
 #include <glm/glm.hpp>
@@ -34,7 +35,8 @@ namespace Paralax {
 		Scene(const Scene&) = delete;
 		Scene& operator=(const Scene&) = delete;
 
-		// Deep copy: same entities (same UUIDs), components and hierarchy. Used to enter play mode.
+		// Deep copy: same entities (same UUIDs), components and hierarchy. Used to enter play mode. Systems are not
+		// copied (they belong to a running scene).
 		static Ref<Scene> Copy(const Scene& source);
 
 		Entity CreateEntity(const std::string& name = "Entity");
@@ -44,6 +46,10 @@ namespace Paralax {
 		void DestroyEntity(Entity entity);
 		// Creates a copy of the entity (and descendants) with new UUIDs, as a sibling after the original.
 		Entity DuplicateEntity(Entity entity);
+		// Copies an entity subtree from another scene into this one with new UUIDs, as the last root (or the last
+		// child of parent). Verifies the entities are valid. Used to instantiate prefabs.
+		Entity CopySubtreeFrom(Scene& source, Entity sourceRoot);
+		Entity CopySubtreeFrom(Scene& source, Entity sourceRoot, Entity parent);
 
 		Entity GetEntityByUUID(UUID uuid);
 		std::optional<Entity> TryGetEntityByUUID(UUID uuid);
@@ -73,11 +79,26 @@ namespace Paralax {
 		// The primary camera entity, if any (first in hierarchy order with CameraComponent::Primary).
 		std::optional<Entity> GetPrimaryCameraEntity();
 
-		// Runtime lifecycle (play mode). OnRuntimeStart/Stop bracket simulation; OnUpdateRuntime advances it.
+		// Runtime lifecycle (play mode). OnRuntimeStart/Stop bracket simulation; OnUpdateRuntime advances it by
+		// running each system in the order added. Starting a running scene or stopping a stopped one is ignored.
 		void OnRuntimeStart();
 		void OnRuntimeStop();
 		void OnUpdateRuntime(Timestep ts);
 		bool IsRunning() const { return m_IsRunning; }
+
+		// Attaches a runtime system (scripting, physics...). Verifies the scene is not running yet. Returns a
+		// non-owning pointer to the system.
+		SceneSystem* AddSystem(Scope<SceneSystem> system);
+		template<typename T>
+		T* GetSystem() const
+		{
+			for (const Scope<SceneSystem>& system : m_Systems)
+			{
+				if (T* typed = dynamic_cast<T*>(system.get()))
+					return typed;
+			}
+			return nullptr;
+		}
 
 		void SetViewportSize(uint32_t width, uint32_t height);
 		uint32_t GetViewportWidth() const { return m_ViewportWidth; }
@@ -97,10 +118,13 @@ namespace Paralax {
 
 	private:
 		void DestroyEntityImmediate(entt::entity handle);
+		void NotifySystemsOfDestruction(entt::entity root);
 		void FlushPendingDestruction();
 		std::vector<UUID>& GetSiblingList(UUID parent);
 		void DetachFromParent(entt::entity handle);
-		Entity DuplicateRecursive(Entity source, UUID newParent);
+		// Copies a subtree from source (which may be this scene) with new UUIDs; children are linked in order. The
+		// root copy is linked under newParent only if it is valid; otherwise it stays a root (appended).
+		Entity CopySubtree(Scene& source, entt::entity sourceRoot, UUID newParent);
 		// Links an entity under a parent without cycle checks, transform changes or root-list maintenance. Used by
 		// SceneSerializer, which validates the whole hierarchy and rebuilds the root list itself (keeps loading O(n)).
 		void AttachChildUnchecked(Entity child, Entity parent);
@@ -113,6 +137,7 @@ namespace Paralax {
 
 		bool m_IsRunning = false;
 		uint32_t m_UpdateDepth = 0;
+		std::vector<Scope<SceneSystem>> m_Systems;
 		std::vector<UUID> m_PendingDestruction;
 
 		uint32_t m_ViewportWidth = 0;

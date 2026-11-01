@@ -1,0 +1,158 @@
+# Paralax scripting (Lua)
+
+Gameplay code is written in Lua 5.4. You attach a script to an entity with a **Script** component, and it runs
+while the scene is playing, in the editor's play mode or in an exported game. The script engine is
+`Paralax/src/Paralax/Scripting/ScriptSystem.{h,cpp}`. The test file
+`Paralax-Tests/src/Scripting/ScriptSystemTests.cpp` shows every feature below in use.
+
+## A script
+
+A script is a Lua chunk that **returns a table**, which acts as its class. Each entity using the script gets its own
+instance (a table whose metatable indexes the class), and `self.entity` is set on it.
+
+```lua
+local Player = { speed = 4 }          -- Fields on the class are defaults for every instance.
+
+function Player:OnCreate()            -- Before the first update (entities created while playing start next update).
+    self.jumps = 0
+end
+
+function Player:OnUpdate(dt)          -- Every update; dt in seconds.
+    local transform = self.entity:GetComponent("Transform")
+    if Input.IsKeyDown(Key.W) then
+        transform.Translation = transform.Translation + vec3(0, 0, -self.speed * dt)
+    end
+end
+
+function Player:OnDestroy()           -- When the entity or its Script component goes away, or play mode stops.
+    Log.Info(self.entity.name, "destroyed")
+end
+
+return Player
+```
+
+The callbacks are optional, and may be inherited (an instance looks them up through its class, including the class's
+own metatable). Within each phase (create, then update) instances run in hierarchy order. When a Script component is
+removed or changed, its instance gets `OnDestroy` at the start of the next update, also in hierarchy order.
+
+All scripts share one global environment per play session: a global set by one script (`Score = 0`) is visible to
+the others. Prefer fields on `self` or on a module table for state that belongs to one script.
+
+If a callback raises an error, the error and its traceback are logged and recorded (see `script.errors`), and that
+instance is disabled. Other scripts keep running.
+
+## Entities
+
+| Member | Description |
+|---|---|
+| `entity.id` | UUID as a string (stable, and saved in scenes). |
+| `entity.name`, `entity.tag` | Read/write. Names cannot be empty; both are limited to 256 bytes. |
+| `entity:IsValid()` | False once the entity has been destroyed. Using a destroyed entity raises an error. |
+| `entity:GetComponent(name)` | A component reference, or `nil` if the entity doesn't have it. |
+| `entity:HasComponent(name)` | Boolean. |
+| `entity:AddComponent(name [, fields])` | Adds the component (or returns the existing one) and sets the given fields. All or nothing: an invalid field changes nothing. |
+| `entity:RemoveComponent(name)` | Returns true if it was present. Core components (Tag, Transform) cannot be removed. |
+| `entity:Destroy()` | Destroys the entity and its children at the end of the current update (immediately when called outside an update, e.g. from `script.eval`). Their `OnDestroy` callbacks run first. |
+| `entity:GetParent()`, `entity:SetParent(parent or nil [, keepWorldTransform = true])` | Hierarchy. |
+| `entity:GetChildren()` | Array of entities, in order. |
+| `entity:GetWorldPosition()` | `vec3`. |
+| `entity:GetScript()` | The entity's script instance (to call another script's functions), or `nil`. |
+
+## Components
+
+Component and field names are the same as in scene files, the inspector and the agent API (`component.types`
+lists them all). Read and assign fields directly:
+
+```lua
+local light = self.entity:AddComponent("PointLight", { Intensity = 5, Color = vec3(1, 0.6, 0.3) })
+light.Range = 12
+local t = self.entity:GetComponent("Transform")
+t.Rotation = quat.FromEuler(vec3(0, math.pi / 2, 0))
+```
+
+Field values are **copies**. `t.Translation.x = 1` changes only the copy, so assign the whole value instead:
+`t.Translation = vec3(1, 0, 0)`. Values are validated exactly as in scene files, for type, range and enum names.
+
+| Field type | Lua value |
+|---|---|
+| bool, int, float | boolean, integer, number (angles in radians) |
+| vec2/vec3/vec4, quat | `vec2`/`vec3`/`vec4`/`quat`, or an array table `{x, y, z}` when assigning |
+| string, enum | string (enums by name, e.g. `"Perspective"`) |
+| asset | handle as a string (`nil` clears it) |
+| asset array | array of handle strings |
+
+## Scene
+
+| Function | Description |
+|---|---|
+| `Scene.CreateEntity([name [, parent]])` | New entity (with Tag and Transform). |
+| `Scene.GetEntity(id)` | Entity by id, or `nil`. |
+| `Scene.FindEntityByName(name)` | First match in hierarchy order, or `nil`. |
+| `Scene.FindEntitiesByTag(tag)` | Array of entities. |
+| `Scene.Instantiate(prefab [, { parent = e, position = vec3 }])` | Spawns a prefab, given by handle or by asset path (e.g. `"Prefabs/Enemy.pxprefab"`), and returns its root entity. |
+| `Scene.Destroy(entity)` | Same as `entity:Destroy()`. |
+| `Scene.GetEntityCount()` | Number of entities. |
+
+## Input, time and logging
+
+- `Input.IsKeyDown(Key.W)`, `Input.WasKeyPressed(key)`, `Input.WasKeyReleased(key)`. "Pressed" and "Released" mean
+  the change happened this frame.
+- `Input.IsMouseButtonDown(Mouse.Left)`, `Input.WasMouseButtonPressed(button)`, `Input.WasMouseButtonReleased(button)`.
+  Buttons are `Mouse.Left`, `Mouse.Right` and `Mouse.Middle`.
+- `Input.GetMousePosition()`, `Input.GetMouseScrollDelta()` return a `vec2`.
+- Key names: `Key.A`–`Key.Z`, `Key.D0`–`Key.D9`, `Key.Space`, `Key.Enter`, `Key.Escape`, `Key.Left`/`Right`/`Up`/`Down`,
+  `Key.LeftShift`, `Key.LeftControl`, `Key.F1`–`Key.F12`, `Key.KP0`–`Key.KP9`, and more (see `s_KeyNames`).
+- `Time.delta`, `Time.elapsed` (seconds since play started) and `Time.frame` (update count) come from the engine's
+  timestep. They never use wall-clock time, so runs are reproducible under a fixed timestep.
+- `Log.Trace/Info/Warn/Error(...)` and `print(...)` write to the engine log and the editor console.
+
+## Math
+
+`vec2`, `vec3`, `vec4` and `quat` are value types. Their components are read/write (`v.x`).
+
+- Constructors: `vec3()`, `vec3(s)`, `vec3(x, y, z)`; `quat()` is the identity, `quat(w, x, y, z)`.
+- Operators: `+ - * /` (with vectors or scalars, scalars on either side of `*`), unary `-`, `==` and `tostring`.
+- Vector methods: `:Length()`, `:Normalized()`, `:Dot(v)`, `:Lerp(v, t)`. vec3 also has `:Cross(v)` and `:Distance(v)`.
+- Quaternions: `quat.FromEuler(vec3 radians)`, `quat.AngleAxis(radians, axis)`, `q:ToEuler()`, `q * q2`,
+  `q * vec3` (rotates the vector), `:Normalized()`, `:Inverse()`, `:Slerp(q2, t)`.
+- `math.random` is deterministic for a run. `math.randomseed(n)` reseeds it.
+
+## Modules
+
+`require("Scripts/Util")` loads `Assets/Scripts/Util.lua` from the project (the `.lua` extension is optional). It
+runs once per play session and returns the module's result. Circular requires raise an error.
+
+## Sandbox and limits
+
+Scripts get no file, OS or process access, and cannot crash or stall the engine:
+- There is no `io`, `os`, `debug`, `package`, `load`, `loadfile`, `dofile`, `collectgarbage`, `rawget`/`rawset`/
+  `rawequal`/`rawlen` or `string.dump`, and no bytecode.
+- `getmetatable` returns `nil` for anything but tables: the metatables of strings and engine types are internal.
+  `setmetatable` refuses `__gc` (finalizers would run script code at arbitrary points).
+- Each callback (and each `script.eval`) may execute up to 200 million Lua instructions. An endless loop is stopped
+  with an error instead of freezing the engine. The error cannot be caught: `pcall` and coroutines inside the script
+  do not stop it.
+- `string.find`, `match`, `gmatch` and `gsub` run in C, outside the instruction count. A call whose worst case
+  `(#subject + 1) ^ (quantifiers + 1)` exceeds 10^9 is refused with an error. Plain finds (`string.find(s, p, 1, true)`)
+  are always allowed.
+- A scene's scripts may allocate up to 256 MB in total. One callback may create at most 10,000 entities, counting
+  prefab instances by their entity count.
+- Errors anywhere, including the engine's own calls into Lua, are reported to the log and `script.errors`. They
+  never crash the engine.
+
+## Prefabs
+
+A prefab (`.pxprefab`) is a saved entity subtree. Create one from an entity with the agent command `prefab.create`,
+place it with `prefab.instantiate`, or spawn it from scripts with `Scene.Instantiate`. Each instance gets new ids,
+and its root carries a `PrefabInstance` component that records the prefab.
+
+## Agent commands
+
+| Command | Description |
+|---|---|
+| `script.create { path [, source] }` | Writes a script, from a template with the three callbacks if no source is given. |
+| `script.eval { code }` | Runs Lua in the playing scene and returns the results as text. Useful for checking game state. |
+| `script.errors { [clear] }` | Errors (with tracebacks) recorded in this play session. |
+| `script.api` | Every name scripts can use (generated from the bindings). |
+| `prefab.create { id, path }`, `prefab.instantiate { prefab [, parent, position] }` | Save and place prefabs. |
+| `play.start { [paused] }`, `play.step { frames, dt }`, `play.pause`, `play.resume`, `play.stop` | Run the game. Start paused and step for deterministic, agent-driven runs. |

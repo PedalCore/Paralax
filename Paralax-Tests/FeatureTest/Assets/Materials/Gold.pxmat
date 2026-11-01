@@ -1,0 +1,32 @@
+{
+	"AlphaCutoff": 0.5,
+	"AlphaMode": "Opaque",
+	"BaseColor": [
+		1.0,
+		0.7699999809265137,
+		0.3400000035762787,
+		1.0
+	],
+	"BaseColorTexture": "0",
+	"DoubleSided": false,
+	"Emissive": [
+		0.0,
+		0.0,
+		0.0
+	],
+	"EmissiveStrength": 1.0,
+	"EmissiveTexture": "0",
+	"HeightScale": 0.05000000074505806,
+	"HeightTexture": "0",
+	"Metallic": 1.0,
+	"MetallicRoughnessTexture": "0",
+	"NormalScale": 1.0,
+	"NormalTexture": "0",
+	"OcclusionStrength": 1.0,
+	"OcclusionTexture": "0",
+	"Paralax": {
+		"Type": "Material",
+		"Version": 1
+	},
+	"Roughness": 0.30000001192092896
+}

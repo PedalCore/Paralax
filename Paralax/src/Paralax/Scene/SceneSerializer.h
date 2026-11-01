@@ -7,6 +7,7 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Paralax {
@@ -23,10 +24,12 @@ namespace Paralax {
 	public:
 		static constexpr int CurrentVersion = 1;
 
-		static nlohmann::json Serialize(Scene& scene);
-		// Loads into an empty scene. Returns false (with outError set) if the document cannot be loaded; the
-		// scene is then left empty. Warnings about skipped data are appended to outWarnings.
-		static bool Deserialize(Scene& scene, const nlohmann::json& document, std::string& outError, std::vector<std::string>* outWarnings = nullptr);
+		// documentType is the header's "Type": "Scene" for scenes, "Prefab" for prefabs (same format otherwise).
+		static nlohmann::json Serialize(Scene& scene, std::string_view documentType = "Scene");
+		// Loads into an empty scene. Returns false (with outError set) if the document cannot be loaded or is not of
+		// the expected type; the scene is then left empty. Warnings about skipped data are appended to outWarnings.
+		static bool Deserialize(Scene& scene, const nlohmann::json& document, std::string& outError, std::vector<std::string>* outWarnings = nullptr,
+								std::string_view expectedType = "Scene");
 
 		// Writes atomically (temporary file + rename) so a crash never leaves a truncated scene.
 		static bool SaveToFile(Scene& scene, const std::filesystem::path& path);

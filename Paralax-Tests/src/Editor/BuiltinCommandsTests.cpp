@@ -6,6 +6,7 @@
 
 #include <Paralax/Asset/MaterialAsset.h>
 #include <Paralax/Scene/Entity.h>
+#include <Paralax/Scripting/ScriptAsset.h>
 
 using namespace Paralax;
 using namespace Paralax::Editor;
@@ -312,4 +313,48 @@ TEST_CASE("BuiltinCommands: asset list exposes the complete built-in catalog wit
 		CHECK(builtins[index]["name"].get<std::string>() == std::string(info.Name));
 		index++;
 	}
+}
+
+TEST_CASE("BuiltinCommands: a paused game advances only through play.step")
+{
+	EditorContext context;
+	CHECK_FALSE(context.Execute("play.pause").Success); // Not playing.
+	CHECK_FALSE(context.Execute("play.resume").Success);
+	REQUIRE(context.Execute("play.start", {{"paused", true}}).Success);
+	CHECK(context.IsPaused());
+
+	// The editor's frame loop calls TickRuntime; a paused scene ignores it, but play.step still advances.
+	context.TickRuntime(Timestep(1.0f));
+	CHECK(context.Execute("play.step", {{"frames", 2}}).Success);
+	CHECK(context.Execute("play.resume").Success);
+	CHECK_FALSE(context.IsPaused());
+	CHECK(context.Execute("play.pause").Success);
+	CHECK(context.IsPaused());
+
+	REQUIRE(context.Execute("play.stop").Success);
+	CHECK_FALSE(context.IsPaused()); // Stopping clears the pause.
+	context.SetPaused(true);
+	CHECK_FALSE(context.IsPaused()); // Pausing outside play mode is ignored.
+	REQUIRE(context.Execute("play.start").Success);
+	CHECK_FALSE(context.IsPaused());
+	context.Execute("play.stop");
+}
+
+TEST_CASE("BuiltinCommands: TickRuntime runs scripts unless paused")
+{
+	EditorContext context;
+	Ref<ScriptAsset> script = ScriptAsset::Create("Counter.lua", "local S = {} function S:OnUpdate() Ticks = (Ticks or 0) + 1 end return S");
+	script->Handle = AssetHandle(9001);
+	context.GetAssets().AddMemoryAsset(script);
+	CreateEntity(context, {{"components", {{"Script", {{"Script", "9001"}}}}}});
+
+	REQUIRE(context.Execute("play.start", {{"paused", true}}).Success);
+	context.TickRuntime(Timestep(0.1f));
+	context.TickRuntime(Timestep(0.1f));
+	CHECK(context.Execute("script.eval", {{"code", "Ticks"}}).Result["result"] == "nil");
+	context.Execute("play.step");
+	context.Execute("play.resume");
+	context.TickRuntime(Timestep(0.1f));
+	CHECK(context.Execute("script.eval", {{"code", "Ticks"}}).Result["result"] == "2");
+	context.Execute("play.stop");
 }

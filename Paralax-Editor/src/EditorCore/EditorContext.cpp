@@ -2,6 +2,7 @@
 
 #include <Paralax/Scene/Entity.h>
 #include <Paralax/Scene/SceneSerializer.h>
+#include <Paralax/Scripting/ScriptSystem.h>
 
 #include <algorithm>
 #include <cctype>
@@ -16,6 +17,8 @@ namespace Paralax::Editor {
 		, m_EditorScene(CreateRef<Scene>("Untitled"))
 	{
 		RegisterBuiltinCommands(m_Commands);
+		RegisterScriptingCommands(m_Commands);
+		RegisterProjectCommands(m_Commands);
 	}
 
 	EditorContext::~EditorContext() = default;
@@ -185,14 +188,16 @@ namespace Paralax::Editor {
 		std::erase_if(m_Selection, [&](UUID id) { return !scene.TryGetEntityByUUID(id).has_value(); });
 	}
 
-	bool EditorContext::StartPlaying()
+	bool EditorContext::StartPlaying(bool paused)
 	{
 		if (m_RuntimeScene)
 			return false;
 		// An interactive edit belongs to the scene it started in; later writes must not join it across the switch.
 		CommitInteractiveEdit();
 		m_RuntimeScene = Scene::Copy(*m_EditorScene);
+		m_RuntimeScene->AddSystem(CreateScope<ScriptSystem>(GetAssets()));
 		m_RuntimeScene->OnRuntimeStart();
+		m_Paused = paused;
 		return true;
 	}
 
@@ -201,6 +206,7 @@ namespace Paralax::Editor {
 		if (!m_RuntimeScene)
 			return false;
 		CommitInteractiveEdit();
+		m_Paused = false;
 		m_RuntimeScene->OnRuntimeStop();
 		m_RuntimeScene = nullptr;
 		PruneSelection();
@@ -211,6 +217,12 @@ namespace Paralax::Editor {
 	{
 		if (m_RuntimeScene)
 			m_RuntimeScene->OnUpdateRuntime(ts);
+	}
+
+	void EditorContext::TickRuntime(Timestep ts)
+	{
+		if (!m_Paused)
+			UpdateRuntime(ts);
 	}
 
 	std::string EditorContext::SnapshotScene()

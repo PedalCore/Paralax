@@ -8,6 +8,7 @@
 #include <Paralax/Core/UUID.h>
 #include <Paralax/Project/Project.h>
 #include <Paralax/Scene/Scene.h>
+#include <Paralax/Scripting/ScriptSystem.h>
 
 #include <nlohmann/json.hpp>
 
@@ -71,11 +72,21 @@ namespace Paralax::Editor {
 
 		// --- Play mode ---
 		bool IsPlaying() const { return m_RuntimeScene != nullptr; }
-		// Copies the editor scene and starts simulating the copy. Returns false if already playing.
-		bool StartPlaying();
+		// Copies the editor scene and starts simulating the copy (with scripting). Returns false if already playing.
+		// A paused session only advances through explicit steps (play.step), which keeps agent-driven runs
+		// deterministic.
+		bool StartPlaying(bool paused = false);
 		// Discards the running copy and returns to editing. Returns false if not playing.
 		bool StopPlaying();
+		// Advances the running scene by one step (ignores the pause state; used by play.step).
 		void UpdateRuntime(Timestep ts);
+		// Advances the running scene from the editor's frame loop: does nothing while paused.
+		void TickRuntime(Timestep ts);
+		bool IsPaused() const { return m_Paused; }
+		// Pausing outside play mode is ignored.
+		void SetPaused(bool paused) { m_Paused = paused && IsPlaying(); }
+		// The running scene's script system, or nullptr when not playing.
+		ScriptSystem* GetScriptSystem() const { return m_RuntimeScene ? m_RuntimeScene->GetSystem<ScriptSystem>() : nullptr; }
 
 		// --- Undo (scene snapshots) ---
 		// Brackets a scene change. Nested pairs are merged into the outermost; every Begin must be matched by an End.
@@ -142,6 +153,7 @@ namespace Paralax::Editor {
 		AssetManager m_ScratchAssets;
 		Ref<Scene> m_EditorScene;
 		Ref<Scene> m_RuntimeScene;
+		bool m_Paused = false;
 		std::filesystem::path m_ScenePath;
 		bool m_SceneDirty = false;
 
@@ -162,5 +174,9 @@ namespace Paralax::Editor {
 
 	// Registers the built-in editor commands (scene, entity, component, asset, selection, undo, play, render).
 	void RegisterBuiltinCommands(CommandRegistry& registry);
+	// Registers the script and prefab commands (script.create/eval/errors, prefab.create/instantiate).
+	void RegisterScriptingCommands(CommandRegistry& registry);
+	// Registers the project commands (project.info, project.set_start_scene).
+	void RegisterProjectCommands(CommandRegistry& registry);
 
 }

@@ -296,9 +296,24 @@ namespace Paralax::Editor {
 						   }});
 
 		// --- Play mode -------------------------------------------------------------------------------
-		registry.Register({"play.start", "Starts play mode on a copy of the scene.", {}, false, [](EditorContext& context, const json&) {
-							   if (!context.StartPlaying())
+		registry.Register({"play.start", "Starts play mode on a copy of the scene. With paused, the game only advances through play.step (deterministic).", {{"paused", "boolean", "Start paused (default false).", false}}, false, [](EditorContext& context, const json& params) {
+							   const bool paused = params.contains("paused") && params["paused"].get<bool>();
+							   if (!context.StartPlaying(paused))
 								   return CommandResult::Fail("Already playing");
+							   return CommandResult::Ok({{"paused", paused}});
+						   }});
+
+		registry.Register({"play.pause", "Pauses the running game: it then only advances through play.step.", {}, false, [](EditorContext& context, const json&) {
+							   if (!context.IsPlaying())
+								   return CommandResult::Fail("Not playing");
+							   context.SetPaused(true);
+							   return CommandResult::Ok();
+						   }});
+
+		registry.Register({"play.resume", "Resumes a paused game (it advances with the editor's frames again).", {}, false, [](EditorContext& context, const json&) {
+							   if (!context.IsPlaying())
+								   return CommandResult::Fail("Not playing");
+							   context.SetPaused(false);
 							   return CommandResult::Ok();
 						   }});
 

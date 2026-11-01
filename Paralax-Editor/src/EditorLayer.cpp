@@ -253,7 +253,7 @@ namespace Paralax::Editor {
 		m_FrameTime = ts.GetMilliseconds();
 		m_Camera.OnUpdate(ts, m_ViewportHovered);
 		if (m_Context.IsPlaying())
-			m_Context.UpdateRuntime(ts);
+			m_Context.TickRuntime(ts);
 	}
 
 	void EditorLayer::OnRender()
@@ -595,6 +595,19 @@ namespace Paralax::Editor {
 		if (ImGui::Button(label))
 			m_Context.Execute(playing ? "play.stop" : "play.start");
 		ImGui::PopStyleColor();
+		if (playing)
+		{
+			ImGui::SameLine();
+			const bool paused = m_Context.IsPaused();
+			if (ImGui::Button(paused ? "Resume" : "Pause"))
+				m_Context.Execute(paused ? "play.resume" : "play.pause");
+			ImGui::SameLine();
+			ImGui::BeginDisabled(!paused);
+			if (ImGui::Button("Step"))
+				m_Context.Execute("play.step");
+			ImGui::EndDisabled();
+			ImGui::SetItemTooltip("Advance one fixed step (1/60 s) while paused");
+		}
 	}
 
 	void EditorLayer::DrawViewport()
@@ -687,7 +700,7 @@ namespace Paralax::Editor {
 
 		// Overlay: frame time and play state.
 		ImDrawList* drawList = ImGui::GetWindowDrawList();
-		const std::string overlay = fmt::format("{:.2f} ms{}", m_FrameTime, m_Context.IsPlaying() ? "   PLAYING" : "");
+		const std::string overlay = fmt::format("{:.2f} ms{}", m_FrameTime, m_Context.IsPlaying() ? (m_Context.IsPaused() ? "   PAUSED" : "   PLAYING") : "");
 		drawList->AddText(ImVec2(imageOrigin.x + 10.0f, imageOrigin.y + 8.0f), IM_COL32(230, 235, 240, 200), overlay.c_str());
 
 		ImGui::End();

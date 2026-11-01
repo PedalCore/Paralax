@@ -177,6 +177,60 @@ if(imgui_ADDED AND NOT TARGET imgui)
 	set_target_properties(imgui PROPERTIES FOLDER "Dependencies")
 endif()
 
+# --- Lua (scripting language) --------------------------------------------------------------------
+# Lua's repository has no CMake build; the library is built here from its C sources. It is compiled as C++
+# so a Lua error raised inside a C++ binding unwinds with destructors run (luai_throw uses C++ exceptions),
+# instead of longjmp-ing over C++ frames.
+CPMAddPackage(
+	NAME lua
+	GITHUB_REPOSITORY lua/lua
+	GIT_TAG v5.4.9
+	DOWNLOAD_ONLY YES)
+if(lua_ADDED AND NOT TARGET lua)
+	set(PX_LUA_SOURCES
+		lapi.c lauxlib.c lbaselib.c lcode.c lcorolib.c lctype.c ldblib.c ldebug.c ldo.c ldump.c lfunc.c lgc.c
+		linit.c liolib.c llex.c lmathlib.c lmem.c loadlib.c lobject.c lopcodes.c loslib.c lparser.c lstate.c
+		lstring.c lstrlib.c ltable.c ltablib.c ltm.c lundump.c lutf8lib.c lvm.c lzio.c)
+	list(TRANSFORM PX_LUA_SOURCES PREPEND "${lua_SOURCE_DIR}/")
+	set_source_files_properties(${PX_LUA_SOURCES} PROPERTIES LANGUAGE CXX)
+	add_library(lua STATIC ${PX_LUA_SOURCES})
+	add_library(lua::lua ALIAS lua)
+	target_include_directories(lua SYSTEM PUBLIC "${lua_SOURCE_DIR}")
+	# Lua's sources are C written to also compile as C++; their warnings are not ours to fix.
+	if(MSVC)
+		target_compile_options(lua PRIVATE /w /TP)
+	else()
+		target_compile_options(lua PRIVATE -w -x c++)
+	endif()
+	# POSIX APIs (e.g. mkstemp instead of the deprecated tmpnam); dynamic library loading stays disabled.
+	if(UNIX)
+		target_compile_definitions(lua PRIVATE LUA_USE_POSIX)
+	endif()
+	# Deterministic string hashing (pairs order), see cmake/LuaDeterminism.h.
+	if(MSVC)
+		target_compile_options(lua PRIVATE "/FI${CMAKE_CURRENT_LIST_DIR}/LuaDeterminism.h")
+	else()
+		target_compile_options(lua PRIVATE -include "${CMAKE_CURRENT_LIST_DIR}/LuaDeterminism.h")
+	endif()
+	set_target_properties(lua PROPERTIES FOLDER "Dependencies" LINKER_LANGUAGE CXX)
+endif()
+
+# --- sol2 (C++ bindings for Lua, header-only) ---------------------------------------------------
+CPMAddPackage(
+	NAME sol2
+	GITHUB_REPOSITORY ThePhD/sol2
+	GIT_TAG v3.5.0
+	DOWNLOAD_ONLY YES)
+if(sol2_ADDED AND NOT TARGET sol2)
+	add_library(sol2 INTERFACE)
+	add_library(sol2::sol2 ALIAS sol2)
+	target_include_directories(sol2 SYSTEM INTERFACE "${sol2_SOURCE_DIR}/include")
+	# Lua is built as C++ (see above); sol2 must know so it does not wrap the headers in extern "C".
+	# Errors raised in bindings become Lua errors that the engine reports; sol2 need not also print them.
+	target_compile_definitions(sol2 INTERFACE SOL_USING_CXX_LUA=1 SOL_ALL_SAFETIES_ON=1 SOL_PRINT_ERRORS=0)
+	target_link_libraries(sol2 INTERFACE lua::lua)
+endif()
+
 # --- Inter (UI font, SIL Open Font License) ------------------------------------------------------
 CPMAddPackage(
 	NAME InterFont

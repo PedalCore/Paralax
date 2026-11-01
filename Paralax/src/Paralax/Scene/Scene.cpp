@@ -5,6 +5,7 @@
 #include "Paralax/Scene/Entity.h"
 
 #include <algorithm>
+#include <unordered_set>
 
 namespace Paralax {
 
@@ -35,7 +36,13 @@ namespace Paralax {
 	{
 	}
 
-	Scene::~Scene() = default;
+	Scene::~Scene()
+	{
+		// Systems reference the scene (and scripts may still try to reach it while they shut down): stop and release
+		// them while every member is still intact.
+		OnRuntimeStop();
+		m_Systems.clear();
+	}
 
 	Ref<Scene> Scene::Copy(const Scene& source)
 	{
@@ -93,12 +100,60 @@ namespace Paralax {
 		}
 
 		DestroyEntityImmediate(entity.GetHandle());
+		// Systems' destruction callbacks may have requested more destruction (deferred while they ran).
+		FlushPendingDestruction();
+	}
+
+	void Scene::NotifySystemsOfDestruction(entt::entity root)
+	{
+		// Callbacks run with destruction deferred, but may still reparent entities: one moved into the dying subtree
+		// is notified in a further pass (loop until stable); one moved out survives (its systems were notified).
+		UpdateScope scope(m_UpdateDepth);
+		std::unordered_set<uint64_t> notified;
+		for (;;)
+		{
+			// Pre-order (parents before children), skipping entities already notified.
+			std::vector<UUID> pending;
+			std::vector<entt::entity> stack = {root};
+			while (!stack.empty())
+			{
+				const entt::entity current = stack.back();
+				stack.pop_back();
+				const UUID id = m_Registry.get<IDComponent>(current).ID;
+				if (!notified.contains(id))
+					pending.push_back(id);
+				const std::vector<UUID>& children = m_Registry.get<RelationshipComponent>(current).Children;
+				for (auto it = children.rbegin(); it != children.rend(); ++it)
+				{
+					if (auto child = m_EntityMap.find(*it); child != m_EntityMap.end())
+						stack.push_back(child->second);
+				}
+			}
+			if (pending.empty())
+				return;
+			for (UUID uuid : pending)
+			{
+				notified.insert(uuid);
+				for (const Scope<SceneSystem>& system : m_Systems)
+				{
+					if (auto it = m_EntityMap.find(uuid); it != m_EntityMap.end())
+						system->OnEntityDestroying(*this, Entity(it->second, this));
+				}
+			}
+		}
 	}
 
 	void Scene::DestroyEntityImmediate(entt::entity handle)
 	{
 		if (!m_Registry.valid(handle))
 			return;
+		if (m_IsRunning && !m_Systems.empty())
+		{
+			NotifySystemsOfDestruction(handle);
+			// Callbacks cannot destroy this subtree (their destruction is deferred), but check anyway.
+			if (!m_Registry.valid(handle))
+				return;
+		}
 
 		// Detach the subtree root from its parent, then destroy the whole subtree iteratively (deep hierarchies
 		// must not overflow the stack).
@@ -139,7 +194,7 @@ namespace Paralax {
 	{
 		PX_CORE_VERIFY(IsValid(entity), "Cannot duplicate an invalid entity");
 		const UUID parent = entity.GetComponent<RelationshipComponent>().Parent;
-		Entity copy = DuplicateRecursive(entity, parent);
+		Entity copy = CopySubtree(*this, entity.GetHandle(), parent);
 
 		// Place the copy right after the original among its siblings.
 		std::vector<UUID>& siblings = GetSiblingList(parent);
@@ -149,11 +204,12 @@ namespace Paralax {
 		return copy;
 	}
 
-	Entity Scene::DuplicateRecursive(Entity source, UUID newParent)
+	Entity Scene::CopySubtree(Scene& source, entt::entity sourceRoot, UUID newParent)
 	{
 		// Iterative pre-order copy: (source entity, parent UUID of its copy).
+		const entt::registry& sourceRegistry = source.m_Registry;
 		Entity rootCopy;
-		std::vector<std::pair<entt::entity, UUID>> stack = {{source.GetHandle(), newParent}};
+		std::vector<std::pair<entt::entity, UUID>> stack = {{sourceRoot, newParent}};
 		while (!stack.empty())
 		{
 			const auto [sourceHandle, parent] = stack.back();
@@ -162,8 +218,8 @@ namespace Paralax {
 			Entity copy = CreateEntity();
 			for (const ComponentInfo& info : ComponentRegistry::GetAll())
 			{
-				if (info.Has(m_Registry, sourceHandle))
-					info.Copy(m_Registry, sourceHandle, m_Registry, copy.GetHandle());
+				if (info.Has(sourceRegistry, sourceHandle))
+					info.Copy(sourceRegistry, sourceHandle, m_Registry, copy.GetHandle());
 			}
 			if (parent.IsValid())
 			{
@@ -175,11 +231,24 @@ namespace Paralax {
 				rootCopy = copy;
 
 			// Push children in reverse so they are copied (and appended) in their original order.
-			const std::vector<UUID>& children = m_Registry.get<RelationshipComponent>(sourceHandle).Children;
+			const std::vector<UUID>& children = sourceRegistry.get<RelationshipComponent>(sourceHandle).Children;
 			for (auto it = children.rbegin(); it != children.rend(); ++it)
-				stack.emplace_back(m_EntityMap.at(*it), copy.GetUUID());
+				stack.emplace_back(source.m_EntityMap.at(*it), copy.GetUUID());
 		}
 		return rootCopy;
+	}
+
+	Entity Scene::CopySubtreeFrom(Scene& source, Entity sourceRoot)
+	{
+		PX_CORE_VERIFY(source.IsValid(sourceRoot), "CopySubtreeFrom needs a valid source entity");
+		return CopySubtree(source, sourceRoot.GetHandle(), UUID(0));
+	}
+
+	Entity Scene::CopySubtreeFrom(Scene& source, Entity sourceRoot, Entity parent)
+	{
+		PX_CORE_VERIFY(source.IsValid(sourceRoot), "CopySubtreeFrom needs a valid source entity");
+		PX_CORE_VERIFY(IsValid(parent), "CopySubtreeFrom: the parent is not an entity of this scene");
+		return CopySubtree(source, sourceRoot.GetHandle(), parent.GetUUID());
 	}
 
 	Entity Scene::GetEntityByUUID(UUID uuid)
@@ -376,21 +445,51 @@ namespace Paralax {
 		return result;
 	}
 
+	SceneSystem* Scene::AddSystem(Scope<SceneSystem> system)
+	{
+		PX_CORE_VERIFY(system != nullptr, "AddSystem needs a system");
+		PX_CORE_VERIFY(!m_IsRunning, "Systems must be added before the scene starts running");
+		return m_Systems.emplace_back(std::move(system)).get();
+	}
+
 	void Scene::OnRuntimeStart()
 	{
+		if (m_IsRunning)
+			return;
 		m_IsRunning = true;
+		{
+			UpdateScope scope(m_UpdateDepth);
+			for (const Scope<SceneSystem>& system : m_Systems)
+				system->OnRuntimeStart(*this);
+		}
+		if (m_UpdateDepth == 0)
+			FlushPendingDestruction();
 	}
 
 	void Scene::OnRuntimeStop()
 	{
-		m_IsRunning = false;
-	}
-
-	void Scene::OnUpdateRuntime([[maybe_unused]] Timestep ts)
-	{
+		if (!m_IsRunning)
+			return;
 		{
 			UpdateScope scope(m_UpdateDepth);
-			// Systems (scripting, physics, audio) are invoked here as they are added.
+			// Reverse order: later systems may depend on earlier ones.
+			for (auto it = m_Systems.rbegin(); it != m_Systems.rend(); ++it)
+				(*it)->OnRuntimeStop(*this);
+		}
+		// Entities destroyed during shutdown are removed without further callbacks.
+		m_IsRunning = false;
+		if (m_UpdateDepth == 0)
+			FlushPendingDestruction();
+	}
+
+	void Scene::OnUpdateRuntime(Timestep ts)
+	{
+		if (!m_IsRunning)
+			return;
+		{
+			UpdateScope scope(m_UpdateDepth);
+			for (const Scope<SceneSystem>& system : m_Systems)
+				system->OnUpdate(*this, ts);
 		}
 
 		if (m_UpdateDepth == 0)

@@ -1,0 +1,77 @@
+{
+	"Entities": [
+		{
+			"Components": {
+				"Mesh": {
+					"CastShadows": true,
+					"Materials": [
+						"3932670965274169082"
+					],
+					"Mesh": "1"
+				},
+				"Tag": {
+					"Name": "Crate",
+					"Tag": ""
+				},
+				"Transform": {
+					"Rotation": [
+						0.0,
+						0.0,
+						0.0,
+						1.0
+					],
+					"Scale": [
+						1.0,
+						1.0,
+						1.0
+					],
+					"Translation": [
+						0.0,
+						0.0,
+						0.0
+					]
+				}
+			},
+			"ID": "2603251931567621968",
+			"Parent": "0"
+		},
+		{
+			"Components": {
+				"Mesh": {
+					"CastShadows": true,
+					"Materials": [],
+					"Mesh": "4"
+				},
+				"Tag": {
+					"Name": "CrateLid",
+					"Tag": ""
+				},
+				"Transform": {
+					"Rotation": [
+						0.0,
+						0.0,
+						0.0,
+						1.0
+					],
+					"Scale": [
+						0.4000000059604645,
+						0.10000000149011612,
+						0.4000000059604645
+					],
+					"Translation": [
+						0.0,
+						0.6000000238418579,
+						0.0
+					]
+				}
+			},
+			"ID": "14155712656216703656",
+			"Parent": "2603251931567621968"
+		}
+	],
+	"Name": "Prefab",
+	"Paralax": {
+		"Type": "Prefab",
+		"Version": 1
+	}
+}

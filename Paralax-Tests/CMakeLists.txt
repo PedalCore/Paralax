@@ -56,6 +56,19 @@ if(Python3_Interpreter_FOUND AND TARGET Paralax-Editor)
 		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp;PYTHONDONTWRITEBYTECODE=1")
 endif()
 
+# The feature test scene: the runtime plays it headless with validation. Its script asserts the whole scripting API
+# and fails the run (exit code 4) on any script error.
+if(TARGET Paralax-Runtime)
+	add_test(NAME "FeatureTest: the runtime plays the feature scene headless without errors"
+		COMMAND $<TARGET_FILE:Paralax-Runtime> --project "${CMAKE_CURRENT_SOURCE_DIR}/FeatureTest" --headless --frames 40
+			--fixed-timestep 0.0166667 --validation --fail-on-script-error --screenshot "${CMAKE_CURRENT_BINARY_DIR}/TestOutput/FeatureTest.png"
+		WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+	set_tests_properties("FeatureTest: the runtime plays the feature scene headless without errors" PROPERTIES
+		TIMEOUT 300
+		LABELS "smoke;gpu"
+		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp")
+endif()
+
 # Windowed tests: native windows and real swapchains. They need a display, so they are registered as one CTest
 # test run under xvfb-run where available (Linux).
 add_executable(Paralax-WindowedTests

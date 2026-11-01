@@ -1,0 +1,472 @@
+{
+	"Entities": [
+		{
+			"Components": {
+				"Camera": {
+					"FieldOfView": 1.0471975803375244,
+					"OrthographicFar": 100.0,
+					"OrthographicNear": -100.0,
+					"OrthographicSize": 10.0,
+					"PerspectiveFar": 1000.0,
+					"PerspectiveNear": 0.10000000149011612,
+					"Primary": true,
+					"Projection": "Perspective"
+				},
+				"Tag": {
+					"Name": "Camera",
+					"Tag": "Feature"
+				},
+				"Transform": {
+					"Rotation": [
+						-0.17007441818714142,
+						0.0,
+						0.0,
+						0.9854311943054199
+					],
+					"Scale": [
+						1.0,
+						1.0,
+						1.0
+					],
+					"Translation": [
+						0.0,
+						3.5,
+						9.0
+					]
+				}
+			},
+			"ID": "8606445336607011868",
+			"Parent": "0"
+		},
+		{
+			"Components": {
+				"DirectionalLight": {
+					"CastShadows": true,
+					"Color": [
+						1.0,
+						1.0,
+						1.0
+					],
+					"Intensity": 3.0
+				},
+				"Tag": {
+					"Name": "Sun",
+					"Tag": "Feature"
+				},
+				"Transform": {
+					"Rotation": [
+						-0.40158942341804504,
+						0.3011920750141144,
+						0.14055629074573517,
+						0.8533775210380554
+					],
+					"Scale": [
+						1.0,
+						1.0,
+						1.0
+					],
+					"Translation": [
+						0.0,
+						0.0,
+						0.0
+					]
+				}
+			},
+			"ID": "16665939397074168592",
+			"Parent": "0"
+		},
+		{
+			"Components": {
+				"SkyLight": {
+					"Environment": "0",
+					"Intensity": 1.0,
+					"Rotation": 0.0,
+					"ShowBackground": true
+				},
+				"Tag": {
+					"Name": "Sky",
+					"Tag": "Feature"
+				},
+				"Transform": {
+					"Rotation": [
+						0.0,
+						0.0,
+						0.0,
+						1.0
+					],
+					"Scale": [
+						1.0,
+						1.0,
+						1.0
+					],
+					"Translation": [
+						0.0,
+						0.0,
+						0.0
+					]
+				}
+			},
+			"ID": "2306307535083339072",
+			"Parent": "0"
+		},
+		{
+			"Components": {
+				"Mesh": {
+					"CastShadows": true,
+					"Materials": [
+						"17"
+					],
+					"Mesh": "3"
+				},
+				"Tag": {
+					"Name": "Ground",
+					"Tag": "Feature"
+				},
+				"Transform": {
+					"Rotation": [
+						0.0,
+						0.0,
+						0.0,
+						1.0
+					],
+					"Scale": [
+						1.0,
+						1.0,
+						1.0
+					],
+					"Translation": [
+						0.0,
+						0.0,
+						0.0
+					]
+				}
+			},
+			"ID": "15499027076018514355",
+			"Parent": "0"
+		},
+		{
+			"Components": {
+				"Mesh": {
+					"CastShadows": true,
+					"Materials": [
+						"3932670965274169082"
+					],
+					"Mesh": "1"
+				},
+				"Script": {
+					"Script": "1810897246756262009"
+				},
+				"Tag": {
+					"Name": "Spinner",
+					"Tag": "Feature"
+				},
+				"Transform": {
+					"Rotation": [
+						0.0,
+						0.0,
+						0.0,
+						1.0
+					],
+					"Scale": [
+						1.0,
+						1.0,
+						1.0
+					],
+					"Translation": [
+						0.0,
+						0.75,
+						0.0
+					]
+				}
+			},
+			"ID": "6723161808237894727",
+			"Parent": "0"
+		},
+		{
+			"Components": {
+				"PointLight": {
+					"CastShadows": false,
+					"Color": [
+						1.0,
+						0.550000011920929,
+						0.25
+					],
+					"Intensity": 20.0,
+					"Range": 6.0
+				},
+				"Tag": {
+					"Name": "Lamp",
+					"Tag": "Feature"
+				},
+				"Transform": {
+					"Rotation": [
+						0.0,
+						0.0,
+						0.0,
+						1.0
+					],
+					"Scale": [
+						1.0,
+						1.0,
+						1.0
+					],
+					"Translation": [
+						0.0,
+						1.5,
+						0.0
+					]
+				}
+			},
+			"ID": "7627663425672763314",
+			"Parent": "6723161808237894727"
+		},
+		{
+			"Components": {
+				"SpotLight": {
+					"CastShadows": false,
+					"Color": [
+						1.0,
+						1.0,
+						1.0
+					],
+					"InnerConeAngle": 0.3490658402442932,
+					"Intensity": 40.0,
+					"OuterConeAngle": 0.5235987901687622,
+					"Range": 12.0
+				},
+				"Tag": {
+					"Name": "Spot",
+					"Tag": "Feature"
+				},
+				"Transform": {
+					"Rotation": [
+						-0.5000110268592834,
+						0.0,
+						0.0,
+						0.866019070148468
+					],
+					"Scale": [
+						1.0,
+						1.0,
+						1.0
+					],
+					"Translation": [
+						-3.0,
+						4.0,
+						2.0
+					]
+				}
+			},
+			"ID": "5507311486070712591",
+			"Parent": "0"
+		},
+		{
+			"Components": {
+				"Mesh": {
+					"CastShadows": true,
+					"Materials": [],
+					"Mesh": "2"
+				},
+				"Tag": {
+					"Name": "Sphere",
+					"Tag": "Feature"
+				},
+				"Transform": {
+					"Rotation": [
+						0.0,
+						0.0,
+						0.0,
+						1.0
+					],
+					"Scale": [
+						1.0,
+						1.0,
+						1.0
+					],
+					"Translation": [
+						-2.200000047683716,
+						0.5,
+						0.5
+					]
+				}
+			},
+			"ID": "3474415517222316099",
+			"Parent": "0"
+		},
+		{
+			"Components": {
+				"Mesh": {
+					"CastShadows": true,
+					"Materials": [
+						"16"
+					],
+					"Mesh": "4"
+				},
+				"Tag": {
+					"Name": "Cylinder",
+					"Tag": "Feature"
+				},
+				"Transform": {
+					"Rotation": [
+						0.0,
+						0.0,
+						0.0,
+						1.0
+					],
+					"Scale": [
+						1.0,
+						1.0,
+						1.0
+					],
+					"Translation": [
+						2.200000047683716,
+						0.5,
+						0.5
+					]
+				}
+			},
+			"ID": "12730546527839889184",
+			"Parent": "0"
+		},
+		{
+			"Components": {
+				"Mesh": {
+					"CastShadows": false,
+					"Materials": [],
+					"Mesh": "5"
+				},
+				"Tag": {
+					"Name": "Capsule",
+					"Tag": "Feature"
+				},
+				"Transform": {
+					"Rotation": [
+						0.0,
+						0.0,
+						0.0,
+						1.0
+					],
+					"Scale": [
+						1.0,
+						1.0,
+						1.0
+					],
+					"Translation": [
+						0.0,
+						1.0,
+						-2.5
+					]
+				}
+			},
+			"ID": "101170722357248619",
+			"Parent": "0"
+		},
+		{
+			"Components": {
+				"Mesh": {
+					"CastShadows": true,
+					"Materials": [
+						"3932670965274169082"
+					],
+					"Mesh": "1"
+				},
+				"PrefabInstance": {
+					"Prefab": "7785200409914527743"
+				},
+				"Tag": {
+					"Name": "Crate",
+					"Tag": "Feature"
+				},
+				"Transform": {
+					"Rotation": [
+						0.0,
+						0.0,
+						0.0,
+						1.0
+					],
+					"Scale": [
+						1.0,
+						1.0,
+						1.0
+					],
+					"Translation": [
+						3.5,
+						0.5,
+						-1.5
+					]
+				}
+			},
+			"ID": "16962131847770144930",
+			"Parent": "0"
+		},
+		{
+			"Components": {
+				"Mesh": {
+					"CastShadows": true,
+					"Materials": [],
+					"Mesh": "4"
+				},
+				"Tag": {
+					"Name": "CrateLid",
+					"Tag": ""
+				},
+				"Transform": {
+					"Rotation": [
+						0.0,
+						0.0,
+						0.0,
+						1.0
+					],
+					"Scale": [
+						0.4000000059604645,
+						0.10000000149011612,
+						0.4000000059604645
+					],
+					"Translation": [
+						0.0,
+						0.6000000238418579,
+						0.0
+					]
+				}
+			},
+			"ID": "9265819031401943411",
+			"Parent": "16962131847770144930"
+		},
+		{
+			"Components": {
+				"Script": {
+					"Script": "3971389405029288696"
+				},
+				"Tag": {
+					"Name": "FeatureTest",
+					"Tag": "Feature"
+				},
+				"Transform": {
+					"Rotation": [
+						0.0,
+						0.0,
+						0.0,
+						1.0
+					],
+					"Scale": [
+						1.0,
+						1.0,
+						1.0
+					],
+					"Translation": [
+						0.0,
+						0.0,
+						0.0
+					]
+				}
+			},
+			"ID": "17164984646514566294",
+			"Parent": "0"
+		}
+	],
+	"Name": "FeatureTest",
+	"Paralax": {
+		"Type": "Scene",
+		"Version": 1
+	}
+}

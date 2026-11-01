@@ -113,6 +113,11 @@ namespace Paralax {
 																  MakeField<&MeshComponent::CastShadows>("CastShadows"),
 															  }));
 
+			components.push_back(MakeComponent<ScriptComponent>("Script", "Runs a Lua script (OnCreate, OnUpdate, OnDestroy) while the scene is running.",
+																{
+																	MakeField<&ScriptComponent::Script>("Script", FieldOptions().Describe("Script asset (.lua) returning a table with the callbacks.")),
+																}));
+
 			components.push_back(MakeComponent<PrefabInstanceComponent>("PrefabInstance", "Marks an entity instantiated from a prefab.",
 																		{
 																			MakeField<&PrefabInstanceComponent::Prefab>("Prefab"),

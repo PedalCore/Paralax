@@ -10,7 +10,8 @@ This file is the source of truth for how work is done in this repository. Read i
 | Path | What |
 |---|---|
 | `Paralax/` | Core engine **static library** (`Paralax::Paralax`). All engine code lives here. |
-| `Paralax/src/Paralax/<Module>/` | Engine modules (`Core`, `Events`, and later `Renderer`, `Scene`, `Physics`, `Scripting`, `Audio`, `Asset`). |
+| `Paralax/src/Paralax/<Module>/` | Engine modules (`Core`, `Events`, `Renderer`, `Scene`, `Asset`, `Scripting`, `ImGui`, `Network`, `Project`, and later `Physics`, `Audio`). |
+| `docs/` | Reference documentation (e.g. `Scripting.md`, the Lua API). |
 | `Paralax/src/Platform/<Backend>/` | Platform/backend implementations (`GLFW`, later `Vulkan`). Never include these from module headers. |
 | `Paralax/src/pxpch.h` | Precompiled header. Every engine `.cpp` starts with `#include "pxpch.h"`. |
 | `Paralax/src/Paralax.h` | Public umbrella header for client code. |
@@ -66,6 +67,7 @@ cmake --preset debug && cmake --build build/debug && ctest --preset debug -j8
 
   The reflection layer is the single source for scene files, the inspector, scripting and the agent API; never hand-write per-component serialization.
 - **Hierarchy** goes through `Scene` (`SetParent`, `SetSiblingIndex`, `DestroyEntity`). Never edit `RelationshipComponent` directly. Tree walks must be iterative, because hierarchies can be very deep.
+- **Engine resources** are large built-in files, such as HDR environments, that ship beside the executables in `Resources/`: never embed them in the binary, and never commit them. Pin them in `cmake/Dependencies.cmake`, have the build copy them, and locate them with `GetEngineResourceDirectory()`. A missing resource is an error that is reported once; it is never a crash. Small files (shaders, UI fonts) are embedded with `px_embed_files`.
 - **Assets** are referenced by `AssetHandle` (UUID). Handles 1–1023 are reserved for built-ins (see `AssetManager`). Files live under the project's asset directory and are listed in `AssetRegistry.json`. glTF materials and textures are sub-assets with deterministic handles.
 - **Untrusted input.** Every loader (scene, material, registry, glTF, image) treats files as untrusted:
   - check JSON types before reading (nlohmann's `value()` throws)
@@ -75,12 +77,23 @@ cmake --preset debug && cmake --build build/debug && ctest --preset debug -j8
 
   Add a hostile-input test for each new loader.
 
+## Scripting, prefabs and runtime systems
+
+- **Runtime systems** (scripting now; physics and audio later) implement `SceneSystem` and are added to the running copy of a scene before `OnRuntimeStart`. `EditorContext::StartPlaying` and the runtime player do this. The scene calls them in order and defers destruction requested during callbacks. Never call into a system from `Scene` code directly.
+- **Lua** (5.4, built as C++ so errors unwind properly) is bound with sol2, only in `Scripting/ScriptSystem.cpp`; keep sol2 out of headers.
+  - Bindings read and write components through reflection (`ComponentRegistry::SetField`), so validation matches scene files and agents.
+  - Inside bindings, report errors with `ScriptError(...)`. It raises a Lua error, and the system catches it at the call boundary.
+- **Every new scripting API function** must be added to `docs/Scripting.md`, to the tests in `Paralax-Tests/src/Scripting/`, and to the feature test scene.
+- **Sandbox:** scripts never get file, OS, `debug`, `load` or bytecode access. Randomness comes from the seeded `math.random`, and time from `Time`, never the wall clock.
+- **Prefabs** (`.pxprefab`) are scene documents with type "Prefab" and exactly one root. Instantiate them through `PrefabAsset::Instantiate`, never by copying JSON by hand.
+
 ## Editor and agent control
 
 - **Commands.** Every editor action is a command in `EditorCore/CommandRegistry` (JSON parameters in, JSON result out), registered in `BuiltinCommands.cpp` or, for UI-owned state such as the camera and renderer settings, by `EditorLayer` while it is attached. The UI, the console, the agent server and the MCP bridge all go through `EditorContext::Execute`. A command that sets `ModifiesScene` gets an undo step and is rolled back if it fails.
 - **Undo** stores serialized scene snapshots. Rollback, undo and redo *replace* the `Scene` object, so never hold a `Scene&` or component reference across `Execute`. UI panels call `EditorContext::Defer` while drawing; `EditorLayer` runs the queue after all panels. Multi-frame UI edits (drags, typing, the gizmo) use `ApplyInteractiveEdit`/`TouchInteractiveEdit` so one interaction is one undo step.
 - **Paths from commands** are untrusted: resolve scene paths with `EditorContext::ResolveProjectPath` and output files with `ResolveOutputPath`.
 - **Agent server.** `Paralax-Editor --agent-port 0` serves JSON-RPC 2.0 on 127.0.0.1 (one request per line) and writes the port and token to `<project>/.paralax/AgentServer.json` (or `--agent-info <file>`). The first request must be `session.authenticate`. Every command is a method; `help` lists them. `editor.quit` exits.
+- **Play mode for agents:** `play.start { paused: true }`, then `play.step { frames, dt }`, keeps runs deterministic. `script.eval` inspects the running game and `script.errors` lists script failures.
 - **MCP.** `python3 tools/agent/paralax_mcp.py --launch <Paralax-Editor> -- --headless --project <dir>` (or `--info <AgentServer.json>`) exposes every command as an MCP tool; `render_capture` returns the image. The CTest smoke test drives the editor through both.
 
 ## Code style (Hazel conventions)

@@ -7,6 +7,7 @@
 #include <optional>
 #include <span>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Paralax {
@@ -69,8 +70,9 @@ namespace Paralax {
 		// All registered assets (including sub-assets), sorted by path then handle.
 		std::vector<AssetMetadata> GetRegisteredAssets() const;
 
-		// Returns the asset, loading it on first use. Returns nullptr (errors logged) if the handle is unknown or
-		// loading fails. Typed overload returns nullptr if the asset is of a different type.
+		// Returns the asset, loading it on first use. Returns nullptr if the handle is unknown or loading fails; the
+		// error is logged once per handle and the failure is remembered (no retry) until the asset is imported or
+		// reloaded or the registry is reloaded. Typed overload returns nullptr if the asset is of a different type.
 		Ref<Asset> GetAsset(AssetHandle handle);
 		template<typename T>
 		Ref<T> GetAsset(AssetHandle handle)
@@ -101,6 +103,8 @@ namespace Paralax {
 		std::filesystem::path m_AssetDirectory;
 		std::unordered_map<uint64_t, AssetMetadata> m_Registry;
 		std::unordered_map<uint64_t, Ref<Asset>> m_Loaded;
+		// Handles that are unknown or failed to load, reported once (cleared by imports, reloads and registry loads).
+		std::unordered_set<uint64_t> m_Failed;
 		// Sub-assets produced by the most recent mesh load (handle, type), used to rebuild registry entries.
 		std::vector<std::pair<AssetHandle, AssetType>> m_LastSubAssets;
 	};

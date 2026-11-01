@@ -1,0 +1,38 @@
+{
+	"Assets": [
+		{
+			"Handle": "3932670965274169082",
+			"Path": "Materials/Gold.pxmat",
+			"Type": "Material"
+		},
+		{
+			"Handle": "7785200409914527743",
+			"Path": "Prefabs/Crate.pxprefab",
+			"Type": "Prefab"
+		},
+		{
+			"Handle": "4546919829401257715",
+			"Path": "Scenes/FeatureTest.pxscene",
+			"Type": "Scene"
+		},
+		{
+			"Handle": "3971389405029288696",
+			"Path": "Scripts/FeatureTest.lua",
+			"Type": "Script"
+		},
+		{
+			"Handle": "1810897246756262009",
+			"Path": "Scripts/Spinner.lua",
+			"Type": "Script"
+		},
+		{
+			"Handle": "12832885417811214728",
+			"Path": "Scripts/Util.lua",
+			"Type": "Script"
+		}
+	],
+	"Paralax": {
+		"Type": "AssetRegistry",
+		"Version": 1
+	}
+}

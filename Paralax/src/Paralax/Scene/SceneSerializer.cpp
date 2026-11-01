@@ -4,6 +4,8 @@
 #include "Paralax/Scene/ComponentRegistry.h"
 #include "Paralax/Scene/Entity.h"
 
+#include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <unordered_map>
 #include <fstream>
@@ -86,10 +88,10 @@ namespace Paralax {
 		return true;
 	}
 
-	json SceneSerializer::Serialize(Scene& scene)
+	json SceneSerializer::Serialize(Scene& scene, std::string_view documentType)
 	{
 		json document;
-		document["Paralax"] = {{"Type", "Scene"}, {"Version", CurrentVersion}};
+		document["Paralax"] = {{"Type", documentType}, {"Version", CurrentVersion}};
 		document["Name"] = scene.GetName();
 
 		json entities = json::array();
@@ -112,7 +114,7 @@ namespace Paralax {
 		return document;
 	}
 
-	bool SceneSerializer::Deserialize(Scene& scene, const json& document, std::string& outError, std::vector<std::string>* outWarnings)
+	bool SceneSerializer::Deserialize(Scene& scene, const json& document, std::string& outError, std::vector<std::string>* outWarnings, std::string_view expectedType)
 	{
 		auto warn = [&](std::string message) {
 			if (outWarnings)
@@ -128,13 +130,16 @@ namespace Paralax {
 		if (!document.is_object())
 			return fail("Scene document must be a JSON object");
 
+		std::string kind(expectedType); // For messages: "scene", "prefab".
+		std::transform(kind.begin(), kind.end(), kind.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
 		// Type-checked access only: nlohmann's value() throws on type mismatches, and engine code must not throw.
 		const json* header = document.contains("Paralax") ? &document["Paralax"] : nullptr;
-		if (!header || !header->is_object() || !header->contains("Type") || !(*header)["Type"].is_string() || (*header)["Type"].get<std::string>() != "Scene")
-			return fail("Not a Paralax scene (missing \"Paralax\": { \"Type\": \"Scene\" })");
+		if (!header || !header->is_object() || !header->contains("Type") || !(*header)["Type"].is_string() || (*header)["Type"].get_ref<const std::string&>() != expectedType)
+			return fail(fmt::format("Not a Paralax {} (missing \"Paralax\": {{ \"Type\": \"{}\" }})", kind, expectedType));
 		const int version = header->contains("Version") && (*header)["Version"].is_number_integer() ? (*header)["Version"].get<int>() : 0;
 		if (version < 1 || version > CurrentVersion)
-			return fail(fmt::format("Unsupported scene version {} (this build reads 1-{})", version, CurrentVersion));
+			return fail(fmt::format("Unsupported {} version {} (this build reads 1-{})", kind, version, CurrentVersion));
 
 		if (document.contains("Name") && document["Name"].is_string())
 			scene.SetName(document["Name"].get<std::string>());
