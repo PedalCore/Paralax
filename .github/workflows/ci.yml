@@ -82,6 +82,9 @@ jobs:
           brew list ninja >/dev/null 2>&1 || brew install ninja
           # Best effort: MoltenVK over the runner's paravirtual GPU. GPU tests skip with a warning if unavailable.
           brew install vulkan-loader molten-vk || true
+          brew install vulkan-validationlayers
+          echo "VK_LAYER_PATH=$(brew --prefix vulkan-validationlayers)/share/vulkan/explicit_layer.d" >> "$GITHUB_ENV"
+          echo "VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT" >> "$GITHUB_ENV"
 
       - name: Cache CPM sources
         uses: actions/cache@v4
