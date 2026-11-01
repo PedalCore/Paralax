@@ -3,8 +3,10 @@
 The Paralax editor can be driven entirely by a program: an AI agent, a test, or a script. Every editor action is a
 command with JSON parameters and a JSON result. The same commands back the editor's own UI, its console, the
 JSON-RPC agent server and the MCP bridge. This page is the workflow; `help` lists every command with its parameters.
-`tools/agent/tests/agent_game_test.py` is a complete worked example: it builds a small game from nothing, playtests
-it, iterates on it and exports it.
+`tools/agent/examples/tetris/` is a complete game built this way: `build_tetris.py` creates the project, materials,
+scene and script through commands, and `tools/agent/tests/tetris_test.py` plays it with injected keys (moves,
+rotations, drops, line clears, game over and restart). `tools/agent/tests/agent_game_test.py` is a smaller example
+that also iterates on a script and exports.
 
 ## Connecting
 
