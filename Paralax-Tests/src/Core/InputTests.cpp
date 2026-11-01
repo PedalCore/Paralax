@@ -45,6 +45,13 @@ TEST_CASE_FIXTURE(InputFixture, "Input: repeat events do not create new press tr
 	Input::OnEvent(KeyPressedEvent(Key::W, true));
 	CHECK(Input::IsKeyDown(Key::W));
 	CHECK_FALSE(Input::WasKeyPressed(Key::W));
+
+	// After everything was released (focus loss), the held key's next repeat is not a new press.
+	Input::OnEvent(WindowLostFocusEvent());
+	Input::EndFrame();
+	Input::OnEvent(KeyPressedEvent(Key::W, true));
+	CHECK_FALSE(Input::IsKeyDown(Key::W));
+	CHECK_FALSE(Input::WasKeyPressed(Key::W));
 }
 
 TEST_CASE_FIXTURE(InputFixture, "Input: press and release within one frame reports both transitions")

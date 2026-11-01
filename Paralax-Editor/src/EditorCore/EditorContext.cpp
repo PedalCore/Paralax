@@ -1,8 +1,10 @@
 #include "EditorCore/EditorContext.h"
 
+#include <Paralax/Core/Input.h>
+#include <Paralax/Events/ApplicationEvent.h>
+#include <Paralax/Physics/PhysicsSystem.h>
 #include <Paralax/Scene/Entity.h>
 #include <Paralax/Scene/SceneSerializer.h>
-#include <Paralax/Physics/PhysicsSystem.h>
 #include <Paralax/Scripting/ScriptSystem.h>
 
 #include <algorithm>
@@ -20,6 +22,7 @@ namespace Paralax::Editor {
 		RegisterBuiltinCommands(m_Commands);
 		RegisterScriptingCommands(m_Commands);
 		RegisterProjectCommands(m_Commands);
+		RegisterInputCommands(m_Commands);
 	}
 
 	EditorContext::~EditorContext() = default;
@@ -203,6 +206,10 @@ namespace Paralax::Editor {
 		AudioSystemSpecification audio;
 		audio.Output = m_AudioOutput;
 		m_RuntimeScene->AddSystem(CreateScope<AudioSystem>(GetAssets(), audio));
+		// Keys held before the game started belong to the editor, not the game: release them (keeping the cursor),
+		// as when the window loses focus.
+		m_QueuedInput.clear();
+		Input::OnEvent(WindowLostFocusEvent());
 		m_RuntimeScene->OnRuntimeStart();
 		SetPaused(paused);
 		return true;
@@ -223,6 +230,12 @@ namespace Paralax::Editor {
 		m_Paused = false;
 		m_RuntimeScene->OnRuntimeStop();
 		m_RuntimeScene = nullptr;
+		// Nothing injected for the game may stay held afterwards (it would steer the editor camera).
+		m_QueuedInput.clear();
+		Input::OnEvent(WindowLostFocusEvent());
+		for (AssetHandle handle : m_DeferredReloads)
+			GetAssets().ReloadAsset(handle);
+		m_DeferredReloads.clear();
 		PruneSelection();
 		return true;
 	}
@@ -233,10 +246,50 @@ namespace Paralax::Editor {
 			m_RuntimeScene->OnUpdateRuntime(ts);
 	}
 
+	bool EditorContext::StepRuntime(int64_t frames, Timestep ts)
+	{
+		if (!m_RuntimeScene)
+			return false;
+		for (int64_t i = 0; i < frames && m_RuntimeScene; i++)
+		{
+			DeliverQueuedInput();
+			m_RuntimeScene->OnUpdateRuntime(ts);
+			Input::EndFrame();
+		}
+		return true;
+	}
+
 	void EditorContext::TickRuntime(Timestep ts)
 	{
-		if (!m_Paused)
-			UpdateRuntime(ts);
+		if (m_Paused || !m_RuntimeScene)
+			return;
+		// Seen by this update; the application clears the transitions at the end of the frame.
+		DeliverQueuedInput();
+		UpdateRuntime(ts);
+	}
+
+	bool EditorContext::QueueInput(Scope<Event> event)
+	{
+		if (!m_RuntimeScene || !event)
+			return false;
+		m_QueuedInput.push_back(std::move(event));
+		return true;
+	}
+
+	void EditorContext::DeliverQueuedInput()
+	{
+		// Through the same path as real input, so a game cannot tell the two apart.
+		for (const Scope<Event>& event : m_QueuedInput)
+			Input::OnEvent(*event);
+		m_QueuedInput.clear();
+	}
+
+	void EditorContext::ReloadAssetWhenStopped(AssetHandle handle)
+	{
+		if (!m_RuntimeScene)
+			GetAssets().ReloadAsset(handle);
+		else if (std::find(m_DeferredReloads.begin(), m_DeferredReloads.end(), handle) == m_DeferredReloads.end())
+			m_DeferredReloads.push_back(handle);
 	}
 
 	std::string EditorContext::SnapshotScene()

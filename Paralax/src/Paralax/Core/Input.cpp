@@ -110,8 +110,14 @@ namespace Paralax {
 		switch (event.GetEventType())
 		{
 			case EventType::KeyPressed:
-				SetDown(s_State.Keys, static_cast<const KeyPressedEvent&>(event).GetKeyCode());
+			{
+				// A repeat only continues a press already seen: after keys were released behind the keyboard's back
+				// (focus loss, play mode starting), a key still physically held must not turn into a new press.
+				const auto& pressed = static_cast<const KeyPressedEvent&>(event);
+				if (!pressed.IsRepeat())
+					SetDown(s_State.Keys, pressed.GetKeyCode());
 				break;
+			}
 			case EventType::KeyReleased:
 				SetUp(s_State.Keys, static_cast<const KeyReleasedEvent&>(event).GetKeyCode());
 				break;

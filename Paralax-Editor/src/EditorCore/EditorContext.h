@@ -7,6 +7,7 @@
 #include <Paralax/Core/Base.h>
 #include <Paralax/Core/Timestep.h>
 #include <Paralax/Core/UUID.h>
+#include <Paralax/Events/Event.h>
 #include <Paralax/Project/Project.h>
 #include <Paralax/Scene/Scene.h>
 #include <Paralax/Scripting/ScriptSystem.h>
@@ -84,10 +85,22 @@ namespace Paralax::Editor {
 		bool StartPlaying(bool paused = false);
 		// Discards the running copy and returns to editing. Returns false if not playing.
 		bool StopPlaying();
-		// Advances the running scene by one step (ignores the pause state; used by play.step).
+		// Advances the running scene by one step (ignores the pause state and queued input).
 		void UpdateRuntime(Timestep ts);
-		// Advances the running scene from the editor's frame loop: does nothing while paused.
+		// Advances a running game by whole frames (play.step), each one input frame: queued input (QueueInput) is
+		// delivered to the first step, which sees its presses and releases; later steps see keys as held. Real input
+		// shares the same state, and per-frame transitions are cleared after each step. Returns false if not playing.
+		bool StepRuntime(int64_t frames, Timestep ts);
+		// Advances the running scene from the editor's frame loop (delivering queued input first): does nothing while
+		// paused.
 		void TickRuntime(Timestep ts);
+		// Queues synthetic input for the running game. It is delivered at the start of its next update, so the game
+		// sees every press and release however many editor frames pass in between. Returns false if not playing.
+		bool QueueInput(Scope<Event> event);
+		size_t GetQueuedInputCount() const { return m_QueuedInput.size(); }
+		// Rewrites happen on disk at once, but a running game keeps the code it started with: the reload is deferred
+		// to the end of play mode (immediate when not playing).
+		void ReloadAssetWhenStopped(AssetHandle handle);
 		bool IsPaused() const { return m_Paused; }
 		// Pausing outside play mode is ignored.
 		// Pausing also silences the game's audio device (sounds resume where they were).
@@ -155,6 +168,7 @@ namespace Paralax::Editor {
 		void PushUndo(UndoEntry entry);
 		void TrimUndoHistory();
 		void PruneSelection();
+		void DeliverQueuedInput();
 
 	private:
 		Ref<Project> m_Project;
@@ -163,6 +177,8 @@ namespace Paralax::Editor {
 		Ref<Scene> m_RuntimeScene;
 		bool m_Paused = false;
 		AudioOutput m_AudioOutput = AudioOutput::Offline;
+		std::vector<Scope<Event>> m_QueuedInput;
+		std::vector<AssetHandle> m_DeferredReloads;
 		std::filesystem::path m_ScenePath;
 		bool m_SceneDirty = false;
 
@@ -185,7 +201,10 @@ namespace Paralax::Editor {
 	void RegisterBuiltinCommands(CommandRegistry& registry);
 	// Registers the script and prefab commands (script.create/eval/errors, prefab.create/instantiate).
 	void RegisterScriptingCommands(CommandRegistry& registry);
-	// Registers the project commands (project.info, project.set_start_scene).
+	// Registers the project commands (project.info, project.set_start_scene, project.export).
 	void RegisterProjectCommands(CommandRegistry& registry);
+	// Registers the input commands (input.key, input.mouse_button, input.mouse_move, input.scroll, input.release_all,
+	// input.state): synthetic input for playtesting.
+	void RegisterInputCommands(CommandRegistry& registry);
 
 }

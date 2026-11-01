@@ -80,6 +80,49 @@ return {name}
 			return resolved;
 		}
 
+		// An existing script file of the project, by path relative to Assets (or its handle as a string): its handle
+		// and its file (resolved and checked to lie inside the project).
+		std::optional<std::pair<AssetHandle, std::filesystem::path>> FindScript(EditorContext& context, const std::string& requested, std::string& outError)
+		{
+			if (!context.GetProject())
+			{
+				outError = "No project is open";
+				return std::nullopt;
+			}
+			AssetManager& assets = context.GetAssets();
+			AssetHandle handle = 0;
+			// Handles are written as decimal numbers; a script named like one is addressed with its extension.
+			if (uint64_t id = 0; !requested.empty() && std::from_chars(requested.data(), requested.data() + requested.size(), id).ptr == requested.data() + requested.size())
+				handle = AssetHandle(id);
+			else
+			{
+				std::filesystem::path path = requested;
+				if (path.extension() != ".lua")
+					path += ".lua";
+				std::optional<std::filesystem::path> resolved = context.ResolveProjectPath(path, outError);
+				if (!resolved)
+					return std::nullopt;
+				handle = assets.GetHandleForPath(*resolved);
+			}
+			const AssetMetadata* metadata = handle.IsValid() ? assets.GetMetadata(handle) : nullptr;
+			if (!metadata || metadata->Type != AssetType::Script || metadata->FilePath.empty())
+			{
+				outError = fmt::format("'{}' is not a script in this project", requested);
+				return std::nullopt;
+			}
+			// The registry's path goes through the same checks as one typed by an agent.
+			std::optional<std::filesystem::path> file = context.ResolveProjectPath(metadata->FilePath, outError);
+			if (!file)
+				return std::nullopt;
+			std::error_code error;
+			if (!std::filesystem::is_regular_file(*file, error))
+			{
+				outError = fmt::format("The script file '{}' is missing", metadata->FilePath.generic_string());
+				return std::nullopt;
+			}
+			return std::pair{handle, *file};
+		}
+
 		AssetHandle ResolveAsset(EditorContext& context, const json& reference)
 		{
 			if (!reference.is_string())
@@ -119,6 +162,32 @@ return {name}
 							   if (!handle.IsValid())
 								   return CommandResult::Fail("Import failed (see the log for details)");
 							   return CommandResult::Ok({{"handle", IdString(handle)}, {"path", context.GetAssets().GetMetadata(handle)->FilePath.generic_string()}});
+						   }});
+
+		registry.Register({"script.get", "Returns a script's source as it is on disk.", {{"path", "string", "Script relative to Assets (e.g. Scripts/Player.lua), or its handle.", true}}, false, [](EditorContext& context, const json& params) {
+							   std::string error;
+							   auto found = FindScript(context, params["path"].get<std::string>(), error);
+							   if (!found)
+								   return CommandResult::Fail(error);
+							   // From the file, not the asset cache: while playing, an update waits there to be reloaded.
+							   Ref<ScriptAsset> script = ScriptAsset::LoadFromFile(found->second);
+							   if (!script)
+								   return CommandResult::Fail("The script could not be read (see the log for details)");
+							   return CommandResult::Ok({{"handle", IdString(found->first)}, {"path", context.GetAssets().GetMetadata(found->first)->FilePath.generic_string()}, {"source", script->Source}});
+						   }});
+
+		registry.Register({"script.update", "Replaces an existing script's source on disk. A running game keeps the code it started with; the change applies from the next play.start (at once when not playing).", {{"path", "string", "Script relative to Assets, or its handle.", true}, {"source", "string", "The new Lua source; the chunk must return a table.", true}}, false, [](EditorContext& context, const json& params) {
+							   std::string error;
+							   auto found = FindScript(context, params["path"].get<std::string>(), error);
+							   if (!found)
+								   return CommandResult::Fail(error);
+							   const std::string source = params["source"].get<std::string>();
+							   if (source.size() > ScriptAsset::MaxSourceBytes)
+								   return CommandResult::Fail("The script is too large");
+							   if (!WriteFileAtomically(found->second, source))
+								   return CommandResult::Fail("Could not write the script file");
+							   context.ReloadAssetWhenStopped(found->first);
+							   return CommandResult::Ok({{"handle", IdString(found->first)}, {"appliesNow", !context.IsPlaying()}});
 						   }});
 
 		registry.Register({"script.eval", "Runs Lua code in the playing scene's script environment and returns the results as text (play mode only).", {{"code", "string", "Lua statement(s) or expression.", true}}, false, [](EditorContext& context, const json& params) {

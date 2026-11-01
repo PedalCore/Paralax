@@ -104,7 +104,11 @@ cmake --preset debug && cmake --build build/debug && ctest --preset debug -j8
 - **Undo** stores serialized scene snapshots. Rollback, undo and redo *replace* the `Scene` object, so never hold a `Scene&` or component reference across `Execute`. UI panels call `EditorContext::Defer` while drawing; `EditorLayer` runs the queue after all panels. Multi-frame UI edits (drags, typing, the gizmo) use `ApplyInteractiveEdit`/`TouchInteractiveEdit` so one interaction is one undo step.
 - **Paths from commands** are untrusted: resolve scene paths with `EditorContext::ResolveProjectPath` and output files with `ResolveOutputPath`.
 - **Agent server.** `Paralax-Editor --agent-port 0` serves JSON-RPC 2.0 on 127.0.0.1 (one request per line) and writes the port and token to `<project>/.paralax/AgentServer.json` (or `--agent-info <file>`). The first request must be `session.authenticate`. Every command is a method; `help` lists them. `editor.quit` exits.
-- **Play mode for agents:** `play.start { paused: true }`, then `play.step { frames, dt }`, keeps runs deterministic. `script.eval` inspects the running game and `script.errors` lists script failures.
+- **Play mode for agents:** `play.start { paused: true }`, then `play.step { frames, dt }`, keeps runs deterministic.
+  - `script.eval` inspects the running game and `script.errors` lists script failures.
+  - `input.key` / `input.mouse_button` / `input.mouse_move` / `input.scroll` inject input into the running game. Each command is queued and delivered at the game's next update, through the same path as real input, so nothing is lost between requests. Each `play.step` frame is one input frame: a press is seen as pressed once and held after.
+  - `script.get` / `script.update` read and rewrite scripts. While playing, the change waits until play stops, so a running game never mixes old and new code.
+  - `tools/agent/tests/agent_game_test.py` shows the whole loop: build a game, playtest it with injected keys, iterate, and export.
 - **Export.** `project.export { output }` (or `Paralax-Editor --project <dir> --export <dir>`) writes a standalone game folder. It contains:
   - the runtime, renamed after the project
   - `Resources/`

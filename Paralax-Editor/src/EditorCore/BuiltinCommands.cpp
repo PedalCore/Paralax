@@ -344,15 +344,14 @@ namespace Paralax::Editor {
 							   return CommandResult::Ok();
 						   }});
 
-		registry.Register({"play.step", "Advances the running scene by a number of fixed steps (deterministic).", {{"frames", "integer", "Number of steps (1-10000).", false}, {"dt", "number", "Seconds per step (default 1/60).", false}}, false, [](EditorContext& context, const json& params) {
+		registry.Register({"play.step", "Advances the running scene by a number of fixed steps (deterministic). Each step is one input frame: input injected before (input.*) is pressed or released in the first step and held after.", {{"frames", "integer", "Number of steps (1-10000).", false}, {"dt", "number", "Seconds per step (default 1/60).", false}}, false, [](EditorContext& context, const json& params) {
 							   if (!context.IsPlaying())
 								   return CommandResult::Fail("Not playing");
 							   const int64_t frames = params.value("frames", int64_t(1));
 							   const double dt = params.value("dt", 1.0 / 60.0);
 							   if (frames < 1 || frames > 10000 || !(dt > 0.0) || dt > 1.0)
 								   return CommandResult::Fail("frames must be 1-10000 and dt in (0, 1]");
-							   for (int64_t i = 0; i < frames; i++)
-								   context.UpdateRuntime(static_cast<float>(dt));
+							   context.StepRuntime(frames, static_cast<float>(dt));
 							   return CommandResult::Ok({{"frames", frames}});
 						   }});
 

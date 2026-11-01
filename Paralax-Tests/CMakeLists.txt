@@ -58,6 +58,16 @@ if(Python3_Interpreter_FOUND AND TARGET Paralax-Editor)
 		TIMEOUT 300
 		LABELS "smoke;gpu"
 		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp;PYTHONDONTWRITEBYTECODE=1")
+
+	# An agent builds a small game from nothing (scripts, physics, audio, input), plays and iterates on it, and
+	# exports it.
+	add_test(NAME "Smoke: an agent builds, playtests and exports a small game"
+		COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/agent/tests/agent_game_test.py"
+			$<TARGET_FILE:Paralax-Editor> "${CMAKE_CURRENT_BINARY_DIR}/TestOutput/AgentGame")
+	set_tests_properties("Smoke: an agent builds, playtests and exports a small game" PROPERTIES
+		TIMEOUT 600
+		LABELS "smoke;gpu"
+		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp;PYTHONDONTWRITEBYTECODE=1")
 endif()
 
 # The feature test scene: the runtime plays it headless with validation. Its script asserts the whole scripting API
