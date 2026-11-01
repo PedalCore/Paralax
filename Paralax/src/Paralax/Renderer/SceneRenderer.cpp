@@ -892,6 +892,8 @@ namespace Paralax {
 						volume = candidate;
 				}
 			}
+		if (enabledVolumes <= 1)
+			m_ReportedMultipleGIVolumes = false;
 		if (enabledVolumes > 1 && !m_ReportedMultipleGIVolumes)
 		{
 			PX_CORE_WARN("Only one GI volume is supported; using the enabled volume with the lowest UUID");

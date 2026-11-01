@@ -67,8 +67,8 @@ namespace Paralax {
 		if (count > m_Limits.MaxTextureArrayLayers)
 			return false;
 		const bool recreate = !m_Irradiance[0] || m_Irradiance[0]->getDesc().arraySize != count;
-		// Initial clears do not retain textures through binding sets. Complete those submissions before replacing
-		// a volume; geometry/history resets at the same dimensions reuse storage and require no idle wait.
+		// Pinned NVRHI Vulkan clearTexture does not retain referencedResources (unlike a bound descriptor set).
+		// Retire initial, unbound clears before releasing their textures. Same-size resets reuse storage.
 		if (recreate && m_Irradiance[0])
 			m_Device->waitForIdle();
 		nvrhi::TextureDesc desc;
@@ -82,6 +82,7 @@ namespace Paralax {
 		desc.keepInitialState = true;
 		nvrhi::TextureHandle irradiance[2] = {m_Irradiance[0], m_Irradiance[1]};
 		nvrhi::TextureHandle distance[2] = {m_Distance[0], m_Distance[1]};
+		nvrhi::BindingSetHandle bindings[2] = {m_ForwardBindings[0], m_ForwardBindings[1]};
 		for (uint32_t i = 0; i < 2; ++i)
 		{
 			desc.debugName = "ProbeIrradiance";
@@ -93,21 +94,25 @@ namespace Paralax {
 			if (!irradiance[i] || !distance[i])
 				return false;
 		}
-		nvrhi::BindingSetDesc set;
-		set.bindings = {nvrhi::BindingSetItem::ConstantBuffer(0, m_Constants), nvrhi::BindingSetItem::Texture_SRV(0, irradiance[0]),
-						nvrhi::BindingSetItem::Texture_SRV(1, distance[0])};
-		auto bindings = m_Factory.CreateBindingSet(m_Device, set, m_ForwardLayout);
-		if (!bindings)
-			return false;
+		if (recreate)
+			for (uint32_t i = 0; i < 2; ++i)
+			{
+				nvrhi::BindingSetDesc set;
+				set.bindings = {nvrhi::BindingSetItem::ConstantBuffer(0, m_Constants), nvrhi::BindingSetItem::Texture_SRV(0, irradiance[i]),
+								nvrhi::BindingSetItem::Texture_SRV(1, distance[i])};
+				bindings[i] = m_Factory.CreateBindingSet(m_Device, set, m_ForwardLayout);
+				if (!bindings[i])
+					return false;
+			}
 		for (uint32_t i = 0; i < 2; ++i)
 		{
 			m_Irradiance[i] = irradiance[i];
 			m_Distance[i] = distance[i];
+			m_ForwardBindings[i] = bindings[i];
 			commands->clearTextureFloat(m_Irradiance[i], nvrhi::AllSubresources, nvrhi::Color(0.0f));
 			commands->clearTextureFloat(m_Distance[i], nvrhi::AllSubresources, nvrhi::Color(0.0f));
 		}
 		m_Current = 0;
-		m_ForwardBindings = bindings;
 		return true;
 	}
 
@@ -153,20 +158,6 @@ namespace Paralax {
 		return true;
 	}
 
-	bool ProbeGI::BindForward()
-	{
-		if (!m_ForwardLayout)
-			return false;
-		nvrhi::BindingSetDesc set;
-		set.bindings = {nvrhi::BindingSetItem::ConstantBuffer(0, m_Constants), nvrhi::BindingSetItem::Texture_SRV(0, m_Irradiance[m_Current]),
-						nvrhi::BindingSetItem::Texture_SRV(1, m_Distance[m_Current])};
-		auto bindings = m_Factory.CreateBindingSet(m_Device, set, m_ForwardLayout);
-		if (!bindings)
-			return false;
-		m_ForwardBindings = bindings;
-		return true;
-	}
-
 	void ProbeGI::Disable(nvrhi::ICommandList* commands)
 	{
 		PX_CORE_VERIFY(m_Constants && commands, "ProbeGI::Disable requires initialization and an open command list");
@@ -178,9 +169,9 @@ namespace Paralax {
 	bool ProbeGI::Update(Scene& scene, AssetManager& assets, const ProbeGISpecification& spec, nvrhi::ICommandList* commands,
 						 nvrhi::IBuffer* viewConstants, nvrhi::IBuffer* lights, nvrhi::ITexture* environment, uint32_t lightCount)
 	{
-		PX_CORE_VERIFY(m_ForwardBindings && (!m_Supported || (m_TracePipeline && m_FilterPipeline)) && commands && viewConstants && lights && environment,
+		PX_CORE_VERIFY(GetBindings() && (!m_Supported || (m_TracePipeline && m_FilterPipeline)) && commands && viewConstants && lights,
 					   "ProbeGI::Update requires successful initialization and valid recording resources");
-		if (!m_Supported || lightCount > GPU::MaxLights)
+		if (!m_Supported || !environment || lightCount > GPU::MaxLights)
 			return false;
 		if (!std::isfinite(spec.Spacing) || spec.Spacing < 0.1f || spec.Spacing > 100.0f ||
 			!std::isfinite(spec.Origin.x) || !std::isfinite(spec.Origin.y) || !std::isfinite(spec.Origin.z) ||
@@ -204,7 +195,8 @@ namespace Paralax {
 				return false;
 			m_GPUSceneDirty = false;
 		}
-		const bool reset = changed || !m_HasHistory || spec.Counts != m_Counts || spec.Origin != m_Origin || spec.Spacing != m_Spacing;
+		const auto& sceneIdentity = m_Scene.GetSceneIdentity();
+		const bool reset = m_SceneIdentity != sceneIdentity || !m_HasHistory || spec.Counts != m_Counts || spec.Origin != m_Origin || spec.Spacing != m_Spacing;
 		if (reset)
 		{
 			if (!CreateVolumes(count, commands))
@@ -219,9 +211,10 @@ namespace Paralax {
 		const uint64_t rayBytes = uint64_t(updates) * spec.RaysPerProbe * sizeof(glm::vec4);
 		if (!m_Rays || m_Rays->getDesc().byteSize < rayBytes)
 		{
-			m_Rays = m_Factory.CreateBuffer(m_Device, nvrhi::BufferDesc().setByteSize(rayBytes).setStructStride(sizeof(glm::vec4)).setCanHaveUAVs(true).setInitialState(nvrhi::ResourceStates::UnorderedAccess).setKeepInitialState(true).setDebugName("ProbeRays"));
-			if (!m_Rays)
+			auto rays = m_Factory.CreateBuffer(m_Device, nvrhi::BufferDesc().setByteSize(rayBytes).setStructStride(sizeof(glm::vec4)).setCanHaveUAVs(true).setInitialState(nvrhi::ResourceStates::UnorderedAccess).setKeepInitialState(true).setDebugName("ProbeRays"));
+			if (!rays)
 				return false;
+			m_Rays = rays;
 		}
 		m_Parameters.Origin = glm::vec4(spec.Origin, 1.0f);
 		m_Parameters.Spacing = glm::vec4(glm::vec3(spec.Spacing), 100000.0f);
@@ -241,9 +234,19 @@ namespace Paralax {
 			nvrhi::BindingSetItem::Texture_SRV(5, environment), nvrhi::BindingSetItem::Texture_SRV(6, m_Irradiance[m_Current]),
 			nvrhi::BindingSetItem::Texture_SRV(7, m_Distance[m_Current]), nvrhi::BindingSetItem::StructuredBuffer_UAV(0, m_Rays),
 			nvrhi::BindingSetItem::Texture_UAV(1, m_Irradiance[next]), nvrhi::BindingSetItem::Texture_UAV(2, m_Distance[next])};
-		auto bindings = m_Factory.CreateBindingSet(m_Device, set, m_ComputeLayout);
-		if (!bindings)
-			return false;
+		// Slot, type and subresource ranges are fixed above. Rebuild only when a resource changes; each
+		// ping-pong direction owns a set so stable frames do not allocate Vulkan descriptor pools.
+		auto& bindings = m_ComputeBindings[m_Current];
+		bool matches = bindings && bindings->getDesc()->bindings.size() == set.bindings.size();
+		for (size_t i = 0; matches && i < set.bindings.size(); ++i)
+			matches = bindings->getDesc()->bindings[i].resourceHandle == set.bindings[i].resourceHandle;
+		if (!matches)
+		{
+			auto replacement = m_Factory.CreateBindingSet(m_Device, set, m_ComputeLayout);
+			if (!replacement)
+				return false;
+			bindings = replacement;
+		}
 		nvrhi::ComputeState state;
 		state.pipeline = m_TracePipeline;
 		state.bindings = {bindings};
@@ -256,7 +259,8 @@ namespace Paralax {
 		m_Cursor = (m_Cursor + updates) % count;
 		++m_Frame;
 		m_HasHistory = true;
-		return BindForward();
+		m_SceneIdentity = sceneIdentity;
+		return true;
 	}
 
 }

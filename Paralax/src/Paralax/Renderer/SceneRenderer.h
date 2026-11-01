@@ -6,9 +6,9 @@
 #include "Paralax/Math/AABB.h"
 #include "Paralax/Renderer/EnvironmentLighting.h"
 #include "Paralax/Renderer/GPUResourceCache.h"
-#include "Paralax/Renderer/TextRenderer.h"
 #include "Paralax/Renderer/ProbeGI.h"
 #include "Paralax/Renderer/SceneRendererTypes.h"
+#include "Paralax/Renderer/TextRenderer.h"
 
 #include <glm/glm.hpp>
 #include <nvrhi/nvrhi.h>

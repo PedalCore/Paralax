@@ -18,6 +18,12 @@
 
 namespace Paralax {
 
+	// Registry context owns renderer cache metadata for exactly one Scene lifetime. It is neither a
+	// reflected component nor copied/serialized scene data. Retained tokens prevent allocator address reuse.
+	struct ProbeTraceSceneIdentity
+	{
+	};
+
 	namespace {
 
 		bool IsFinite(const glm::vec4& value)
@@ -47,12 +53,24 @@ namespace Paralax {
 			Ref<MaterialAsset> Material;
 			glm::mat4 World;
 		};
+		// Body motion must not rebuild the static tracing scene each simulation step. Descendant meshes
+		// move with their body even when the Rigidbody lives on a separate parent entity.
+		std::unordered_set<uint64_t> movingEntities;
+		scene.ForEachEntity([&](Entity entity) {
+			const auto* body = entity.TryGetComponent<RigidbodyComponent>();
+			const auto parent = scene.GetParent(entity);
+			if ((body && body->Type != RigidbodyType::Static) || (parent && movingEntities.contains(uint64_t(parent->GetUUID()))))
+				movingEntities.insert(uint64_t(entity.GetUUID()));
+		});
 		std::vector<Entity> entities;
 		for (auto handle : scene.GetAllEntitiesWith<MeshComponent>())
 			entities.emplace_back(handle, &scene);
 		std::sort(entities.begin(), entities.end(), [](Entity a, Entity b) { return uint64_t(a.GetUUID()) < uint64_t(b.GetUUID()); });
 		std::vector<Instance> instances;
-		std::vector<uint64_t> snapshot{reinterpret_cast<uintptr_t>(&scene)};
+		auto* identity = scene.GetRegistry().ctx().find<Ref<const ProbeTraceSceneIdentity>>();
+		if (!identity)
+			identity = &scene.GetRegistry().ctx().emplace<Ref<const ProbeTraceSceneIdentity>>(CreateRef<ProbeTraceSceneIdentity>());
+		std::vector<uint64_t> snapshot{reinterpret_cast<uintptr_t>(identity->get())};
 		auto remember = [&](const Ref<Asset>& asset) {
 			snapshot.push_back(asset ? uint64_t(asset->Handle) : 0);
 			snapshot.push_back(asset ? asset->Version : 0);
@@ -60,6 +78,8 @@ namespace Paralax {
 		};
 		for (Entity entity : entities)
 		{
+			if (movingEntities.contains(uint64_t(entity.GetUUID())))
+				continue;
 			const auto& component = entity.GetComponent<MeshComponent>();
 			auto mesh = assets.GetAsset<MeshAsset>(component.Mesh);
 			if (!mesh)
@@ -234,6 +254,7 @@ namespace Paralax {
 		if (!valid)
 		{
 			m_RejectedSnapshot = std::move(snapshot);
+			m_RejectedSceneIdentity = *identity;
 			PX_CORE_ERROR("Probe GI scene rejected: {} ({} triangles, {} texels)", failure, triangles.size(), texels.size());
 			return false;
 		}
@@ -272,6 +293,8 @@ namespace Paralax {
 		if (!triangles.empty())
 			build(build, 0, static_cast<uint32_t>(triangles.size()));
 		m_Snapshot = std::move(snapshot);
+		m_SceneIdentity = *identity;
+		m_RejectedSceneIdentity.reset();
 		m_RejectedSnapshot.clear();
 		m_Nodes = std::move(nodes);
 		m_Triangles = std::move(triangles);

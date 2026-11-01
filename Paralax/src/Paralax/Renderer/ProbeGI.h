@@ -69,7 +69,7 @@ namespace Paralax {
 		// Disables sampling and discards history. Bindings remain valid for the forward pipeline.
 		void Disable(nvrhi::ICommandList* commands);
 		nvrhi::IBindingLayout* GetLayout() const { return m_ForwardLayout; }
-		nvrhi::IBindingSet* GetBindings() const { return m_ForwardBindings; }
+		nvrhi::IBindingSet* GetBindings() const { return m_ForwardBindings[m_Current]; }
 		nvrhi::ITexture* GetIrradiance() const { return m_Irradiance[m_Current]; }
 		nvrhi::ITexture* GetDistance() const { return m_Distance[m_Current]; }
 		const GPU::ProbeGIConstants& GetConstants() const { return m_Parameters; }
@@ -77,7 +77,6 @@ namespace Paralax {
 	private:
 		bool CreateVolumes(uint32_t count, nvrhi::ICommandList* commands);
 		bool UploadScene(nvrhi::ICommandList* commands);
-		bool BindForward();
 
 		nvrhi::DeviceHandle m_Device;
 		GraphicsDeviceLimits m_Limits;
@@ -90,6 +89,7 @@ namespace Paralax {
 		glm::vec3 m_Origin{0.0f};
 		float m_Spacing = 0.0f;
 		bool m_HasHistory = false;
+		Ref<const ProbeTraceSceneIdentity> m_SceneIdentity;
 		bool m_GPUSceneDirty = true;
 		uint32_t m_Current = 0;
 		uint32_t m_Cursor = 0;
@@ -98,7 +98,7 @@ namespace Paralax {
 		nvrhi::BufferHandle m_Constants, m_Nodes, m_Triangles, m_Materials, m_Texels, m_Rays;
 		nvrhi::SamplerHandle m_Sampler;
 		nvrhi::BindingLayoutHandle m_ComputeLayout, m_ForwardLayout;
-		nvrhi::BindingSetHandle m_ForwardBindings;
+		nvrhi::BindingSetHandle m_ForwardBindings[2], m_ComputeBindings[2];
 		nvrhi::ComputePipelineHandle m_TracePipeline, m_FilterPipeline;
 	};
 

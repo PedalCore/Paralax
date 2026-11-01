@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Paralax/Core/Base.h"
+
 #include <glm/glm.hpp>
 
 #include <cstdint>
@@ -9,6 +11,7 @@ namespace Paralax {
 
 	class Scene;
 	class AssetManager;
+	struct ProbeTraceSceneIdentity;
 
 	namespace GPU {
 
@@ -42,7 +45,8 @@ namespace Paralax {
 
 	// Owned CPU snapshot for portable probe tracing. Main-thread-only; includes off-screen geometry. Asset
 	// changes follow the engine Version contract. Update returns false on invalid or oversized input and never
-	// exposes a partial snapshot. Blended surfaces do not participate; alpha masks are sampled by the tracer.
+	// exposes a partial snapshot. A first snapshot may synchronously load off-screen material textures. Blended
+	// surfaces and nonstatic rigid-body hierarchies are excluded; alpha masks are sampled by the tracer.
 	class ProbeTraceScene
 	{
 	public:
@@ -52,12 +56,15 @@ namespace Paralax {
 		static constexpr float MaxMaterialValue = 1000000.0f;
 
 		bool Update(Scene& scene, AssetManager& assets, bool& changed);
+		// Opaque shared lifetime token for the accepted scene; retaining it distinguishes address reuse.
+		const Ref<const ProbeTraceSceneIdentity>& GetSceneIdentity() const { return m_SceneIdentity; }
 		const std::vector<GPU::ProbeTraceNode>& GetNodes() const { return m_Nodes; }
 		const std::vector<GPU::ProbeTraceTriangle>& GetTriangles() const { return m_Triangles; }
 		const std::vector<GPU::ProbeTraceMaterial>& GetMaterials() const { return m_Materials; }
 		const std::vector<glm::vec4>& GetTexels() const { return m_Texels; }
 
 	private:
+		Ref<const ProbeTraceSceneIdentity> m_SceneIdentity, m_RejectedSceneIdentity;
 		std::vector<uint64_t> m_Snapshot;
 		std::vector<uint64_t> m_RejectedSnapshot;
 		std::vector<GPU::ProbeTraceNode> m_Nodes;

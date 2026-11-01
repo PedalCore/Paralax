@@ -145,13 +145,17 @@ probe lighting multiplied by the surface colour; `GICoverage` shows where a volu
 Both views still use the exposure and tonemapper. Coverage does not certify probe validity or lighting quality.
 
 The first rendered frame fills the volume. Later frames update probes in a deterministic round-robin order;
-multiple diffuse bounces converge over time. Geometry/material edits, volume placement/count/spacing changes,
-scene changes and disabling GI reset history. Camera movement and viewport resizing preserve it. Simulation
+multiple diffuse bounces converge over time. Geometry/material edits upload new tracing data while preserving
+history and the update budget, so occlusion and lighting can remain stale until probes refresh. Volume
+placement/count/spacing changes, scene replacement and disabling GI reset history. Camera movement and viewport
+resizing preserve it. Simulation
 steps and rendered frames are distinct: editor rendering between agent requests can also update GI. Record
 warmup conditions when comparing captures; a count of capture requests is not an exact GI frame count.
 
-This implementation traces the whole opaque/masked scene through a portable compute BVH, including surfaces
-outside the camera view. It samples emissive, base-colour and metallic textures, shadows hit lighting, and stores
+This implementation traces opaque/masked geometry through a portable compute BVH, including surfaces outside
+the camera view. Dynamic and kinematic rigid bodies and their descendant meshes receive GI but do not occlude or
+contribute bounce lighting. Other transform animation still rebuilds the tracing scene; efficient animated
+geometry updates are future work. It samples emissive, base-colour and metallic textures, shadows hit lighting, and stores
 irradiance and directional distance moments. Diffuse material textures use existing mips up to 512 pixels per
 axis when available; alpha-cutout base textures retain full resolution. POM and normal maps remain raster shading
 detail, and blended/transmissive surfaces do not participate. Limits are 1,048,576 triangles and 16,777,216 cached

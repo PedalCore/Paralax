@@ -16,6 +16,7 @@
 #include <array>
 #include <cstring>
 #include <limits>
+#include <optional>
 
 using namespace Paralax;
 
@@ -147,6 +148,7 @@ namespace {
 		Kind FailureKind = Kind::Buffer;
 		int Remaining = -1;
 		bool Failed = false;
+		uint32_t BufferCreates = 0, TextureCreates = 0, BindingCreates = 0;
 		bool Reject(Kind kind)
 		{
 			if (kind != FailureKind || Remaining < 0)
@@ -160,14 +162,17 @@ namespace {
 		}
 		nvrhi::BufferHandle CreateBuffer(nvrhi::IDevice* device, const nvrhi::BufferDesc& desc) override
 		{
+			++BufferCreates;
 			return Reject(Kind::Buffer) ? nullptr : device->createBuffer(desc);
 		}
 		nvrhi::TextureHandle CreateTexture(nvrhi::IDevice* device, const nvrhi::TextureDesc& desc) override
 		{
+			++TextureCreates;
 			return Reject(Kind::Texture) ? nullptr : device->createTexture(desc);
 		}
 		nvrhi::BindingSetHandle CreateBindingSet(nvrhi::IDevice* device, const nvrhi::BindingSetDesc& desc, nvrhi::IBindingLayout* layout) override
 		{
+			++BindingCreates;
 			return Reject(Kind::Bindings) ? nullptr : device->createBindingSet(desc, layout);
 		}
 	};
@@ -201,6 +206,117 @@ namespace {
 		GraphicsDeviceInfo m_Info;
 	};
 
+}
+
+TEST_CASE("ProbeGI: stable updates reuse bindings and resource replacement invalidates both directions")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	FailingProbeResources factory;
+	ProbeFixture fixture(graphics.GetDevice(), &factory);
+	REQUIRE(fixture.Update(scene, assets));
+	REQUIRE(fixture.Update(scene, assets));
+	const auto buffers = factory.BufferCreates, textures = factory.TextureCreates, bindings = factory.BindingCreates;
+	for (int frame = 0; frame < 4; ++frame)
+		REQUIRE(fixture.Update(scene, assets));
+	CHECK(factory.BufferCreates == buffers);
+	CHECK(factory.TextureCreates == textures);
+	CHECK(factory.BindingCreates == bindings);
+	ProbeFixture alternate(graphics.GetDevice());
+	fixture.Sky = alternate.Sky;
+	REQUIRE(fixture.Update(scene, assets));
+	REQUIRE(fixture.Update(scene, assets));
+	CHECK(factory.BindingCreates == bindings + 2);
+	fixture.View = alternate.View;
+	fixture.Lights = alternate.Lights;
+	REQUIRE(fixture.Update(scene, assets));
+	REQUIRE(fixture.Update(scene, assets));
+	CHECK(factory.BindingCreates == bindings + 4);
+	REQUIRE(fixture.Update(scene, assets));
+	CHECK(factory.BindingCreates == bindings + 4);
+	fixture.Sky = nullptr;
+	CHECK_FALSE(fixture.Update(scene, assets));
+	CHECK(fixture.GI.GetConstants().Origin.w == 0.0f);
+	fixture.Sky = alternate.Sky;
+	REQUIRE(fixture.Update(scene, assets));
+	CHECK(fixture.GI.GetConstants().Update.w == 0);
+	graphics.WaitForIdle();
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: static geometry edits upload the scene while preserving budget and untouched history")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	Entity cube = AddCube(scene, {100.0f, 0.0f, 0.0f}, glm::vec3(1.0f));
+	cube.AddComponent<RigidbodyComponent>().Type = RigidbodyType::Static;
+	FailingProbeResources factory;
+	ProbeFixture fixture(graphics.GetDevice(), &factory);
+	fixture.Specification.ProbesPerFrame = 1;
+	fixture.Specification.Hysteresis = 0.9f;
+	REQUIRE(fixture.Update(scene, assets));
+	const auto previous = ReadProbe(fixture.Device, fixture.GI.GetIrradiance(), 7);
+	const auto previousDistance = ReadProbe(fixture.Device, fixture.GI.GetDistance(), 7);
+	const auto buffers = factory.BufferCreates, textures = factory.TextureCreates;
+	cube.GetTransform().Translation = fixture.Specification.Origin;
+	REQUIRE(fixture.Update(scene, assets));
+	CHECK(factory.BufferCreates == buffers + 4);
+	CHECK(factory.TextureCreates == textures);
+	CHECK(fixture.GI.GetConstants().Update.x == 0);
+	CHECK(fixture.GI.GetConstants().Update.y == 1);
+	CHECK(fixture.GI.GetConstants().Update.w == 1);
+	CHECK(fixture.GI.GetConstants().Tuning.z == doctest::Approx(0.9));
+	CHECK(ReadProbe(fixture.Device, fixture.GI.GetIrradiance(), 7) == previous);
+	CHECK(ReadProbe(fixture.Device, fixture.GI.GetDistance(), 7) == previousDistance);
+	// Newly uploaded geometry encloses probe zero. Classification must see it immediately even though
+	// other probes keep their old values until their scheduled update.
+	CHECK(ReadProbe(fixture.Device, fixture.GI.GetIrradiance(), 0)[27].a == 0.0f);
+	CHECK(ReadProbe(fixture.Device, fixture.GI.GetDistance(), 0)[27].a == 0.0f);
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeTraceScene: moving rigid-body hierarchies do not invalidate static geometry")
+{
+	for (auto type : {RigidbodyType::Dynamic, RigidbodyType::Kinematic})
+	{
+		CAPTURE(type);
+		AssetManager assets;
+		Scene scene;
+		AddCube(scene, {10.0f, 0.0f, 0.0f}, glm::vec3(1.0f));
+		Entity body = AddCube(scene, {}, glm::vec3(1.0f));
+		body.AddComponent<RigidbodyComponent>().Type = type;
+		Entity child = AddCube(scene, {}, glm::vec3(1.0f));
+		Entity intermediate = scene.CreateEntity("Body mesh parent");
+		REQUIRE(scene.SetParent(intermediate, body, false));
+		REQUIRE(scene.SetParent(child, intermediate, false));
+		ProbeTraceScene trace;
+		bool changed = false;
+		REQUIRE(trace.Update(scene, assets, changed));
+		CHECK(changed);
+		CHECK(trace.GetTriangles().size() == 12);
+		CHECK(trace.GetNodes().front().Minimum.x == doctest::Approx(9.5));
+		body.GetTransform().Translation.x = 20.0f;
+		child.GetTransform().Translation.y = 2.0f;
+		REQUIRE(trace.Update(scene, assets, changed));
+		CHECK_FALSE(changed);
+		CHECK(trace.GetTriangles().size() == 12);
+		body.GetComponent<RigidbodyComponent>().Type = RigidbodyType::Static;
+		REQUIRE(trace.Update(scene, assets, changed));
+		CHECK(changed);
+		CHECK(trace.GetTriangles().size() == 36);
+		body.GetComponent<RigidbodyComponent>().Type = type;
+		REQUIRE(trace.Update(scene, assets, changed));
+		CHECK(changed);
+		CHECK(trace.GetTriangles().size() == 12);
+	}
 }
 
 TEST_CASE("ProbeGI: allocation failures preserve valid bindings and retry the current scene")
@@ -251,7 +367,9 @@ TEST_CASE("ProbeGI: partial initialization allocation failures release safely")
 	const uint32_t errors = graphics.GetValidationErrorCount();
 	auto* device = graphics.GetDevice();
 	for (auto kind : {FailingProbeResources::Kind::Buffer, FailingProbeResources::Kind::Texture, FailingProbeResources::Kind::Bindings})
-		for (int allocation = 0; allocation < (kind == FailingProbeResources::Kind::Texture ? 4 : 1); ++allocation)
+		for (int allocation = 0; allocation < (kind == FailingProbeResources::Kind::Texture ? 4 : kind == FailingProbeResources::Kind::Bindings ? 2
+																																				: 1);
+			 ++allocation)
 		{
 			CAPTURE(kind);
 			CAPTURE(allocation);
@@ -339,6 +457,8 @@ TEST_CASE("ProbeGI: unsupported adapters retain forward lighting and report fail
 	assets.AddMemoryAsset(red);
 	AddCube(scene, {}, glm::vec3(1.0f), red->Handle);
 	scene.CreateEntity("GI").AddComponent<GIVolumeComponent>();
+	Entity extraVolume = scene.CreateEntity("Extra GI");
+	extraVolume.AddComponent<GIVolumeComponent>();
 	Testing::ScopedLogCapture logs;
 	{
 		SceneRenderer renderer(graphics, assets);
@@ -359,15 +479,24 @@ TEST_CASE("ProbeGI: unsupported adapters retain forward lighting and report fail
 		const auto fallback = ReadbackTexture(graphics.GetDevice(), output);
 		REQUIRE_FALSE(fallback.IsEmpty());
 		CHECK(fallback.GetPixel(16, 16).r > fallback.GetPixel(16, 16).g + 20);
+		extraVolume.GetComponent<GIVolumeComponent>().Enabled = false;
+		renderer.Render(scene, camera, framebuffer);
+		extraVolume.GetComponent<GIVolumeComponent>().Enabled = true;
+		renderer.Render(scene, camera, framebuffer);
 		renderer.GetSettings().GIEnabled = false;
 		renderer.Render(scene, camera, framebuffer);
 		CHECK(fallback.GetPixels() == ReadbackTexture(graphics.GetDevice(), output).GetPixels());
 	}
-	uint32_t failures = 0;
+	uint32_t failures = 0, volumeWarnings = 0;
 	for (const auto& entry : logs.GetEntries())
+	{
 		if (entry.Level == spdlog::level::err && entry.Message.find("Probe GI update failed") != std::string::npos)
 			++failures;
+		if (entry.Level == spdlog::level::warn && entry.Message.find("Only one GI volume") != std::string::npos)
+			++volumeWarnings;
+	}
 	CHECK(failures == 1);
+	CHECK(volumeWarnings == 2);
 	CHECK(graphics.GetValidationErrorCount() == errors);
 }
 
@@ -398,6 +527,45 @@ TEST_CASE("ProbeGI: disabled history and scene replacement cannot retain old lig
 		REQUIRE(fixture.Update(sky, assets));
 		CHECK(ReadProbe(fixture.Device, fixture.GI.GetIrradiance(), 7)[27].b == doctest::Approx(0.8).epsilon(0.001));
 	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: scene replacement at the same address resets all history even with identical geometry")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	std::optional<Scene> scene(std::in_place);
+	Entity cube = AddCube(*scene, {100.0f, 0.0f, 0.0f}, glm::vec3(1.0f));
+	const UUID cubeID = cube.GetUUID();
+	const auto transform = cube.GetTransform();
+	const auto mesh = cube.GetComponent<MeshComponent>();
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.ProbesPerFrame = 1;
+	fixture.Specification.Hysteresis = 0.99f;
+	REQUIRE(fixture.Update(*scene, assets));
+	CHECK(ReadProbe(fixture.Device, fixture.GI.GetIrradiance(), 7)[27].b > 0.0f);
+	Scene* address = &*scene;
+	scene.reset();
+	scene.emplace();
+	REQUIRE(&*scene == address);
+	cube = scene->CreateEntityWithUUID(cubeID);
+	cube.GetTransform() = transform;
+	cube.AddComponent<MeshComponent>(mesh);
+	fixture.ViewData.EnvironmentParams.x = 0.0f;
+	REQUIRE(fixture.Update(*scene, assets));
+	CHECK(fixture.GI.GetConstants().Update.w == 0);
+	CHECK(fixture.GI.GetConstants().Update.y == 8);
+	CHECK(ReadProbe(fixture.Device, fixture.GI.GetIrradiance(), 7)[27].b == 0.0f);
+	scene.reset();
+	scene.emplace();
+	Enclose(*scene);
+	fixture.ViewData.EnvironmentParams.x = 1.0f;
+	REQUIRE(fixture.Update(*scene, assets));
+	CHECK(fixture.GI.GetConstants().Update.w == 0);
+	CHECK(ReadProbe(fixture.Device, fixture.GI.GetIrradiance(), 7)[27].b == 0.0f);
 	CHECK(graphics.GetValidationErrorCount() == errors);
 }
 
@@ -600,7 +768,10 @@ TEST_CASE("ProbeGI: open sky conserves diffuse irradiance and thin enclosing wal
 			CHECK(pixel.g == doctest::Approx(0.4).epsilon(0.001));
 			CHECK(pixel.b == doctest::Approx(0.8).epsilon(0.001));
 		}
-		Enclose(scene);
+	}
+	Enclose(scene);
+	{
+		ProbeFixture fixture(graphics.GetDevice());
 		REQUIRE(fixture.Update(scene, assets));
 		for (const auto& pixel : ReadProbe(graphics.GetDevice(), fixture.GI.GetIrradiance()))
 		{
