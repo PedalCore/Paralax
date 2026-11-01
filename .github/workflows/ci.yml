@@ -138,6 +138,11 @@ jobs:
         shell: bash
         run: python3 .github/scripts/diagnose-metal.py build
 
+      - name: Probe isolated macOS Release lighting checkpoints
+        if: always() && runner.os == 'macOS' && matrix.config == 'Release'
+        shell: bash
+        run: python3 .github/scripts/diagnose-metal.py build --config Release --isolated-only
+
       - name: Headless smoke test
         shell: bash
         run: |

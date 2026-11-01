@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Compare full suites and isolated cases after clearing the ephemeral runner Metal cache."""
 
+import argparse
 import os
 from pathlib import Path
 import re
@@ -37,8 +38,13 @@ def clear_metal_cache():
 
 
 def main():
-    build = Path(sys.argv[1] if len(sys.argv) > 1 else "build").resolve()
-    candidates = [build / "bin" / "Paralax-Tests", build / "bin" / "Debug" / "Paralax-Tests"]
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("build", nargs="?", type=Path, default=Path("build"))
+    parser.add_argument("--config", choices=["Debug", "Release"], default="Debug")
+    parser.add_argument("--isolated-only", action="store_true")
+    arguments = parser.parse_args()
+    build = arguments.build.resolve()
+    candidates = [build / "bin" / "Paralax-Tests", build / "bin" / arguments.config / "Paralax-Tests"]
     if not any(path.is_file() for path in candidates):
         print("Paralax-Tests executable is missing", file=sys.stderr)
         return 1
@@ -84,14 +90,15 @@ def main():
             report.write_text(text + f"FirstObservedGPUTestOnRunner={first}\nOrderingEvidence=../../GPUOrder.txt (GPUTestContext markers)\n")
 
     capture(run / "Baseline")
-    try:
-        cache_report = clear_metal_cache()
-    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-        (run / "Cache.txt").write_text(f"Cache operation failed: {error}\n")
-        print(f"Cache operation failed: {error}", file=sys.stderr)
-        return 1
-    (run / "Cache.txt").write_text(cache_report)
-    print(cache_report.strip(), flush=True)
+    if not arguments.isolated_only:
+        try:
+            cache_report = clear_metal_cache()
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            (run / "Cache.txt").write_text(f"Cache operation failed: {error}\n")
+            print(f"Cache operation failed: {error}", file=sys.stderr)
+            return 1
+        (run / "Cache.txt").write_text(cache_report)
+        print(cache_report.strip(), flush=True)
     environment = dict(os.environ, PX_REQUIRE_GPU="1", MVK_CONFIG_LOG_LEVEL="3", VK_LOADER_DEBUG="layer", PX_TRACE_BRDF_BARRIERS="1")
     environment.pop("MVK_CONFIG_FAST_MATH_ENABLED", None)
     failed = False
@@ -100,6 +107,8 @@ def main():
               ("SilentPassThrough", "passthrough", "1"), ("DiscreteBindings", "passthrough", "0"),
               ("ArgumentBuffersAgain", "passthrough", "1"), ("DiscreteBindingsAgain", "passthrough", "0")]
     phases = [(name, trace, bindings, None) for name, trace, bindings in phases]
+    if arguments.isolated_only:
+        phases = []
     isolated = [("Normal", "SceneRenderer: BRDF LUT survives output and internal target allocation"),
                 ("BeforeRender", "SceneRenderer: BRDF LUT survives target preparation before frame recording"),
                 ("Stages", "SceneRenderer: BRDF LUT survives each target preparation stage")]
@@ -129,7 +138,7 @@ def main():
         (build / "Testing" / "Temporary" / "LastTest.log").unlink(missing_ok=True)
         # Learned costs prioritize slow/failed tests and otherwise change the baseline's scheduling order.
         (build / "Testing" / "Temporary" / "CTestCostData.txt").unlink(missing_ok=True)
-        command = ["ctest", "--test-dir", str(build), "--build-config", "Debug", "--parallel", "1" if test_case is not None else "4",
+        command = ["ctest", "--test-dir", str(build), "--build-config", arguments.config, "--parallel", "1" if test_case is not None else "4",
                    "--timeout", "300", "--no-tests=error", "--verbose", "--output-junit", str(destination / "Results.xml")]
         if test_case is not None:
             command.extend(["--tests-regex", f"^{re.escape(test_case)}$"])
