@@ -24,6 +24,14 @@ namespace Paralax {
 		virtual void OnRuntimeStart(Scene& /*scene*/) {}
 		// One simulation step. Called by Scene::OnUpdateRuntime.
 		virtual void OnUpdate(Scene& /*scene*/, Timestep /*timestep*/) {}
+		// Before each fixed simulation step (timestep is the step's length). Called by Scene::OnFixedUpdateRuntime,
+		// which the PhysicsSystem runs from its OnUpdate, so these come after the OnUpdate of the systems added before
+		// it, zero or more times per update.
+		virtual void OnFixedUpdate(Scene& /*scene*/, Timestep /*timestep*/) {}
+		// Whether OnFixedUpdate has work to do. Fixed updates make the PhysicsSystem sync the scene every step (so they
+		// see each step's result), which costs a pass over the scene per step; without any system wanting them, it
+		// syncs once per update and the calls are skipped.
+		virtual bool WantsFixedUpdate() const { return false; }
 		virtual void OnRuntimeStop(Scene& /*scene*/) {}
 
 		// Called for every entity of a subtree that is about to be destroyed while the scene is running, while the

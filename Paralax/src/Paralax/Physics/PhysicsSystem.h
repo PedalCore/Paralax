@@ -65,8 +65,12 @@ namespace Paralax {
 	// scale) change (a dynamic body keeps its velocity), and teleported when something else moves them; kinematic
 	// bodies are moved smoothly to their entity's transform during the next step. Entities whose world transform has
 	// zero scale or is not finite have no body until it is usable again. Sleeping bodies around a body that is removed
-	// or teleported are woken. The simulation advances in fixed steps, then writes the transforms of dynamic bodies back
-	// to their entities (world space, so parenting is respected). Problems with an entity are logged once.
+	// or teleported are woken; entities whose destruction is pending (Scene::IsDestructionPending) have no body. The
+	// simulation advances in fixed steps, then writes the transforms of dynamic bodies back to their entities (world
+	// space, so parenting is respected). When a system wants fixed updates (Scene::WantsFixedUpdate), each step is
+	// preceded by Scene::OnFixedUpdateRuntime and a sync of what it changed, and followed by the write-back, which costs a
+	// pass over the scene per step; otherwise the scene is synced once per update. Problems with an entity are logged
+	// once.
 	//
 	// Contacts are collected during the step and handed out by TakeContactEvents in a deterministic order (scripts
 	// receive them as OnCollisionEnter/Exit and OnTriggerEnter/Exit). Simulation is deterministic across platforms for
@@ -94,8 +98,8 @@ namespace Paralax {
 
 		// Body controls for dynamic bodies; each returns false if the entity has no dynamic body or the value is not
 		// finite. Both act at the centre of mass. A force acts for the current frame (call it every frame for a
-		// steady push): force x frame time is delivered by the next step, whatever the frame rate. An impulse changes
-		// the velocity at once.
+		// steady push): force x frame time is delivered by the next step, whatever the frame rate. Added during
+		// OnFixedUpdate, it acts for the coming step (force x step). An impulse changes the velocity at once.
 		bool AddForce(UUID entity, const glm::vec3& force);
 		bool AddImpulse(UUID entity, const glm::vec3& impulse);
 		bool SetLinearVelocity(UUID entity, const glm::vec3& velocity);

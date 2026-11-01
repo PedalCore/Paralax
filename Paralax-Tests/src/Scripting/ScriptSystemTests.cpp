@@ -860,6 +860,161 @@ TEST_CASE("ScriptSystem: scripts drive bodies through the Physics API")
 	CHECK_FALSE(fixture.System->Evaluate("Physics.AddForce(Scene.GetEntity('1'), vec3(1))", error)); // Not an entity.
 }
 
+TEST_CASE("ScriptSystem: OnFixedUpdate runs after OnUpdate, once before each physics step, with the step as dt")
+{
+	PhysicsScriptFixture fixture;
+	fixture.CreateScripted(R"(
+		local S = {}
+		function S:OnCreate() Calls = "C" end
+		function S:OnUpdate() Calls = Calls .. "U" end
+		function S:OnFixedUpdate(dt)
+			Calls = Calls .. "F"
+			FixedDt = dt
+			-- Entities created here get their instance (and OnCreate) at the next update, like those created in OnUpdate.
+			if not Spawned then
+				Spawned = true
+				Scene.CreateEntity("Spawned"):AddComponent("Script", { Script = SpawnedScript })
+			end
+		end
+		return S
+	)",
+						   "Stepper");
+	const AssetHandle spawned = fixture.AddScript(R"(
+		return { OnCreate = function() Calls = Calls .. "c" end, OnFixedUpdate = function() Calls = Calls .. "f" end }
+	)",
+												  "Spawned.lua");
+	fixture.Start();
+	fixture.Eval("SpawnedScript = '" + std::to_string(static_cast<uint64_t>(spawned)) + "'");
+	fixture.Update(1, 3.0f / 60.0f);  // Three steps.
+	fixture.Update(1, 1.0f / 120.0f); // Half a step: none.
+	fixture.Update(1, 1.0f / 120.0f); // The other half: one.
+	REQUIRE(fixture.System->GetErrors().empty());
+	CHECK(fixture.Eval("Calls") == "CUFFFcUUFf");
+	CHECK(fixture.Eval("math.abs(FixedDt - 1/60) < 1e-6") == "true");
+}
+
+TEST_CASE("ScriptSystem: forces applied in OnFixedUpdate give the same motion at any frame rate")
+{
+	std::vector<std::string> results;
+	for (const int framesPerSecond : {20, 60, 144})
+	{
+		CAPTURE(framesPerSecond);
+		PhysicsScriptFixture fixture;
+		Entity ball = fixture.CreateScripted(R"(
+			local S = {}
+			function S:OnCreate() Physics.SetGravity(vec3(0, 0, 0)); Steps = 0 end
+			function S:OnFixedUpdate(dt)
+				if Steps < 60 then Physics.AddForce(self.entity, vec3(4, 0, 0)) end
+				Steps = Steps + 1
+			end
+			return S
+		)",
+											 "Ball");
+		ball.AddComponent<ColliderComponent>().Shape = ColliderShape::Sphere;
+		auto& rigidbody = ball.AddComponent<RigidbodyComponent>();
+		rigidbody.Mass = 2.0f;
+		rigidbody.LinearDamping = 0.0f;
+		fixture.Start();
+		const float frame = 1.0f / static_cast<float>(framesPerSecond);
+		fixture.Update(1, frame);
+		while (fixture.Eval("Steps <= 60") == "true") // Past the last push (several steps per update at low rates).
+			fixture.Update(1, frame);
+		REQUIRE(fixture.System->GetErrors().empty());
+		// 4 N on 2 kg for one second of steps: 2 m/s.
+		CHECK(fixture.Eval("math.abs(Physics.GetLinearVelocity(Scene.FindEntityByName('Ball')).x - 2) < 1e-3") == "true");
+		results.push_back(fixture.Eval("Physics.GetLinearVelocity(Scene.FindEntityByName('Ball')).x"));
+	}
+	CHECK(results[0] == results[1]);
+	CHECK(results[1] == results[2]);
+}
+
+TEST_CASE("ScriptSystem: a failing OnFixedUpdate disables its instance, and without physics it never runs")
+{
+	PhysicsScriptFixture fixture;
+	fixture.CreateScripted(R"(
+		local S = {}
+		function S:OnUpdate() Updates = (Updates or 0) + 1 end
+		function S:OnFixedUpdate() error("fixed failure") end
+		return S
+	)",
+						   "Failing");
+	fixture.Start();
+	fixture.Update(3);
+	CHECK(fixture.HasError("fixed failure"));
+	CHECK(fixture.HasError("Failing.lua OnFixedUpdate"));
+	CHECK(fixture.Eval("Updates") == "1");
+
+	ScriptFixture noPhysics;
+	noPhysics.CreateScripted(R"(
+		return { OnUpdate = function() Updates = (Updates or 0) + 1 end, OnFixedUpdate = function() Fixed = true end }
+	)");
+	noPhysics.Start();
+	noPhysics.Update(3);
+	CHECK(noPhysics.Eval("Updates, Fixed") == "3\tnil");
+}
+
+TEST_CASE("ScriptSystem: OnFixedUpdate skips entities destroyed or unscripted during the update")
+{
+	PhysicsScriptFixture fixture;
+	fixture.CreateScripted(R"(
+		local S = {}
+		function S:OnFixedUpdate()
+			FirstCalls = (FirstCalls or 0) + 1
+			-- A one-shot effect: at a low frame rate several steps share an update, but it must happen once.
+			if FirstCalls == 1 then
+				Explosions = (Explosions or 0) + 1
+				self.entity:Destroy()
+				Scene.FindEntityByName("Second"):RemoveComponent("Script")
+			end
+		end
+		return S
+	)",
+						   "First");
+	fixture.CreateScripted("return { OnFixedUpdate = function() SecondCalls = (SecondCalls or 0) + 1 end }", "Second");
+	fixture.Start();
+	fixture.Update(1, 3.0f / 60.0f); // Three steps.
+	REQUIRE(fixture.System->GetErrors().empty());
+	// First runs before Second (hierarchy order), so Second's script is removed before its first call.
+	CHECK(fixture.Eval("FirstCalls, Explosions, SecondCalls") == "1\t1\tnil");
+	CHECK_FALSE(fixture.World.FindEntityByName("First"));
+	fixture.Update(1, 3.0f / 60.0f);
+	CHECK(fixture.Eval("SecondCalls") == "nil");
+}
+
+TEST_CASE("ScriptSystem: the system wants fixed updates only while a live script defines OnFixedUpdate")
+{
+	PhysicsScriptFixture fixture;
+	Entity plain = fixture.CreateScripted("return { OnUpdate = function() end }", "Plain");
+	fixture.Start();
+	fixture.Update();
+	CHECK_FALSE(fixture.System->WantsFixedUpdate());
+
+	// Defined by the class, or by OnCreate on the instance; a hostile lookup disables the instance instead.
+	Entity late = fixture.CreateScripted(R"(
+		return { OnCreate = function(self) self.OnFixedUpdate = function() LateFixed = true end end }
+	)",
+										 "Late");
+	fixture.Update();
+	CHECK(fixture.System->WantsFixedUpdate());
+	fixture.Update();
+	CHECK(fixture.Eval("LateFixed") == "true");
+	fixture.World.DestroyEntity(late);
+	CHECK_FALSE(fixture.System->WantsFixedUpdate());
+
+	fixture.CreateScripted(R"(
+		local S = {}
+		function S:OnCreate()
+			setmetatable(self, { __index = function(_, key) if key == "OnFixedUpdate" then error("hostile lookup") end end })
+		end
+		return S
+	)",
+						   "Hostile");
+	fixture.Update();
+	CHECK(fixture.HasError("hostile lookup"));
+	CHECK_FALSE(fixture.System->WantsFixedUpdate());
+	CHECK(fixture.World.IsValid(plain));
+}
+
 TEST_CASE("ScriptSystem: collisions and triggers call both entities' scripts")
 {
 	PhysicsScriptFixture fixture;

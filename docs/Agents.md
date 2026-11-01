@@ -43,7 +43,8 @@ windowed one.
    `prefab.create`, and import files placed under `Assets/` with `asset.import`.
 2. **Script.** `script.create { path, source }` writes a Lua script, and `script.update` and `script.get` change and
    read it. Attach a script with a `Script` component. A script returns a table with `OnCreate`, `OnUpdate`,
-   `OnDestroy` and collision callbacks; see [Scripting.md](Scripting.md) and `script.api`.
+   `OnFixedUpdate` (physics control, at the physics rate), `OnDestroy` and collision callbacks; see
+   [Scripting.md](Scripting.md) and `script.api`.
 3. **Save.** `scene.save { path }`, then `project.set_start_scene`.
 4. **Playtest deterministically.**
    - `play.start { paused: true }`, then `play.step { frames, dt }` advances exactly that many fixed steps.

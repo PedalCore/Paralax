@@ -104,6 +104,24 @@ namespace Paralax {
 		FlushPendingDestruction();
 	}
 
+	bool Scene::IsDestructionPending(Entity entity) const
+	{
+		if (m_PendingDestruction.empty() || !IsValid(entity))
+			return false;
+		// Iterative walk up: hierarchies can be very deep.
+		UUID id = entity.GetUUID();
+		while (id.IsValid())
+		{
+			if (std::find(m_PendingDestruction.begin(), m_PendingDestruction.end(), id) != m_PendingDestruction.end())
+				return true;
+			auto it = m_EntityMap.find(id);
+			if (it == m_EntityMap.end())
+				return false;
+			id = m_Registry.get<RelationshipComponent>(it->second).Parent;
+		}
+		return false;
+	}
+
 	void Scene::NotifySystemsOfDestruction(entt::entity root)
 	{
 		// Callbacks run with destruction deferred, but may still reparent entities: one moved into the dying subtree
@@ -494,6 +512,36 @@ namespace Paralax {
 
 		if (m_UpdateDepth == 0)
 			FlushPendingDestruction();
+	}
+
+	void Scene::OnFixedUpdateRuntime(Timestep step)
+	{
+		PX_CORE_ASSERT(!m_InFixedUpdate, "Scene::OnFixedUpdateRuntime called from a system's OnFixedUpdate");
+		if (!m_IsRunning || m_InFixedUpdate)
+			return;
+		{
+			// Cleared on every exit, including an assertion thrown in tests.
+			struct FixedUpdateScope
+			{
+				explicit FixedUpdateScope(bool& flag)
+					: Flag(flag)
+				{
+					Flag = true;
+				}
+				~FixedUpdateScope() { Flag = false; }
+				bool& Flag;
+			} fixedScope(m_InFixedUpdate);
+			UpdateScope scope(m_UpdateDepth);
+			for (const Scope<SceneSystem>& system : m_Systems)
+				system->OnFixedUpdate(*this, step);
+		}
+		if (m_UpdateDepth == 0)
+			FlushPendingDestruction();
+	}
+
+	bool Scene::WantsFixedUpdate() const
+	{
+		return m_IsRunning && std::any_of(m_Systems.begin(), m_Systems.end(), [](const Scope<SceneSystem>& system) { return system->WantsFixedUpdate(); });
 	}
 
 	void Scene::SetViewportSize(uint32_t width, uint32_t height)

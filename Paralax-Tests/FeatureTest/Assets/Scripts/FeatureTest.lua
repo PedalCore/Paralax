@@ -210,6 +210,7 @@ function FeatureTest:OnUpdate(dt)
 		-- Physics callbacks (Ball.lua): the ball passed through the trigger zone and landed on the ground.
 		assert(BallTriggered and BallPassedTrigger, "the ball should have passed through the trigger zone")
 		assert(BallLanded, "the ball should have landed on the ground")
+		assert(BallFixedSteps and BallFixedSteps > 0, "OnFixedUpdate should run before each physics step")
 		assert(Scene.FindEntityByName("PhysicsBall"):GetWorldPosition().y < 1, "gravity should have pulled the ball down")
 		assert(Audio.IsPlaying(Scene.FindEntityByName("Speaker")), "the looping speaker should still be playing")
 		self.done = true

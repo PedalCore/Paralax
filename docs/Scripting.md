@@ -24,6 +24,12 @@ function Player:OnUpdate(dt)          -- Every update; dt in seconds.
     end
 end
 
+function Player:OnFixedUpdate(dt)     -- Before each physics step; dt is the step (1/60 s in play mode).
+    if Input.IsKeyDown(Key.Space) then
+        Physics.AddForce(self.entity, vec3(0, 30, 0))
+    end
+end
+
 function Player:OnDestroy()           -- When the entity or its Script component goes away, or play mode stops.
     Log.Info(self.entity.name, "destroyed")
 end
@@ -34,6 +40,22 @@ return Player
 The callbacks are optional, and may be inherited (an instance looks them up through its class, including the class's
 own metatable). Within each phase (create, then update) instances run in hierarchy order. When a Script component is
 removed or changed, its instance gets `OnDestroy` at the start of the next update, also in hierarchy order.
+
+`OnFixedUpdate(self, dt)` runs at the physics rate rather than the frame rate: after every script's `OnUpdate`, once
+before each physics step, so zero, one or several times per update (`dt` is the fixed step, 1/60 s in play mode and
+exported games). Put physics control there (forces, velocities, moving kinematic platforms) to make it independent of
+the frame rate:
+- it sees the result of the previous step: transforms of dynamic bodies are up to date each time;
+- what it changes counts in the coming step: a moved body starts the step there, a kinematic body moved by it arrives
+  by the end of that step, and a force added by it acts for that step only;
+- an entity destroyed during the update (by any script) gets no further `OnFixedUpdate` and leaves the simulation at
+  once, though it is only removed from the scene when the update ends; an entity created in it starts (`OnCreate`)
+  next update.
+
+Whether a script has `OnFixedUpdate` is looked up once its `OnCreate` has run (so `OnCreate` may still add one). It
+costs nothing when no script has one; when some do, the physics syncs the scene around every step, which costs a pass
+over the scene per step. Without physics in the scene (it is always there in play mode and exported games)
+`OnFixedUpdate` does not run.
 
 All scripts share one global environment per play session: a global set by one script (`Score = 0`) is visible to
 the others. Prefer fields on `self` or on a module table for state that belongs to one script.
@@ -118,7 +140,8 @@ an entity solid. Add a **Rigidbody** as well to simulate it:
 - `Static` bodies (and colliders without a Rigidbody) never move.
 
 A collider with `IsTrigger = true` detects overlaps without colliding. The simulation runs in fixed 1/60 s steps and is
-deterministic. Setting a body's Transform from a script teleports it (kinematic bodies move there smoothly).
+deterministic. An entity destroyed during an update leaves the simulation at once (it no longer collides in the
+update's remaining steps). Setting a body's Transform from a script teleports it (kinematic bodies move there smoothly).
 
 A collider on a child entity without a Rigidbody of its own is part of the body of its nearest ancestor with a
 Rigidbody: build a car from a body and wheel children, and it moves as one. Such a body takes its friction and
@@ -129,7 +152,7 @@ field while playing rebuilds the body; a dynamic body keeps its velocity.
 
 | Function | Description |
 |---|---|
-| `Physics.AddForce(entity, vec3)` | Pushes a dynamic body with a force (N) for the current frame; call it every frame for a steady push. The result does not depend on the frame rate. Returns false if the entity has no dynamic body. |
+| `Physics.AddForce(entity, vec3)` | Pushes a dynamic body with a force (N) for the current frame; call it every frame for a steady push. The result does not depend on the frame rate. Called from `OnFixedUpdate`, the force acts for the coming step. Returns false if the entity has no dynamic body. |
 | `Physics.AddImpulse(entity, vec3)` | Changes a dynamic body's momentum at once (impulse in N·s). Returns false if the entity has no dynamic body. |
 | `Physics.SetLinearVelocity(entity, vec3)` / `Physics.GetLinearVelocity(entity)` | Velocity in m/s. `Set` works on dynamic bodies only (it returns false otherwise; move kinematic bodies with their Transform). `Get` works on any body and returns `nil` without one. |
 | `Physics.SetAngularVelocity(entity, vec3)` / `Physics.GetAngularVelocity(entity)` | Angular velocity in rad/s, with the same rules. |

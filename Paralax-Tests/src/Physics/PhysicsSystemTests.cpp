@@ -10,6 +10,10 @@
 #include <glm/gtc/epsilon.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include <algorithm>
+#include <functional>
+#include <vector>
+
 using namespace Paralax;
 
 namespace {
@@ -50,6 +54,24 @@ namespace {
 
 		Scene World{"PhysicsTest"};
 		PhysicsSystem* Physics = nullptr;
+	};
+
+	// Runs a function from every fixed update (before each physics step).
+	class FixedUpdateHook final : public SceneSystem
+	{
+	public:
+		explicit FixedUpdateHook(std::function<void(Scene&, float)> function)
+			: m_Function(std::move(function))
+		{
+		}
+		const char* GetName() const override { return "FixedUpdateHook"; }
+		void OnFixedUpdate(Scene& scene, Timestep step) override { m_Function(scene, step.GetSeconds()); }
+		bool WantsFixedUpdate() const override { return Wanted; }
+
+		bool Wanted = true;
+
+	private:
+		std::function<void(Scene&, float)> m_Function;
 	};
 
 	glm::vec3 PositionOf(Entity entity)
@@ -485,6 +507,172 @@ TEST_CASE("PhysicsSystem: a kinematic platform carries what rests on it at any f
 		CHECK(PositionOf(rider).x == doctest::Approx(1.0).epsilon(0.05));
 		CHECK(PositionOf(rider).y == doctest::Approx(1.6).epsilon(0.02));
 	}
+}
+
+TEST_CASE("PhysicsSystem: fixed updates run once before each step, with the step's length")
+{
+	for (const int framesPerSecond : {20, 60, 144})
+	{
+		CAPTURE(framesPerSecond);
+		PhysicsFixture fixture;
+		std::vector<float> steps;
+		fixture.World.AddSystem(CreateScope<FixedUpdateHook>([&](Scene&, float step) { steps.push_back(step); }));
+		fixture.World.OnRuntimeStart();
+		const float frame = 1.0f / static_cast<float>(framesPerSecond);
+		for (int i = 0; i < framesPerSecond; i++)
+		{
+			const uint64_t before = fixture.Physics->GetStepCount();
+			const size_t calls = steps.size();
+			fixture.World.OnUpdateRuntime(Timestep(frame));
+			CHECK(steps.size() - calls == fixture.Physics->GetStepCount() - before);
+		}
+		CHECK(steps.size() == fixture.Physics->GetStepCount());
+		CHECK(std::abs(static_cast<int>(steps.size()) - 60) <= 1);
+		CHECK(std::all_of(steps.begin(), steps.end(), [](float step) { return step == Step; }));
+	}
+}
+
+TEST_CASE("PhysicsSystem: a fixed update sees the previous step's result, and what it changes counts in the next step")
+{
+	PhysicsSystemSpecification specification;
+	specification.Gravity = glm::vec3(0.0f, -10.0f, 0.0f);
+	PhysicsFixture fixture(specification);
+	Entity body = fixture.Body("Body", glm::vec3(0.0f, 10.0f, 0.0f));
+	body.GetComponent<RigidbodyComponent>().LinearDamping = 0.0f;
+	std::vector<float> heights;
+	bool teleport = false;
+	fixture.World.AddSystem(CreateScope<FixedUpdateHook>([&](Scene&, float) {
+		heights.push_back(PositionOf(body).y);
+		if (teleport)
+		{
+			body.GetComponent<TransformComponent>().Translation = glm::vec3(5.0f, 20.0f, 0.0f);
+			teleport = false;
+		}
+	}));
+	fixture.World.OnRuntimeStart();
+
+	// 20 fps: three steps per update, each seeing the one before it written back.
+	fixture.World.OnUpdateRuntime(Timestep(3.0f * Step));
+	REQUIRE(heights.size() == 3);
+	CHECK(heights[0] == 10.0f);
+	CHECK(heights[1] < heights[0]);
+	CHECK(heights[2] < heights[1]);
+
+	// A move made in a fixed update is synced before that step, so the step starts from there.
+	teleport = true;
+	fixture.World.OnUpdateRuntime(Timestep(Step));
+	CHECK(PositionOf(body).x == doctest::Approx(5.0));
+	CHECK(PositionOf(body).y < 20.0f);
+	CHECK(PositionOf(body).y > 19.9f);
+}
+
+TEST_CASE("PhysicsSystem: a force added in a fixed update acts for that step, the same at any frame rate")
+{
+	std::vector<float> velocities;
+	for (const int framesPerSecond : {20, 60, 144})
+	{
+		CAPTURE(framesPerSecond);
+		PhysicsSystemSpecification specification;
+		specification.Gravity = glm::vec3(0.0f);
+		PhysicsFixture fixture(specification);
+		Entity body = fixture.Body("Body", glm::vec3(0.0f));
+		auto& rigidbody = body.GetComponent<RigidbodyComponent>();
+		rigidbody.Mass = 2.0f;
+		rigidbody.LinearDamping = 0.0f;
+		int pushes = 0;
+		fixture.World.AddSystem(CreateScope<FixedUpdateHook>([&](Scene&, float) {
+			if (pushes++ < 60)
+				CHECK(fixture.Physics->AddForce(body.GetUUID(), glm::vec3(4.0f, 0.0f, 0.0f)));
+		}));
+		fixture.World.OnRuntimeStart();
+		// 4 N on 2 kg for 60 steps of 1/60 s: v = F t / m = 2 m/s, delivered completely (nothing waits for a frame).
+		const float frame = 1.0f / static_cast<float>(framesPerSecond);
+		while (pushes <= 60)
+			fixture.World.OnUpdateRuntime(Timestep(frame));
+		velocities.push_back(fixture.Physics->GetLinearVelocity(body.GetUUID())->x);
+		CHECK(velocities.back() == doctest::Approx(2.0).epsilon(1e-4));
+	}
+	// Steps see identical inputs whatever the frame rate, so the results are identical too.
+	CHECK(velocities[0] == velocities[1]);
+	CHECK(velocities[1] == velocities[2]);
+}
+
+TEST_CASE("PhysicsSystem: a kinematic body moved in a fixed update gets there in that step, and stops there")
+{
+	PhysicsFixture fixture;
+	Entity platform = fixture.Body("Platform", glm::vec3(0.0f, 1.0f, 0.0f), ColliderShape::Box, RigidbodyType::Kinematic);
+	platform.GetComponent<ColliderComponent>().Size = glm::vec3(4.0f, 0.2f, 4.0f);
+	platform.GetComponent<ColliderComponent>().Friction = 1.0f;
+	Entity rider = fixture.Body("Rider", glm::vec3(0.0f, 1.6f, 0.0f));
+	rider.GetComponent<ColliderComponent>().Friction = 1.0f;
+	bool moving = false;
+	int moves = 0;
+	fixture.World.AddSystem(CreateScope<FixedUpdateHook>([&](Scene&, float step) {
+		if (moving && moves < 60)
+		{
+			platform.GetComponent<TransformComponent>().Translation.x += step; // 1 m/s.
+			moves++;
+		}
+	}));
+	fixture.World.OnRuntimeStart();
+	fixture.Run(1.0f);
+	REQUIRE(PositionOf(rider).y == doctest::Approx(1.6).epsilon(0.02));
+
+	// At 20 fps (three steps per update), moved one step's worth before each step.
+	moving = true;
+	for (int i = 0; i < 20; i++)
+		fixture.World.OnUpdateRuntime(Timestep(3.0f * Step));
+	REQUIRE(moves == 60);
+	CHECK(PositionOf(rider).x == doctest::Approx(1.0).epsilon(0.05));
+	// It moved at 1 m/s while carried, and is at rest once the moves stop.
+	CHECK(glm::length(*fixture.Physics->GetLinearVelocity(platform.GetUUID())) == doctest::Approx(0.0));
+	fixture.Run(0.5f);
+	CHECK(PositionOf(rider).x == doctest::Approx(1.0).epsilon(0.05));
+}
+
+TEST_CASE("PhysicsSystem: an entity destroyed in a fixed update leaves the simulation at once, and the scene when the update ends")
+{
+	PhysicsFixture fixture;
+	fixture.Ground();
+	Entity body = fixture.Body("Body", glm::vec3(0.0f, 5.0f, 0.0f));
+	Entity child = fixture.World.CreateEntity("Child");
+	child.AddComponent<ColliderComponent>().IsTrigger = true; // A body of its own, under the doomed one.
+	fixture.World.SetParent(child, body, false);
+	const UUID id = body.GetUUID();
+	const UUID childId = child.GetUUID();
+	std::vector<std::pair<bool, bool>> seen; // Entity exists, body exists.
+	fixture.World.AddSystem(CreateScope<FixedUpdateHook>([&](Scene& scene, float) {
+		if (seen.empty())
+		{
+			REQUIRE(fixture.Physics->HasBody(id));
+			REQUIRE(fixture.Physics->HasBody(childId));
+			scene.DestroyEntity(body);
+		}
+		seen.emplace_back(scene.TryGetEntityByUUID(id).has_value(), fixture.Physics->HasBody(id) || fixture.Physics->HasBody(childId));
+	}));
+	fixture.World.OnRuntimeStart();
+	fixture.World.OnUpdateRuntime(Timestep(3.0f * Step));
+	// Destroyed in the first call, before its step: from that step on it has no body, though the entity stays (and
+	// can be inspected) until the update finishes.
+	CHECK(seen == std::vector<std::pair<bool, bool>>{{true, true}, {true, false}, {true, false}});
+	CHECK_FALSE(fixture.World.TryGetEntityByUUID(id).has_value());
+	CHECK_FALSE(fixture.Physics->HasBody(id));
+	fixture.World.OnUpdateRuntime(Timestep(Step));
+}
+
+TEST_CASE("PhysicsSystem: systems that do not want fixed updates get none")
+{
+	PhysicsFixture fixture;
+	int calls = 0;
+	auto* hook = static_cast<FixedUpdateHook*>(fixture.World.AddSystem(CreateScope<FixedUpdateHook>([&](Scene&, float) { calls++; })));
+	hook->Wanted = false;
+	fixture.World.OnRuntimeStart();
+	fixture.Run(0.5f);
+	CHECK(calls == 0);
+	CHECK(fixture.Physics->GetStepCount() == 30);
+	hook->Wanted = true;
+	fixture.Run(0.5f);
+	CHECK(calls == 30);
 }
 
 TEST_CASE("PhysicsSystem: a rebuilt dynamic body keeps its velocity")

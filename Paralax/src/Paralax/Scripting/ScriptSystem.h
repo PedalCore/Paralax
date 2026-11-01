@@ -41,6 +41,11 @@ namespace Paralax {
 	// order:
 	//   OnCreate(self)        before the instance's first update (entities created while running start next update)
 	//   OnUpdate(self, dt)    every update, with dt in seconds
+	//   OnFixedUpdate(self, dt)
+	//                         before each step of the scene's PhysicsSystem (dt is the fixed step), after OnUpdate:
+	//                         zero or more times per update, at the physics rate, so frame-rate independent.
+	//                         Whether a script defines it is looked up once its OnCreate has run. Entities destroyed
+	//                         during the update are skipped.
 	//   OnDestroy(self)       when the entity (or its ScriptComponent) is removed, or when the scene stops running
 	//   OnCollisionEnter/Exit(self, other), OnTriggerEnter/Exit(self, other)
 	//                         contacts from the scene's PhysicsSystem, delivered before OnUpdate of the next update
@@ -68,6 +73,9 @@ namespace Paralax {
 		const char* GetName() const override { return "Scripting"; }
 		void OnRuntimeStart(Scene& scene) override;
 		void OnUpdate(Scene& scene, Timestep timestep) override;
+		void OnFixedUpdate(Scene& scene, Timestep timestep) override;
+		// True while a live instance defines OnFixedUpdate (looked up once its OnCreate has run).
+		bool WantsFixedUpdate() const override;
 		void OnRuntimeStop(Scene& scene) override;
 		void OnEntityDestroying(Scene& scene, const Entity& entity) override;
 

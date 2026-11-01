@@ -349,6 +349,24 @@ namespace Paralax {
 			std::vector<ContactPair> m_Pairs;
 		};
 
+		// Sets a flag for a scope, and clears it on every exit (including an assertion thrown in tests).
+		class FlagScope
+		{
+		public:
+			explicit FlagScope(bool& flag)
+				: m_Flag(flag)
+			{
+				m_Flag = true;
+			}
+			~FlagScope() { m_Flag = false; }
+
+			FlagScope(const FlagScope&) = delete;
+			FlagScope& operator=(const FlagScope&) = delete;
+
+		private:
+			bool& m_Flag;
+		};
+
 	}
 
 	struct PhysicsSystem::Impl
@@ -386,6 +404,9 @@ namespace Paralax {
 		// so they are applied in a deterministic order).
 		std::map<uint64_t, glm::vec3> PendingForces;
 		std::map<uint64_t, glm::vec3> PendingMomentum;
+		// Forces added during OnFixedUpdate, which act for the coming step only.
+		std::map<uint64_t, glm::vec3> StepForces;
+		bool InFixedUpdate = false;
 		// Entities whose current problem has been logged, so it is reported once rather than every update.
 		std::unordered_set<uint64_t> Reported;
 		// Entities whose configuration note (a capped or unjoinable collider) has been logged; unlike Reported, not
@@ -454,6 +475,7 @@ namespace Paralax {
 			DroppedEvents = false;
 			PendingForces.clear();
 			PendingMomentum.clear();
+			StepForces.clear();
 			Reported.clear();
 			Advised.clear();
 			Physics.reset();
@@ -573,6 +595,10 @@ namespace Paralax {
 			std::unordered_map<uint64_t, UnderBody> under;
 			std::unordered_set<uint64_t> overflowed;
 			scene.ForEachEntity([&](Entity entity) {
+				// An entity destroyed during this update (and what is under it) takes no further part in the simulation;
+				// its body is removed with the other orphans below.
+				if (scene.IsDestructionPending(entity))
+					return;
 				const uint64_t id = entity.GetUUID();
 				const auto* rigidbody = entity.TryGetComponent<RigidbodyComponent>();
 				const auto* collider = entity.TryGetComponent<ColliderComponent>();
@@ -838,30 +864,53 @@ namespace Paralax {
 				PendingMomentum[entity] += force * frameSeconds;
 			PendingForces.clear();
 
+			// Fixed updates (scripts' OnFixedUpdate) see each step's result and act before the next, so with any of them
+			// the scene is synced and written back around every step. Without, once per update is enough.
+			const bool fixedUpdates = steps > 0 && scene.WantsFixedUpdate();
 			std::vector<JPH::BodyID> movedKinematic;
+			// Kinematic bodies moved by the scene glide to their target over all of this update's steps.
 			Sync(scene, static_cast<float>(steps) * step, &movedKinematic);
-			if (steps > 0)
+			for (uint32_t i = 0; i < steps; i++)
 			{
+				std::vector<JPH::BodyID> movedThisStep;
+				if (fixedUpdates)
+				{
+					// What the fixed updates change is synced in before this step, and a kinematic body they move gets
+					// there in this step.
+					{
+						FlagScope inFixedUpdate(InFixedUpdate);
+						scene.OnFixedUpdateRuntime(Timestep(step));
+					}
+					if (!Physics)
+						return;
+					Sync(scene, step, &movedThisStep);
+				}
+
+				for (const auto& [entity, force] : StepForces)
+					PendingMomentum[entity] += force * step;
+				StepForces.clear();
 				for (const auto& [entity, momentum] : PendingMomentum)
 				{
 					if (const BodyRecord* record = FindDynamic(UUID(entity)))
 						Bodies().AddImpulse(record->Body, ToJolt(momentum));
 				}
 				PendingMomentum.clear();
-			}
-			for (uint32_t i = 0; i < steps; i++)
-			{
+
 				const JPH::EPhysicsUpdateError error = Physics->Update(step, 1, TempAllocator.get(), JobSystem.get());
 				if (error != JPH::EPhysicsUpdateError::None)
 					PX_CORE_WARN("Physics: the simulation ran out of capacity (error {}); increase the limits", static_cast<int>(error));
 				Steps++;
 				UpdateContacts(Contacts.Take());
+				for (const JPH::BodyID& body : movedThisStep)
+					Bodies().SetLinearAndAngularVelocity(body, JPH::Vec3::sZero(), JPH::Vec3::sZero());
+				if (fixedUpdates)
+					WriteBack(scene);
 			}
 			// MoveKinematic gives a body the velocity to reach its target over these steps; without stopping it there, it
 			// would keep drifting in the simulation while the scene shows it at the target.
 			for (const JPH::BodyID& body : movedKinematic)
 				Bodies().SetLinearAndAngularVelocity(body, JPH::Vec3::sZero(), JPH::Vec3::sZero());
-			if (steps > 0)
+			if (steps > 0 && !fixedUpdates)
 				WriteBack(scene);
 		}
 	};
@@ -908,6 +957,7 @@ namespace Paralax {
 		m_Impl->Advised.erase(id);
 		m_Impl->PendingForces.erase(id);
 		m_Impl->PendingMomentum.erase(id);
+		m_Impl->StepForces.erase(id);
 	}
 
 	std::vector<ContactEvent> PhysicsSystem::TakeContactEvents()
@@ -922,7 +972,7 @@ namespace Paralax {
 	{
 		if (!m_Impl->FindDynamic(entity) || !IsFinite(force))
 			return false;
-		m_Impl->PendingForces[entity] += force;
+		(m_Impl->InFixedUpdate ? m_Impl->StepForces : m_Impl->PendingForces)[entity] += force;
 		return true;
 	}
 

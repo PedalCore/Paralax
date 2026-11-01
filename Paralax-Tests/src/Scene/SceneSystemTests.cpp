@@ -6,6 +6,7 @@
 #include <Paralax/Scene/Scene.h>
 #include <Paralax/Scene/SceneSystem.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,21 @@ namespace {
 				}
 			}
 		}
+		void OnFixedUpdate(Scene& scene, Timestep timestep) override
+		{
+			m_Log.push_back(m_Name + ":fixed " + std::to_string(timestep.GetMilliseconds()));
+			if (DestroyOnFixedUpdate)
+			{
+				if (std::optional<Entity> entity = scene.FindEntityByName(*DestroyOnFixedUpdate))
+				{
+					scene.DestroyEntity(*entity);
+					m_Log.push_back(scene.FindEntityByName(*DestroyOnFixedUpdate) ? "deferred" : "immediate");
+				}
+			}
+			if (ReenterFixedUpdate)
+				scene.OnFixedUpdateRuntime(timestep);
+		}
+		bool WantsFixedUpdate() const override { return WantsFixed; }
 		void OnRuntimeStop(Scene&) override { m_Log.push_back(m_Name + ":stop"); }
 		void OnEntityDestroying(Scene& scene, const Entity& entity) override
 		{
@@ -53,6 +69,9 @@ namespace {
 		}
 
 		std::optional<std::string> DestroyOnUpdate;
+		std::optional<std::string> DestroyOnFixedUpdate;
+		bool ReenterFixedUpdate = false;
+		bool WantsFixed = false;
 		std::optional<std::string> DestroyFromCallback;
 
 	private:
@@ -116,6 +135,136 @@ TEST_CASE("SceneSystem: destruction requested during an update is deferred to it
 	scene.OnUpdateRuntime(Timestep(0.0f));
 	CHECK(std::find(log.begin(), log.end(), "deferred") != log.end());
 	CHECK_FALSE(scene.FindEntityByName("Target"));
+	scene.OnRuntimeStop();
+}
+
+TEST_CASE("SceneSystem: fixed updates run every system in order, only while running")
+{
+	std::vector<std::string> log;
+	Scene scene;
+	scene.AddSystem(CreateScope<RecordingSystem>(log, "A"));
+	scene.AddSystem(CreateScope<RecordingSystem>(log, "B"));
+	scene.OnFixedUpdateRuntime(Timestep(0.25f)); // Not running: ignored.
+	scene.OnRuntimeStart();
+	scene.OnFixedUpdateRuntime(Timestep(0.25f));
+	scene.OnRuntimeStop();
+	scene.OnFixedUpdateRuntime(Timestep(0.25f));
+	CHECK(log == std::vector<std::string>{"A:start", "B:start", "A:fixed 250.000000", "B:fixed 250.000000", "B:stop", "A:stop"});
+}
+
+TEST_CASE("SceneSystem: destruction requested during a fixed update waits for the update around it")
+{
+	std::vector<std::string> log;
+	Scene scene;
+	auto* system = static_cast<RecordingSystem*>(scene.AddSystem(CreateScope<RecordingSystem>(log)));
+	scene.CreateEntity("Target");
+	scene.CreateEntity("Other");
+	system->DestroyOnFixedUpdate = "Target";
+	scene.OnRuntimeStart();
+
+	// On its own (not inside an update), the destruction happens when the fixed update finishes.
+	scene.OnFixedUpdateRuntime(Timestep(0.0f));
+	CHECK(std::find(log.begin(), log.end(), "deferred") != log.end());
+	CHECK_FALSE(scene.FindEntityByName("Target"));
+
+	// Inside an update (as the PhysicsSystem calls it), it waits for the update.
+	struct FixedStepper : SceneSystem
+	{
+		const char* GetName() const override { return "Stepper"; }
+		void OnUpdate(Scene& running, Timestep) override
+		{
+			running.OnFixedUpdateRuntime(Timestep(0.0f));
+			StillThere = running.FindEntityByName("Other").has_value();
+		}
+		bool StillThere = false;
+	};
+	scene.OnRuntimeStop();
+	Scene nested;
+	auto* recorder = static_cast<RecordingSystem*>(nested.AddSystem(CreateScope<RecordingSystem>(log)));
+	auto* stepper = static_cast<FixedStepper*>(nested.AddSystem(CreateScope<FixedStepper>()));
+	nested.CreateEntity("Other");
+	recorder->DestroyOnFixedUpdate = "Other";
+	nested.OnRuntimeStart();
+	nested.OnUpdateRuntime(Timestep(0.0f));
+	CHECK(stepper->StillThere);
+	CHECK_FALSE(nested.FindEntityByName("Other"));
+	nested.OnRuntimeStop();
+}
+
+TEST_CASE("SceneSystem: pending destruction covers the entity and its descendants until the update ends")
+{
+	Scene scene;
+	Entity root = scene.CreateEntity("Root");
+	Entity child = scene.CreateEntity("Child");
+	Entity grandchild = scene.CreateEntity("Grandchild");
+	Entity other = scene.CreateEntity("Other");
+	scene.SetParent(child, root);
+	scene.SetParent(grandchild, child);
+	struct Destroyer : SceneSystem
+	{
+		const char* GetName() const override { return "Destroyer"; }
+		void OnUpdate(Scene& running, Timestep) override
+		{
+			Entity target = *running.FindEntityByName("Child");
+			Before = running.IsDestructionPending(target);
+			running.DestroyEntity(target);
+			for (const char* name : {"Root", "Child", "Grandchild", "Other"})
+				After.push_back(running.IsDestructionPending(*running.FindEntityByName(name)));
+		}
+		bool Before = true;
+		std::vector<bool> After;
+	};
+	auto* destroyer = static_cast<Destroyer*>(scene.AddSystem(CreateScope<Destroyer>()));
+	CHECK_FALSE(scene.IsDestructionPending(root));
+	CHECK_FALSE(scene.IsDestructionPending(Entity()));
+	scene.OnRuntimeStart();
+	scene.OnUpdateRuntime(Timestep(0.0f));
+	CHECK_FALSE(destroyer->Before);
+	CHECK(destroyer->After == std::vector<bool>{false, true, true, false});
+	CHECK_FALSE(scene.IsValid(child));
+	CHECK_FALSE(scene.IsValid(grandchild));
+	CHECK_FALSE(scene.IsDestructionPending(other));
+	CHECK_FALSE(scene.IsDestructionPending(child)); // Gone, not pending.
+	scene.OnRuntimeStop();
+}
+
+TEST_CASE("SceneSystem: the scene wants fixed updates while running if any system does")
+{
+	std::vector<std::string> log;
+	Scene scene;
+	scene.AddSystem(CreateScope<RecordingSystem>(log));
+	auto* wanting = static_cast<RecordingSystem*>(scene.AddSystem(CreateScope<RecordingSystem>(log, "Wanting")));
+	wanting->WantsFixed = true;
+	CHECK_FALSE(scene.WantsFixedUpdate()); // Not running.
+	scene.OnRuntimeStart();
+	CHECK(scene.WantsFixedUpdate());
+	wanting->WantsFixed = false;
+	CHECK_FALSE(scene.WantsFixedUpdate());
+	scene.OnRuntimeStop();
+}
+
+TEST_CASE("SceneSystem: a fixed update started from inside one is refused")
+{
+	std::vector<std::string> log;
+	Scene scene;
+	auto* system = static_cast<RecordingSystem*>(scene.AddSystem(CreateScope<RecordingSystem>(log)));
+	system->ReenterFixedUpdate = true;
+	scene.OnRuntimeStart();
+#if defined(PX_ENABLE_ASSERTS)
+	{
+		Paralax::Testing::ScopedAssertionCapture capture;
+		CHECK_THROWS_AS(scene.OnFixedUpdateRuntime(Timestep(0.0f)), Paralax::Testing::AssertionFailedError);
+	}
+#else
+	// Dist: the inner call is ignored.
+	scene.OnFixedUpdateRuntime(Timestep(0.0f));
+	CHECK(std::count(log.begin(), log.end(), "Recorder:fixed 0.000000") == 1);
+#endif
+	// The scene is still usable afterwards.
+	system->ReenterFixedUpdate = false;
+	log.clear();
+	scene.OnFixedUpdateRuntime(Timestep(0.0f));
+	CHECK(log == std::vector<std::string>{"Recorder:fixed 0.000000"});
 	scene.OnRuntimeStop();
 }
 

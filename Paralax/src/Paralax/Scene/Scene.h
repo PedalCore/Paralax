@@ -44,6 +44,9 @@ namespace Paralax {
 		Entity CreateEntityWithUUID(UUID uuid, const std::string& name = "Entity");
 		// Destroys the entity and its descendants (deferred while updating). Unknown or null entities are ignored.
 		void DestroyEntity(Entity entity);
+		// Whether the entity, or one of its ancestors, is to be destroyed when the current update finishes. Systems
+		// that run several times per update (fixed updates) skip such entities. O(depth); false for invalid entities.
+		bool IsDestructionPending(Entity entity) const;
 		// Creates a copy of the entity (and descendants) with new UUIDs, as a sibling after the original.
 		Entity DuplicateEntity(Entity entity);
 		// Copies an entity subtree from another scene into this one with new UUIDs, as the last root (or the last
@@ -84,6 +87,13 @@ namespace Paralax {
 		void OnRuntimeStart();
 		void OnRuntimeStop();
 		void OnUpdateRuntime(Timestep ts);
+		// Runs every system's OnFixedUpdate, in the order added; ignored when the scene is not running. Called by the
+		// system that owns the fixed clock (the PhysicsSystem) before each of its steps, from inside its OnUpdate, so
+		// destruction requested meanwhile waits for the update to finish. Asserts it is not called from inside itself.
+		void OnFixedUpdateRuntime(Timestep step);
+		// Whether any system wants OnFixedUpdate calls now (SceneSystem::WantsFixedUpdate). Without any, the fixed
+		// clock's owner may skip the per-step work that only those calls need.
+		bool WantsFixedUpdate() const;
 		bool IsRunning() const { return m_IsRunning; }
 
 		// Attaches a runtime system (scripting, physics...). Verifies the scene is not running yet. Returns a
@@ -137,6 +147,7 @@ namespace Paralax {
 
 		bool m_IsRunning = false;
 		uint32_t m_UpdateDepth = 0;
+		bool m_InFixedUpdate = false;
 		std::vector<Scope<SceneSystem>> m_Systems;
 		std::vector<UUID> m_PendingDestruction;
 

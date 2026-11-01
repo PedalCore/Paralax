@@ -373,6 +373,8 @@ namespace Paralax {
 			sol::table Self;
 			bool Created = false;
 			bool Failed = false;
+			// Defines OnFixedUpdate (looked up once OnCreate has run).
+			bool FixedUpdate = false;
 		};
 
 		Impl(AssetManager& assets, ScriptSystemSpecification specification)
@@ -395,8 +397,10 @@ namespace Paralax {
 		LuaMemory Memory;
 		std::optional<sol::state> Lua;
 		sol::function ErrorHandler;
-		// Dispatch(self, name, ...) calls self[name](self, ...) if it is a function (defined by the prelude).
+		// Dispatch(self, name, ...) calls self[name](self, ...) if it is a function, and Defines(self, name) says
+		// whether it is one (both defined by the prelude).
 		sol::function Dispatch;
+		sol::function Defines;
 		// The Time table the engine updates (held here, so a script reassigning the global cannot break updates).
 		sol::table TimeTable;
 
@@ -708,6 +712,28 @@ namespace Paralax {
 			return protectedOk && succeeded;
 		}
 
+		// Whether the instance (or its class) defines a callback. A failing lookup (a hostile __index) disables it.
+		bool DefinesCallback(Instance& instance, const char* callback)
+		{
+			const std::string context = ContextName(instance, callback);
+			bool defined = false;
+			const bool protectedOk = Protect(context, [&] {
+				std::optional<sol::protected_function_result> result = Call(Defines, context, instance.Self, callback);
+				if (!result)
+					instance.Failed = true;
+				else
+					defined = result->get<bool>(0);
+			});
+			if (!protectedOk)
+				instance.Failed = true;
+			return defined && !instance.Failed;
+		}
+
+		bool WantsFixedUpdate() const
+		{
+			return std::any_of(Instances.begin(), Instances.end(), [](const auto& entry) { return entry.second.Created && !entry.second.Failed && entry.second.FixedUpdate; });
+		}
+
 		// Delivers the contacts the physics step reported since the last update to both entities' scripts, in the
 		// physics system's (deterministic) order: OnCollisionEnter/Exit or OnTriggerEnter/Exit(self, other).
 		void DispatchContactEvents(Scene& scene)
@@ -788,7 +814,11 @@ namespace Paralax {
 					// The callback may have destroyed (deferred) entities, but cannot have erased instances.
 					if (auto again = Instances.find(id); again != Instances.end())
 						again->second.Failed = true;
+					continue;
 				}
+				// Looked up once, so the fixed-update machinery costs nothing for scripts without the callback.
+				if (auto again = Instances.find(id); again != Instances.end() && !again->second.Failed)
+					again->second.FixedUpdate = DefinesCallback(again->second, "OnFixedUpdate");
 			}
 
 			DispatchContactEvents(scene);
@@ -799,6 +829,33 @@ namespace Paralax {
 				if (it == Instances.end() || it->second.Failed || !it->second.Created || !scene.TryGetEntityByUUID(id))
 					continue;
 				if (!RunCallback(it->second, "OnUpdate", static_cast<double>(dt)))
+				{
+					if (auto again = Instances.find(id); again != Instances.end())
+						again->second.Failed = true;
+				}
+			}
+		}
+
+		// OnFixedUpdate(self, dt) for every created, working instance that defines it, in hierarchy order. Skipped:
+		// entities destroyed during this update (they would otherwise run once more per remaining step), and instances
+		// whose Script component was removed or replaced (they are destroyed at the next update).
+		void FixedUpdate(Scene& scene, float dt)
+		{
+			std::vector<UUID> order; // Collected first: scripts may create, destroy or reparent entities while running.
+			scene.ForEachEntity([&](Entity entity) {
+				if (auto it = Instances.find(entity.GetUUID()); it != Instances.end() && it->second.Created && !it->second.Failed && it->second.FixedUpdate)
+					order.push_back(entity.GetUUID());
+			});
+			for (UUID id : order)
+			{
+				auto it = Instances.find(id);
+				if (it == Instances.end() || it->second.Failed)
+					continue;
+				std::optional<Entity> entity = scene.TryGetEntityByUUID(id);
+				const auto* component = entity ? entity->TryGetComponent<ScriptComponent>() : nullptr;
+				if (!component || component->Script != it->second.Script || scene.IsDestructionPending(*entity))
+					continue;
+				if (!RunCallback(it->second, "OnFixedUpdate", static_cast<double>(dt)))
 				{
 					if (auto again = Instances.find(id); again != Instances.end())
 						again->second.Failed = true;
@@ -850,10 +907,12 @@ namespace Paralax {
 			string.match = function(s, p, init) guard("string.match", s, p) return match(s, p, init) end
 			string.gmatch = function(s, p, init) guard("string.gmatch", s, p) return gmatch(s, p, init) end
 			string.gsub = function(s, p, replacement, n) guard("string.gsub", s, p) return gsub(s, p, replacement, n) end
-			-- Returned to the engine (not a global): looks up and calls an instance's callback.
+			-- Returned to the engine (not globals): look up and call an instance's callback, and look one up.
 			return function(self, name, ...)
 				local callback = self[name]
 				if type(callback) == "function" then return callback(self, ...) end
+			end, function(self, name)
+				return type(self[name]) == "function"
 			end
 		)lua";
 
@@ -875,8 +934,9 @@ namespace Paralax {
 			sol::load_result loaded = lua.load(prelude, "=sandbox", sol::load_mode::text);
 			PX_CORE_VERIFY(loaded.valid(), "The script sandbox prelude must compile");
 			std::optional<sol::protected_function_result> preludeResult = Call(loaded.get<sol::function>(), "sandbox");
-			PX_CORE_VERIFY(preludeResult && preludeResult->return_count() == 1, "The script sandbox prelude must run");
+			PX_CORE_VERIFY(preludeResult && preludeResult->return_count() == 2, "The script sandbox prelude must run");
 			Dispatch = preludeResult->get<sol::function>(0);
+			Defines = preludeResult->get<sol::function>(1);
 
 			// Sandbox: no file access, no loading of arbitrary code (or bytecode), no raw environment tampering.
 			for (const char* name : {"dofile", "loadfile", "load", "loadstring", "collectgarbage", "rawequal", "rawget", "rawset", "rawlen"})
@@ -1374,6 +1434,7 @@ namespace Paralax {
 			ModulesLoading.clear();
 			TimeTable = sol::table();
 			Dispatch = sol::function();
+			Defines = sol::function();
 			ErrorHandler = sol::function();
 			Lua.reset();
 		}
@@ -1415,6 +1476,17 @@ namespace Paralax {
 			m_Impl->TimeTable.raw_set("delta", static_cast<double>(timestep.GetSeconds()), "elapsed", m_Impl->Elapsed, "frame", m_Impl->Frame);
 		});
 		m_Impl->Update(scene, timestep.GetSeconds());
+	}
+
+	bool ScriptSystem::WantsFixedUpdate() const
+	{
+		return m_Impl->Lua && m_Impl->WantsFixedUpdate();
+	}
+
+	void ScriptSystem::OnFixedUpdate(Scene& scene, Timestep timestep)
+	{
+		if (m_Impl->Lua && m_Impl->ActiveScene == &scene)
+			m_Impl->FixedUpdate(scene, timestep.GetSeconds());
 	}
 
 	void ScriptSystem::OnRuntimeStop(Scene& scene)
