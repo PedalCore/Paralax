@@ -241,6 +241,22 @@ set(PX_UI_FONTS
 	"${InterFont_SOURCE_DIR}/extras/ttf/Inter-Regular.ttf"
 	"${InterFont_SOURCE_DIR}/extras/ttf/Inter-SemiBold.ttf")
 
+# --- Poly Haven environments (CC0, raw 2k Radiance files) --------------------------------------
+# Large engine resources stay out of source control and binaries. Hashes pin the exact downloads.
+CPMAddPackage(
+	NAME ParalaxSkyHDR
+	URL "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/2k/kloofendal_48d_partly_cloudy_puresky_2k.hdr"
+	URL_HASH "SHA256=5244534e9cf5b606f2ff513aa00ddb161b0a4826ffd88a0d3bd03ac29247d198"
+	DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT TRUE)
+CPMAddPackage(
+	NAME ParalaxStudioHDR
+	URL "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/2k/studio_small_09_2k.hdr"
+	URL_HASH "SHA256=36724313c0fc66dab126ff90f081b85a0b1ef47be65eda1417bd20b033f0573f"
+	DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT TRUE)
+set(PX_ENVIRONMENTS
+	"${ParalaxSkyHDR_SOURCE_DIR}/kloofendal_48d_partly_cloudy_puresky_2k.hdr"
+	"${ParalaxStudioHDR_SOURCE_DIR}/studio_small_09_2k.hdr")
+
 # --- doctest (unit tests) -----------------------------------------------------------------------
 if(PX_BUILD_TESTS)
 	CPMAddPackage(

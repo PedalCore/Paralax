@@ -399,3 +399,93 @@ TEST_CASE("SceneRenderer: internal cascade transitions remain continuous as spli
 	}
 	CHECK(graphics.GetValidationErrorCount() == initialErrors);
 }
+
+TEST_CASE("SceneRenderer: built-in HDR rotation and intensity control image based surface lighting")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto initialErrors = graphics.GetValidationErrorCount();
+	{
+		AssetManager assets;
+		Scene scene("HDRSurfaceLighting");
+		BuildTestScene(scene, assets);
+		scene.DestroyEntity(*scene.FindEntityByName("Sun"));
+		scene.DestroyEntity(*scene.FindEntityByName("Lamp"));
+		auto sky = scene.CreateEntity("Sky");
+		auto& environment = sky.AddComponent<SkyLightComponent>();
+		environment.ShowBackground = false; // Only surface lighting may account for image differences.
+		SceneRenderer renderer(graphics, assets);
+		REQUIRE(renderer.Initialize());
+		auto output = CreateOutput(graphics.GetDevice(), 320, 180);
+		const auto camera = CameraView::LookAt({0, 2, 4.5f}, {0, 0.4f, 0}, glm::radians(50.0f), 320.0f / 180.0f);
+		auto capture = [&] {
+			renderer.Render(scene, camera, output.Framebuffer);
+			return ReadbackTexture(graphics.GetDevice(), output.Texture);
+		};
+		auto mean = [](const Image& image) {
+			double sum = 0;
+			for (uint32_t y = 0; y < image.GetHeight(); y++)
+				for (uint32_t x = 0; x < image.GetWidth(); x++)
+					sum += static_cast<double>(Luminance(image.GetPixel(x, y)));
+			return sum / static_cast<double>(image.GetWidth() * image.GetHeight());
+		};
+		for (uint64_t handle : {AssetManager::BuiltinSkyEnvironment, AssetManager::BuiltinStudioEnvironment})
+		{
+			CAPTURE(handle);
+			REQUIRE(assets.GetAsset(AssetHandle(handle)));
+			environment.Environment = AssetHandle(handle);
+			environment.Intensity = 1.0f;
+			environment.RotationDegrees = 0.0f;
+			const auto original = capture();
+			REQUIRE_FALSE(original.IsEmpty());
+			CHECK(mean(original) > 15.0);
+			CHECK(Luminance(original.GetPixel(195, 95)) > 20.0f);
+			CHECK(Image::MaxChannelDifference(original, capture()) == 0);
+			REQUIRE(original.SavePNG(Testing::GetTestOutputDirectory() / ("R2-Environment-" + std::to_string(handle) + ".png")));
+			environment.RotationDegrees = 180.0f;
+			const auto rotated = capture();
+			CHECK(Image::MaxChannelDifference(original, rotated) > 10);
+			REQUIRE(rotated.SavePNG(Testing::GetTestOutputDirectory() / ("R2-Rotated-" + std::to_string(handle) + ".png")));
+			environment.RotationDegrees = 0.0f;
+			environment.Intensity = 0.25f;
+			const auto dimmed = capture();
+			CHECK(mean(dimmed) + 5.0 < mean(original));
+			environment.Intensity = 0.0f;
+			CHECK(mean(capture()) < 1.0);
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == initialErrors);
+}
+
+TEST_CASE("SceneRenderer: missing built-in environment uses the procedural sky and reports once")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto initialErrors = graphics.GetValidationErrorCount();
+	{
+		Testing::ScopedEnvironmentVariable resources("PARALAX_RESOURCE_DIR", Testing::CreateTestDirectory("MissingRendererResources").string());
+		AssetManager assets;
+		Scene scene("HDRFallback");
+		BuildTestScene(scene, assets);
+		SceneRenderer renderer(graphics, assets);
+		REQUIRE(renderer.Initialize());
+		auto output = CreateOutput(graphics.GetDevice(), 160, 90);
+		const auto camera = CameraView::LookAt({0, 2, 4.5f}, {0, 0.4f, 0}, glm::radians(50.0f), 160.0f / 90.0f);
+		renderer.Render(scene, camera, output.Framebuffer);
+		const auto procedural = ReadbackTexture(graphics.GetDevice(), output.Texture);
+		auto& sky = scene.CreateEntity("MissingSky").AddComponent<SkyLightComponent>();
+		sky.Environment = AssetHandle(AssetManager::BuiltinSkyEnvironment);
+		sky.Intensity = renderer.GetSettings().DefaultEnvironmentIntensity;
+		Testing::ScopedLogCapture log;
+		for (int frame = 0; frame < 3; frame++)
+			renderer.Render(scene, camera, output.Framebuffer);
+		CHECK(Image::MaxChannelDifference(procedural, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
+		size_t errors = 0;
+		for (const auto& entry : log.GetEntries())
+			errors += entry.Level == spdlog::level::err ? 1 : 0;
+		CHECK(errors == 1);
+	}
+	CHECK(graphics.GetValidationErrorCount() == initialErrors);
+}

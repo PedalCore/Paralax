@@ -38,3 +38,11 @@ See [AGENTS.md](AGENTS.md) for the code style (Hazel conventions), testing rules
 ## License
 
 Paralax is released under the [MIT License](LICENSE). Third-party dependencies keep their own licences.
+
+Built-in HDR environments are [Kloofendal Partly Cloudy](https://polyhaven.com/a/kloofendal_48d_partly_cloudy_puresky)
+and [Studio Small 09](https://polyhaven.com/a/studio_small_09), from Poly Haven under [CC0](https://polyhaven.com/license).
+CMake downloads the pinned 2k files and copies them into `Resources/Environments/` beside the executables.
+Distribute that directory with the runtime; `PARALAX_RESOURCE_DIR` overrides its location. Missing environments are
+reported once and use the procedural sky. Image loading is capped at 128 MiB encoded, 256 MiB for the decoded base
+level and 16384 pixels per axis. HDR loading accepts top-to-bottom RGBE flat pixels or scanline RLE, with headers
+limited to 64 KiB and lines to 1023 bytes.

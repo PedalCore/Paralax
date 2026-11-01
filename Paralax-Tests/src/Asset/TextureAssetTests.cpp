@@ -6,7 +6,9 @@
 #include <Paralax/Asset/TextureAsset.h>
 #include <Paralax/Renderer/Image.h>
 
+#include <cmath>
 #include <cstring>
+#include <fstream>
 
 using namespace Paralax;
 
@@ -93,4 +95,134 @@ TEST_CASE("TextureAsset: float mips average exactly")
 	float average = 0.0f;
 	std::memcpy(&average, texture->Mips[1].data(), sizeof(float));
 	CHECK(average == 3.0f);
+}
+
+namespace {
+
+	std::vector<uint8_t> HDRBytes(const std::string& resolution, std::initializer_list<uint8_t> pixels)
+	{
+		const std::string header = "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n" + resolution + "\n";
+		std::vector<uint8_t> bytes(header.begin(), header.end());
+		bytes.insert(bytes.end(), pixels);
+		return bytes;
+	}
+
+	float FloatChannel(const TextureAsset& texture, size_t mip, size_t channel)
+	{
+		float value = 0;
+		std::memcpy(&value, texture.Mips[mip].data() + channel * sizeof(float), sizeof(float));
+		return value;
+	}
+
+}
+
+TEST_CASE("TextureAsset: flat and scanline HDR preserve linear energy and explicit asset types")
+{
+	const auto flat = HDRBytes("-Y 1 +X 2", {128, 64, 32, 130, 128, 64, 32, 131});
+	auto texture = TextureAsset::LoadFromMemory(flat.data(), flat.size(), true);
+	REQUIRE(texture);
+	CHECK(texture->GetType() == AssetType::Texture);
+	CHECK(texture->Format == TextureFormat::RGBA32F);
+	CHECK_FALSE(texture->SRGB);
+	CHECK(texture->Width == 2);
+	CHECK(texture->Height == 1);
+	CHECK(FloatChannel(*texture, 0, 0) == 2.0f);
+	CHECK(FloatChannel(*texture, 0, 1) == 1.0f);
+	CHECK(FloatChannel(*texture, 0, 3) == 1.0f);
+	CHECK(FloatChannel(*texture, 1, 0) == 3.0f);
+
+	// Two scanlines exercise literal and repeated runs in each channel.
+	const auto rle = HDRBytes("-Y 2 +X 8", {2, 2, 0, 8, 136, 128, 136, 64, 136, 32, 136, 130,
+											2, 2, 0, 8, 8, 128, 128, 128, 128, 128, 128, 128, 128, 136, 64, 136, 32, 136, 131});
+	auto environment = TextureAsset::LoadFromMemory(rle.data(), rle.size(), true, true, AssetType::EnvironmentMap);
+	REQUIRE(environment);
+	CHECK(environment->GetType() == AssetType::EnvironmentMap);
+	CHECK(environment->Width == 8);
+	CHECK(environment->Height == 2);
+	CHECK(environment->GetMipCount() == 4);
+	CHECK(FloatChannel(*environment, 0, 0) == 2.0f);
+	CHECK(FloatChannel(*environment, 0, 8 * 4) == 4.0f);
+	CHECK(FloatChannel(*environment, 3, 0) == 3.0f);
+
+	const auto directory = Testing::CreateTestDirectory("HDRFile");
+	{
+		std::ofstream file(directory / "sky.hdr", std::ios::binary);
+		file.write(reinterpret_cast<const char*>(rle.data()), static_cast<std::streamsize>(rle.size()));
+	}
+	auto loaded = TextureAsset::LoadFromFile(directory / "sky.hdr", false, false, AssetType::EnvironmentMap);
+	REQUIRE(loaded);
+	CHECK(loaded->GetType() == AssetType::EnvironmentMap);
+	CHECK(loaded->GetMipCount() == 1);
+	CHECK(loaded->Mips[0] == environment->Mips[0]);
+
+	Testing::ScopedAssertionCapture capture;
+	CHECK_THROWS_AS(CreateRef<TextureAsset>(AssetType::Mesh), Testing::AssertionFailedError);
+	CHECK_THROWS_AS(TextureAsset::LoadFromMemory(flat.data(), flat.size(), false, true, AssetType::Mesh), Testing::AssertionFailedError);
+	CHECK_THROWS_AS(TextureAsset::LoadFromFile(directory / "sky.hdr", false, true, AssetType::None), Testing::AssertionFailedError);
+}
+
+TEST_CASE("TextureAsset: every truncated HDR prefix is rejected before decoding")
+{
+	Testing::ScopedLogCapture log;
+	for (const auto& bytes : {HDRBytes("-Y 1 +X 2", {128, 64, 32, 130, 128, 64, 32, 131}),
+							  HDRBytes("-Y 2 +X 8", {2, 2, 0, 8, 136, 128, 136, 64, 136, 32, 136, 130,
+													 2, 2, 0, 8, 136, 128, 136, 64, 136, 32, 136, 131})})
+	{
+		for (size_t size = 0; size < bytes.size(); size++)
+		{
+			CAPTURE(size);
+			CHECK_FALSE(TextureAsset::LoadFromMemory(bytes.data(), size, false));
+		}
+	}
+	CHECK(log.Contains(spdlog::level::err, "Failed to decode texture"));
+}
+
+TEST_CASE("TextureAsset: hostile HDR dimensions headers and scanline runs are rejected")
+{
+	Testing::ScopedLogCapture log;
+	for (const char* resolution : {"-Y 0 +X 8", "-Y -1 +X 8", "-Y 1 +X 16385", "-Y 16385 +X 1",
+								   "-Y 4097 +X 4096", "-Y 1 +X 9999999999999999999999", "-Y 1 +X 8 trailing", "+Y 1 +X 8", "-Y nan +X 8"})
+	{
+		CAPTURE(resolution);
+		const auto bytes = HDRBytes(resolution, {2, 2, 0, 8, 136, 128, 136, 64, 136, 32, 136, 130});
+		CHECK_FALSE(TextureAsset::LoadFromMemory(bytes.data(), bytes.size(), false));
+	}
+	for (const auto& bytes : {HDRBytes("-Y 1 +X 8", {2, 2, 0, 9, 136, 128, 136, 64, 136, 32, 136, 130}),
+							  HDRBytes("-Y 1 +X 8", {2, 2, 0, 8, 0, 128}),
+							  HDRBytes("-Y 1 +X 8", {2, 2, 0, 8, 137, 128}),
+							  HDRBytes("-Y 1 +X 8", {2, 2, 0, 8, 9, 1, 2, 3, 4, 5, 6, 7, 8, 9}),
+							  HDRBytes("-Y 1 +X 8", {2, 2, 0, 8, 136})})
+		CHECK_FALSE(TextureAsset::LoadFromMemory(bytes.data(), bytes.size(), false));
+
+	std::string largeHeader = "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n";
+	while (largeHeader.size() < 65536)
+		largeHeader += "# Bounded comment lines exercise the total header cap, not the per-line cap.\n";
+	largeHeader += "\n-Y 1 +X 1\n";
+	largeHeader.append(4, static_cast<char>(128));
+	for (const std::string& header : {std::string("#?RADIANCE\nFORMAT=32-bit_rle_xyze\n\n-Y 1 +X 1\n"),
+									  std::string("#?RADIANCE\n") + std::string(1024, 'x') + "\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 1\n",
+									  largeHeader})
+		CHECK_FALSE(TextureAsset::LoadFromMemory(reinterpret_cast<const uint8_t*>(header.data()), header.size(), false));
+
+	const uint8_t oneByte = 0;
+	CHECK_FALSE(TextureAsset::LoadFromMemory(&oneByte, TextureAsset::MaxEncodedBytes + 1, false));
+	const auto path = Testing::CreateTestDirectory("HDROversize") / "huge.hdr";
+	{
+		std::ofstream file(path, std::ios::binary);
+		file.seekp(static_cast<std::streamoff>(TextureAsset::MaxEncodedBytes));
+		file.put('\0');
+	}
+	CHECK_FALSE(TextureAsset::LoadFromFile(path, false));
+	std::filesystem::remove(path);
+}
+
+TEST_CASE("TextureAsset: extreme finite HDR samples remain finite through every mip")
+{
+	const auto bytes = HDRBytes("-Y 2 +X 2", {255, 255, 255, 255, 255, 255, 255, 255,
+											  255, 255, 255, 255, 255, 255, 255, 255});
+	auto texture = TextureAsset::LoadFromMemory(bytes.data(), bytes.size(), false);
+	REQUIRE(texture);
+	REQUIRE(texture->GetMipCount() == 2);
+	CHECK(std::isfinite(FloatChannel(*texture, 1, 0)));
+	CHECK(FloatChannel(*texture, 1, 0) == FloatChannel(*texture, 0, 0));
 }

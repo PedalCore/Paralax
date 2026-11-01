@@ -8,6 +8,7 @@
 #include <Paralax/Asset/MeshAsset.h>
 #include <Paralax/Asset/TextureAsset.h>
 #include <Paralax/Renderer/Image.h>
+#include <Paralax/Core/EngineResources.h>
 
 #include <algorithm>
 #include <fstream>
@@ -221,13 +222,16 @@ TEST_CASE("AssetManager: the built-in catalog loads unique handles with matching
 		handles.push_back(info.Handle);
 		CHECK(assets.IsBuiltin(AssetHandle(info.Handle)));
 		CHECK(assets.GetAssetType(AssetHandle(info.Handle)) == info.Type);
+		// File-backed built-ins are covered by the resource-specific tests below.
+		if (info.Type == AssetType::EnvironmentMap)
+			continue;
 		auto asset = assets.GetAsset(AssetHandle(info.Handle));
 		REQUIRE(asset);
 		CHECK(asset->GetType() == info.Type);
 		CHECK(static_cast<uint64_t>(asset->Handle) == info.Handle);
 		CHECK(assets.GetAsset(asset->Handle) == asset);
 	}
-	for (uint64_t handle : {0u, 6u, 15u, 18u, 1023u})
+	for (uint64_t handle : {0u, 6u, 15u, 20u, 1023u})
 	{
 		CHECK_FALSE(assets.IsBuiltin(AssetHandle(handle)));
 		CHECK(assets.GetAssetType(AssetHandle(handle)) == AssetType::None);
@@ -285,4 +289,71 @@ TEST_CASE("AssetManager: unknown and broken assets are reported once, then retri
 	CHECK_FALSE(assets.GetAsset(handle)); // Cached failure.
 	CHECK(assets.ImportAsset("Broken.pxmat") == handle);
 	CHECK(assets.GetAsset(handle));
+}
+
+TEST_CASE("AssetManager: packaged HDR environments load at reserved handles with full mip chains")
+{
+	AssetManager assets;
+	for (uint64_t handle : {AssetManager::BuiltinSkyEnvironment, AssetManager::BuiltinStudioEnvironment})
+	{
+		CAPTURE(handle);
+		auto texture = assets.GetAsset<TextureAsset>(AssetHandle(handle));
+		REQUIRE(texture);
+		CHECK(texture->GetType() == AssetType::EnvironmentMap);
+		CHECK(assets.GetAssetType(AssetHandle(handle)) == AssetType::EnvironmentMap);
+		CHECK(texture->Width == 2048);
+		CHECK(texture->Height == 1024);
+		CHECK(texture->Format == TextureFormat::RGBA32F);
+		CHECK_FALSE(texture->SRGB);
+		CHECK(texture->GetMipCount() == 12);
+		CHECK(texture->Mips.back().size() == 16);
+		CHECK(assets.GetAsset(AssetHandle(handle)) == texture);
+		CHECK(assets.GetAssetType(AssetHandle(handle)) == AssetType::EnvironmentMap);
+	}
+}
+
+TEST_CASE("AssetManager: missing built-in resources are reported once and retry after cache reset")
+{
+	const auto resourceDirectory = GetEngineResourceDirectory();
+	const auto missing = Testing::CreateTestDirectory("MissingEnvironmentResources");
+	Testing::ScopedEnvironmentVariable overrideDirectory("PARALAX_RESOURCE_DIR", missing.string());
+	Testing::ScopedLogCapture log;
+	AssetManager assets;
+	const AssetHandle handle(AssetManager::BuiltinSkyEnvironment);
+	for (int attempt = 0; attempt < 3; attempt++)
+		CHECK_FALSE(assets.GetAsset(handle));
+	CHECK_FALSE(assets.IsLoaded(handle));
+	CHECK(assets.IsBuiltin(handle));
+	CHECK(assets.GetAssetType(handle) == AssetType::EnvironmentMap);
+	size_t errors = 0;
+	for (const auto& entry : log.GetEntries())
+		errors += entry.Level == spdlog::level::err ? 1 : 0;
+	CHECK(errors == 1);
+	{
+		Testing::ScopedEnvironmentVariable restored("PARALAX_RESOURCE_DIR", resourceDirectory.string());
+		CHECK_FALSE(assets.GetAsset(handle)); // A repaired path alone does not bypass the failure cache.
+		REQUIRE(assets.LoadRegistry());
+		REQUIRE(assets.GetAsset<TextureAsset>(handle));
+		CHECK(assets.IsLoaded(handle));
+	}
+}
+
+TEST_CASE("AssetManager: imported HDR retains its registered environment type")
+{
+	const auto directory = Testing::CreateTestDirectory("ImportedEnvironment");
+	{
+		std::ofstream file(directory / "sky.hdr", std::ios::binary);
+		file << "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 1\n";
+		const char pixel[] = {64, 32, 16, static_cast<char>(130)};
+		file.write(pixel, sizeof(pixel));
+	}
+	AssetManager assets(directory);
+	const AssetHandle handle = assets.ImportAsset("sky.hdr");
+	REQUIRE(handle.IsValid());
+	auto texture = assets.GetAsset<TextureAsset>(handle);
+	REQUIRE(texture);
+	CHECK(texture->GetType() == AssetType::EnvironmentMap);
+	CHECK(assets.GetAssetType(handle) == AssetType::EnvironmentMap);
+	REQUIRE(assets.ReloadAsset(handle));
+	CHECK(assets.GetAsset<TextureAsset>(handle)->GetType() == AssetType::EnvironmentMap);
 }
