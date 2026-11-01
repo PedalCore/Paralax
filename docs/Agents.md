@@ -49,8 +49,11 @@ windowed one.
    beside it) into `Assets/`. `asset.import` makes it one mesh: put it on an entity's `Mesh` to show the whole file.
    `model.create_prefab { model: "Models/Bay.glb" }` (importing it if needed) instead makes a prefab with one entity
    per Blender object, nested as in Blender, each with its name, local transform and mesh, plus its camera (never
-   primary) or light; `prefab.instantiate` places it. The result reports counts and any warnings (animations and
-   skins are not imported; malformed light data is skipped). It is refused during play mode. Parallax occlusion
+   primary) or light; `prefab.instantiate` places it. Blender actions (glTF animations of object location, rotation
+   and scale) come too, each as an `Animation` component, playing and looping, on the object it animates (or the
+   nearest object above all the ones it animates); start, stop or seek them through the component's `Playing`,
+   `Loop`, `Speed` and `Time`. The result reports counts and any warnings (skins and shape keys are not imported;
+   malformed light data is skipped). It is refused during play mode. Parallax occlusion
    mapping, which glTF cannot express, comes from material extras as a Blender export script can write them
    (`"pom": true`, `"height_map": "stone_height.png"`, `"height_depth_m"`, `"texture_repeat_m"`; the height map is
    found beside the model or in its `textures` folder, and 16-bit maps keep their precision). Light strengths come

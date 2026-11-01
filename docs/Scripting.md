@@ -164,6 +164,33 @@ Scripts on either entity of a contact receive callbacks before their next `OnUpd
 and `OnTriggerExit(self, other)` when a trigger is involved. Bodies at rest stay in contact; no exit is reported when
 they fall asleep. `other` may already be destroyed in an exit (check `other:IsValid()`).
 
+## Animation
+
+An **Animation** component plays a clip: keyframed movement of the entity and the entities below it, from a glTF
+model (Blender actions come through `model.create_prefab`, already on the right entities). Its fields:
+- `Clip`: the animation clip asset.
+- `Playing`: whether it advances. A clip that does not loop clears it when it reaches its end (or its start, playing
+  backwards).
+- `Loop` (default true) and `Speed` (default 1; negative plays backwards).
+- `Time`: seconds into the clip. Set it to seek; while paused, the entities are posed at the new time (wrapped into
+  the clip if it loops, as playing would).
+
+A clip that does not loop plays from `Time` to its end (or, with a negative `Speed`, back to 0) and stops there. To
+play it again, set `Time` back and `Playing` to true; to play it backwards from the end, start with `Time` at the
+clip's length (any large value is clamped to it).
+
+```lua
+local anim = Scene.FindEntityByName("Door"):GetComponent("Animation")
+anim.Loop = false
+anim.Time = 0
+anim.Playing = true   -- Open once.
+```
+
+Clips run after every script's `OnUpdate` and before physics, so a script's changes to the component apply in the
+same update, and animated kinematic bodies push what they touch. Playback follows simulated time only, so it is
+deterministic. The clip sets local Translation, Rotation and Scale; a target that is missing is skipped (and found
+when it appears).
+
 ## Audio
 
 Add an **AudioSource** to play a clip (a `.wav`, `.flac` or `.mp3` asset) from an entity:

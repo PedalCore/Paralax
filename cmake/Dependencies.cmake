@@ -164,6 +164,9 @@ CPMAddPackage(
 #   sequences are now left as they are.
 # - With an extras callback set (Paralax reads material extras), extras that are not JSON objects failed the whole
 #   file, though glTF allows any type there; they are now ignored.
+# - Indices from the file used without a range check (an animation channel's sampler and the sampler's accessors in
+#   validate, sparse accessors' buffer views, and a POSITION accessor in GenerateMeshIndices) are now checked, and so
+#   is that accessor's count there (zero wrapped around; a huge one allocated without limit).
 # Drop the parts upstream has fixed when upgrading.
 px_patched_cache_key(PX_FASTGLTF_CACHE_KEY v0.9.1 "${CMAKE_CURRENT_LIST_DIR}/patches/fastgltf-v0.9.1-untrusted-input.patch")
 CPMAddPackage(
@@ -181,7 +184,7 @@ CPMAddPackage(
 if(fastgltf_ADDED)
 	# Like Jolt's patch: a build tree configured before the patch keeps unpatched sources; say so.
 	file(READ "${fastgltf_SOURCE_DIR}/src/fastgltf.cpp" PX_FASTGLTF_SOURCE)
-	if(NOT PX_FASTGLTF_SOURCE MATCHES "from the base64 alphabet" OR NOT PX_FASTGLTF_SOURCE MATCHES "never into a NUL" OR NOT PX_FASTGLTF_SOURCE MATCHES "glTF allows extras of any type")
+	if(NOT PX_FASTGLTF_SOURCE MATCHES "from the base64 alphabet" OR NOT PX_FASTGLTF_SOURCE MATCHES "never into a NUL" OR NOT PX_FASTGLTF_SOURCE MATCHES "glTF allows extras of any type" OR NOT PX_FASTGLTF_SOURCE MATCHES "out-of-range sampler was read out of bounds" OR NOT PX_FASTGLTF_SOURCE MATCHES "a huge one allocated that many indices")
 		message(FATAL_ERROR "fastgltf in ${fastgltf_SOURCE_DIR} lacks cmake/patches/fastgltf-v0.9.1-untrusted-input.patch; reconfigure this build tree with cmake --fresh")
 	endif()
 endif()

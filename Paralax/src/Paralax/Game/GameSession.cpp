@@ -1,6 +1,7 @@
 #include "pxpch.h"
 #include "Paralax/Game/GameSession.h"
 
+#include "Paralax/Animation/AnimationSystem.h"
 #include "Paralax/Asset/AssetManager.h"
 #include "Paralax/Physics/PhysicsSystem.h"
 #include "Paralax/Scene/Scene.h"
@@ -24,11 +25,13 @@ namespace Paralax {
 	{
 		m_Level = std::move(level);
 		m_Scene = Scene::Copy(*m_Level);
-		// Scripts first: forces they apply in OnUpdate act in the same update's physics step. Audio last, so it hears
-		// where scripts and physics left things this frame.
+		// Scripts first: forces they apply in OnUpdate act in the same update's physics step. Animation next, so clips
+		// scripts start or seek take effect at once and animated kinematic bodies move in the same physics step. Audio
+		// last, so it hears where everything else left things this frame.
 		ScriptSystemSpecification scripts = m_Specification.Scripts;
 		scripts.State = &m_State;
 		m_Scripts = static_cast<ScriptSystem*>(m_Scene->AddSystem(CreateScope<ScriptSystem>(m_Assets, scripts)));
+		m_Animation = static_cast<AnimationSystem*>(m_Scene->AddSystem(CreateScope<AnimationSystem>(m_Assets)));
 		m_Physics = static_cast<PhysicsSystem*>(m_Scene->AddSystem(CreateScope<PhysicsSystem>()));
 		AudioSystemSpecification audio;
 		audio.Output = m_Specification.Audio;
@@ -47,6 +50,7 @@ namespace Paralax {
 		RecordErrors(m_Scripts->GetErrors());
 		m_Scene = nullptr;
 		m_Scripts = nullptr;
+		m_Animation = nullptr;
 		m_Physics = nullptr;
 		m_Audio = nullptr;
 	}

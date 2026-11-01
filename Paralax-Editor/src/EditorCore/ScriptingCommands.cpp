@@ -301,16 +301,18 @@ return {name}
 							   if (!MeshImporter::Import(*source, handle, model, error))
 								   return CommandResult::Fail(error);
 
-							   // A model imported before per-node meshes existed (or changed on disk since) lacks their registry
+							   // A model imported before per-node meshes and clips existed (or changed on disk since) lacks their registry
 							   // entries: reloading it registers what the file produces now.
 							   auto registered = [&] {
-								   return std::all_of(model.NodeMeshes.begin(), model.NodeMeshes.end(), [&](const Ref<MeshAsset>& mesh) { return assets.IsRegistered(mesh->Handle); });
+								   return std::all_of(model.NodeMeshes.begin(), model.NodeMeshes.end(), [&](const Ref<MeshAsset>& mesh) { return assets.IsRegistered(mesh->Handle); }) &&
+										  std::all_of(model.Animations.begin(), model.Animations.end(), [&](const ImportedAnimation& animation) { return assets.IsRegistered(animation.Clip->Handle); });
 							   };
 							   if (!registered() && (!assets.ReloadAsset(handle) || !registered()))
 								   return CommandResult::Fail("The model's meshes could not be registered (did the file change while importing?)");
 
 							   const std::string rootName = params.contains("name") && !params["name"].get<std::string>().empty() ? params["name"].get<std::string>() : stem;
-							   Ref<PrefabAsset> prefab = BuildModelPrefab(model, rootName, error);
+							   std::vector<std::string> warnings = model.Warnings;
+							   Ref<PrefabAsset> prefab = BuildModelPrefab(model, rootName, error, &warnings);
 							   if (!prefab)
 								   return CommandResult::Fail(error);
 							   if (prefab->ToJson().dump(1, '\t').size() + 1 > PrefabAsset::MaxFileBytes)
@@ -336,7 +338,8 @@ return {name}
 														 {"meshes", meshes},
 														 {"cameras", cameras},
 														 {"lights", lights},
-														 {"warnings", model.Warnings}});
+														 {"animations", model.Animations.size()},
+														 {"warnings", warnings}});
 						   }});
 
 		registry.Register({"prefab.instantiate", "Creates an instance of a prefab (by handle or asset path), optionally under a parent and at a position.", {{"prefab", "string", "Prefab handle or path relative to Assets.", true}, {"parent", "any", "Parent entity id.", false}, {"position", "array", "Local position [x, y, z].", false}}, true, [](EditorContext& context, const json& params) {

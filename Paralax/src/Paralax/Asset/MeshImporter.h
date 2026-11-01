@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Paralax/Animation/AnimationClip.h"
 #include "Paralax/Asset/MaterialAsset.h"
 #include "Paralax/Asset/MeshAsset.h"
 #include "Paralax/Asset/TextureAsset.h"
@@ -56,11 +57,19 @@ namespace Paralax {
 		std::optional<ImportedLight> Light;
 	};
 
+	// An animation of the file, and the node meant to play it: the deepest node at or above every node it animates
+	// (none: the model's root). The clip's channels name their targets relative to that node.
+	struct ImportedAnimation
+	{
+		Ref<AnimationClipAsset> Clip;
+		std::optional<size_t> Host; // Index into MeshImportResult::Nodes.
+	};
+
 	// Everything imported from one glTF file:
 	// - Mesh: every triangle mesh of the scene combined, each submesh carrying its node's transform (one entity can
 	//   show the whole file);
 	// - NodeMeshes: each glTF mesh the scene uses, on its own and in its own space, for one entity per node;
-	// - Nodes: the scene's node hierarchy (see BuildModelPrefab);
+	// - Nodes: the scene's node hierarchy (see BuildModelPrefab), and Animations of it;
 	// - Materials and Textures, shared by both kinds of mesh.
 	// Every sub-asset's handle is derived deterministically from the file's handle (see DeriveSubAssetHandle), so
 	// scenes and prefabs referencing them stay valid across re-imports.
@@ -69,6 +78,7 @@ namespace Paralax {
 		Ref<MeshAsset> Mesh;
 		std::vector<Ref<MeshAsset>> NodeMeshes;
 		std::vector<ImportedNode> Nodes;
+		std::vector<ImportedAnimation> Animations;
 		std::vector<Ref<MaterialAsset>> Materials;
 		std::vector<Ref<TextureAsset>> Textures;
 		std::vector<std::string> Warnings;
@@ -78,9 +88,11 @@ namespace Paralax {
 	{
 		Material = 1,
 		Texture = 2,
-		Mesh = 3,         // A per-node mesh, keyed by its (unique) name.
-		MeshByIndex = 4,  // A per-node mesh without a unique name, keyed by its index in the file.
-		HeightTexture = 5 // A parallax height map named by a material's extras, keyed by its file name.
+		Mesh = 3,            // A per-node mesh, keyed by its (unique) name.
+		MeshByIndex = 4,     // A per-node mesh without a unique name, keyed by its index in the file.
+		HeightTexture = 5,   // A parallax height map named by a material's extras, keyed by its file name.
+		Animation = 6,       // An animation clip, keyed by its (unique) name.
+		AnimationByIndex = 7 // An animation clip without a unique name, keyed by its index in the file.
 	};
 
 	// Stable handle for the index-th sub-asset of a kind within a parent asset. Never returns 0.
@@ -90,9 +102,10 @@ namespace Paralax {
 	{
 	public:
 		// Imports a .gltf/.glb file: the triangle meshes of the default scene (or scene 0), combined and per node; its
-		// node hierarchy with cameras and KHR_lights_punctual lights; PBR materials; and embedded or external images.
-		// Returns false (with outError set) if the file cannot be parsed or contains no triangles. Unsupported
-		// features (other primitive types, missing images, skins, animations) are skipped with warnings.
+		// node hierarchy with cameras and KHR_lights_punctual lights; its animations of node translation, rotation and
+		// scale (step, linear or cubic spline, float keys); PBR materials; and embedded or external images. Returns
+		// false (with outError set) if the file cannot be parsed or contains no triangles. Unsupported features (other
+		// primitive types, missing images, skins, morph target weights) are skipped with warnings.
 		//
 		// Light intensities are divided by 683 lm/W, undoing the photometric conversion of Blender's exporter in its
 		// default ("Standard") lighting mode, so a Blender sun of strength 3 becomes a DirectionalLight of Intensity 3

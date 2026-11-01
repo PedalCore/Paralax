@@ -165,6 +165,11 @@ namespace Paralax {
 				m_Registry[nodeMesh->Handle] = {nodeMesh->Handle, AssetType::Mesh, metadata.FilePath, metadata.Handle};
 				m_Loaded[nodeMesh->Handle] = nodeMesh;
 			}
+			for (const auto& animation : result.Animations)
+			{
+				m_Registry[animation.Clip->Handle] = {animation.Clip->Handle, AssetType::AnimationClip, metadata.FilePath, metadata.Handle};
+				m_Loaded[animation.Clip->Handle] = animation.Clip;
+			}
 			m_Loaded[metadata.Handle] = result.Mesh;
 		}
 
@@ -363,6 +368,11 @@ namespace Paralax {
 				{
 					m_Loaded[nodeMesh->Handle] = nodeMesh;
 					m_LastSubAssets.emplace_back(nodeMesh->Handle, AssetType::Mesh);
+				}
+				for (const auto& animation : result.Animations)
+				{
+					m_Loaded[animation.Clip->Handle] = animation.Clip;
+					m_LastSubAssets.emplace_back(animation.Clip->Handle, AssetType::AnimationClip);
 				}
 				asset = result.Mesh;
 				break;

@@ -5,6 +5,7 @@
 #include "Paralax/Scene/Prefab.h"
 
 #include <string>
+#include <vector>
 
 namespace Paralax {
 
@@ -14,8 +15,11 @@ namespace Paralax {
 	// transform and:
 	// - a Mesh component showing the node's mesh (a sub-asset of the model, so it follows re-imports);
 	// - a Camera component for a node with a camera (not primary, so it never takes over a scene by itself);
-	// - a DirectionalLight, PointLight or SpotLight component for a node with a light.
+	// - a DirectionalLight, PointLight or SpotLight component for a node with a light;
+	// - an Animation component, playing and looping, on the entity each animation is meant to be played by (see
+	//   ImportedAnimation; an entity holds one clip, so a further clip for the same entity is left out, with a warning
+	//   in outWarnings if given, and stays available as an asset).
 	// Returns nullptr (with outError set) if the model has no nodes. Main-thread-only.
-	Ref<PrefabAsset> BuildModelPrefab(const MeshImportResult& model, const std::string& rootName, std::string& outError);
+	Ref<PrefabAsset> BuildModelPrefab(const MeshImportResult& model, const std::string& rootName, std::string& outError, std::vector<std::string>* outWarnings = nullptr);
 
 }

@@ -71,7 +71,62 @@
  	if (config.mapCallback != nullptr) {
  		// If a map callback is specified, we use a pointer to memory specified by it.
  		auto padding = base64::getPadding(encodedData);
-@@ -1839,9 +1860,9 @@
+@@ -869,17 +890,27 @@
+ 			if (positionAttribute == primitive.attributes.end()) {
+ 				return Error::InvalidGltf;
+ 			}
++			// Paralax patch: the index comes from the file and is checked before use (it was read out of bounds).
++			if (positionAttribute->accessorIndex >= asset.accessors.size()) {
++				return Error::InvalidGltf;
++			}
+ 			auto positionCount = asset.accessors[positionAttribute->accessorIndex].count;
++			// Paralax patch: so is the count, which is not validated yet here: zero made the strip counts below wrap
++			// around, and a huge one allocated that many indices (std::bad_alloc, or the process killed for memory).
++			// Paralax refuses accessors beyond 2^24 elements anyway.
++			if (positionCount == 0 || positionCount > (std::size_t(1) << 24)) {
++				return Error::InvalidGltf;
++			}
+ 
+ 			auto primitiveCount = [&]() -> std::size_t {
+ 				switch (primitive.type) {
+ 					case PrimitiveType::Points: return positionCount;
+ 					case PrimitiveType::Lines: return positionCount / 2;
+ 					case PrimitiveType::LineLoop:
+-					case PrimitiveType::LineStrip: return max<std::size_t>(0, positionCount - 1);
++					case PrimitiveType::LineStrip: return positionCount >= 2 ? positionCount - 1 : 0;
+ 					case PrimitiveType::Triangles: return positionCount / 3;
+-					case PrimitiveType::TriangleStrip: return max<std::size_t>(0U, positionCount - 2);
+-					case PrimitiveType::TriangleFan: return max<std::size_t>(0U, positionCount - 2);
++					case PrimitiveType::TriangleStrip: return positionCount >= 3 ? positionCount - 2 : 0;
++					case PrimitiveType::TriangleFan: return positionCount >= 3 ? positionCount - 2 : 0;
+ 					default: FASTGLTF_UNREACHABLE
+ 				}
+ 			}();
+@@ -1003,6 +1034,9 @@
+ 		}
+ 
+ 		if (accessor.sparse) {
++			// Paralax patch: the buffer view indices come from the file and are checked before use.
++			if (accessor.sparse->indicesBufferView >= asset.bufferViews.size() || accessor.sparse->valuesBufferView >= asset.bufferViews.size())
++				return Error::InvalidGltf;
+ 			const auto& indicesView = asset.bufferViews[accessor.sparse->indicesBufferView];
+ 			if (indicesView.byteStride || indicesView.target)
+ 				return Error::InvalidGltf;
+@@ -1030,7 +1064,13 @@
+ 		if (animation.samplers.empty())
+ 			return Error::InvalidGltf;
+ 		for (const auto& channel : animation.channels) {
++			// Paralax patch: the sampler and accessor indices come from the file and are checked before use (an
++			// out-of-range sampler was read out of bounds; found by Paralax-Tests).
++			if (channel.samplerIndex >= animation.samplers.size())
++				return Error::InvalidGltf;
+ 			const auto& sampler = animation.samplers[channel.samplerIndex];
++			if (sampler.inputAccessor >= asset.accessors.size() || sampler.outputAccessor >= asset.accessors.size())
++				return Error::InvalidGltf;
+ 
+ 			const auto& inputAccessor = asset.accessors[sampler.inputAccessor];
+ 			// The accessor MUST be of scalar type with floating-point components
+@@ -1839,9 +1879,9 @@
  			dom::object extrasObject;
  			if (auto extrasError = accessorObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
  				config.extrasCallback(&extrasObject, asset.accessors.size(), Category::Accessors, config.userPointer);
@@ -83,7 +138,7 @@
  		}
  
  		std::string_view name;
-@@ -1969,9 +1990,9 @@
+@@ -1969,9 +2009,9 @@
  			dom::object extrasObject;
  			if (auto extrasError = animationObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
  				config.extrasCallback(&extrasObject, asset.animations.size(), Category::Animations, config.userPointer);
@@ -95,7 +150,7 @@
  		}
  
  
-@@ -2066,9 +2087,9 @@
+@@ -2066,9 +2106,9 @@
  			dom::object extrasObject;
  			if (auto extrasError = bufferObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
  				config.extrasCallback(&extrasObject, asset.buffers.size(), Category::Buffers, config.userPointer);
@@ -107,7 +162,7 @@
  		}
  
  		std::string_view name;
-@@ -2243,9 +2264,9 @@
+@@ -2243,9 +2283,9 @@
  			dom::object extrasObject;
  			if (auto extrasError = bufferViewObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
  				config.extrasCallback(&extrasObject, asset.bufferViews.size(), Category::BufferViews, config.userPointer);
@@ -119,7 +174,7 @@
  		}
  
  		asset.bufferViews.emplace_back(std::move(view));
-@@ -2349,9 +2370,9 @@
+@@ -2349,9 +2389,9 @@
  			dom::object extrasObject;
  			if (auto extrasError = cameraObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
  				config.extrasCallback(&extrasObject, asset.cameras.size(), Category::Cameras, config.userPointer);
@@ -131,7 +186,7 @@
  		}
  
  		asset.cameras.emplace_back(std::move(camera));
-@@ -2551,9 +2572,9 @@
+@@ -2551,9 +2591,9 @@
  			dom::object extrasObject;
  			if (auto extrasError = imageObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
  				config.extrasCallback(&extrasObject, asset.images.size(), Category::Images, config.userPointer);
@@ -143,7 +198,7 @@
  		}
  
  		// name is optional.
-@@ -3421,9 +3442,9 @@
+@@ -3421,9 +3461,9 @@
  			dom::object extrasObject;
  			if (auto extrasError = materialObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
  				config.extrasCallback(&extrasObject, asset.materials.size(), Category::Materials, config.userPointer);
@@ -155,7 +210,7 @@
  		}
  
  		asset.materials.emplace_back(std::move(material));
-@@ -3614,9 +3635,9 @@
+@@ -3614,9 +3654,9 @@
  			dom::object extrasObject;
  			if (auto extrasError = meshObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
  				config.extrasCallback(&extrasObject, asset.meshes.size(), Category::Meshes, config.userPointer);
@@ -167,7 +222,7 @@
  		}
  
  		std::string_view name;
-@@ -3860,9 +3881,9 @@
+@@ -3860,9 +3900,9 @@
  			dom::object extrasObject;
  			if (auto extrasError = nodeObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
  				config.extrasCallback(&extrasObject, asset.nodes.size(), Category::Nodes, config.userPointer);
@@ -179,7 +234,7 @@
  		}
  
  		std::string_view name;
-@@ -3914,9 +3935,9 @@
+@@ -3914,9 +3954,9 @@
  			dom::object extrasObject;
  			if (auto extrasError = samplerObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
  				config.extrasCallback(&extrasObject, asset.samplers.size(), Category::Samplers, config.userPointer);
@@ -191,7 +246,7 @@
  		}
  
  		std::string_view name;
-@@ -3951,9 +3972,9 @@
+@@ -3951,9 +3991,9 @@
  			dom::object extrasObject;
  			if (auto extrasError = sceneObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
  				config.extrasCallback(&extrasObject, asset.scenes.size(), Category::Scenes, config.userPointer);
@@ -203,7 +258,7 @@
  		}
  
  		// Parse the array of nodes.
-@@ -4020,9 +4041,9 @@
+@@ -4020,9 +4060,9 @@
  			dom::object extrasObject;
  			if (auto extrasError = skinObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
  				config.extrasCallback(&extrasObject, asset.skins.size(), Category::Skins, config.userPointer);
@@ -215,7 +270,7 @@
  		}
  
  		std::string_view name;
-@@ -4075,9 +4096,9 @@
+@@ -4075,9 +4115,9 @@
  			dom::object extrasObject;
  			if (auto extrasError = textureObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
  				config.extrasCallback(&extrasObject, asset.textures.size(), Category::Textures, config.userPointer);
@@ -227,7 +282,7 @@
  		}
  
  		std::string_view name;
-@@ -4258,9 +4279,9 @@
+@@ -4258,9 +4298,9 @@
  			dom::object extrasObject;
  			if (auto extrasError = shapeObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
  				config.extrasCallback(&extrasObject, asset.shapes.size() - 1, Category::Shapes, config.userPointer);
@@ -239,7 +294,7 @@
  		}
  	}
  
-@@ -4319,9 +4340,9 @@
+@@ -4319,9 +4359,9 @@
  			dom::object extrasObject;
  			if (auto extrasError = materialObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
  				config.extrasCallback(&extrasObject, asset.physicsMaterials.size() - 1, Category::PhysicsMaterials, config.userPointer);
@@ -251,7 +306,7 @@
  		}
  	}
  
-@@ -4394,9 +4415,9 @@
+@@ -4394,9 +4434,9 @@
  			dom::object extrasObject;
  			if (auto extrasError = collisionFilterObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
  				config.extrasCallback(&extrasObject, asset.collisionFilters.size() - 1, Category::CollisionFilters, config.userPointer);
@@ -263,7 +318,7 @@
  		}
  	}
  
-@@ -4597,9 +4618,9 @@
+@@ -4597,9 +4637,9 @@
  			dom::object extrasObject;
  			if (auto extrasError = physicsJointValue["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
  				config.extrasCallback(&extrasObject, asset.physicsJoints.size() - 1, Category::PhysicsJoints, config.userPointer);

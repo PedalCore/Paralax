@@ -151,6 +151,15 @@ namespace Paralax {
 																		   MakeField<&AudioListenerComponent::Active>("Active"),
 																	   }));
 
+			components.push_back(MakeComponent<AnimationComponent>("Animation", "Plays an animation clip on the entity and the entities below it while the scene is running.",
+																   {
+																	   MakeField<&AnimationComponent::Clip>("Clip", FieldOptions().Describe("Animation clip asset (from a glTF model).")),
+																	   MakeField<&AnimationComponent::Playing>("Playing", FieldOptions().Describe("Cleared when a clip that does not loop ends.")),
+																	   MakeField<&AnimationComponent::Loop>("Loop"),
+																	   MakeField<&AnimationComponent::Speed>("Speed", FieldOptions().Range(-100.0f, 100.0f).Describe("Playback rate; negative plays backwards.")),
+																	   MakeField<&AnimationComponent::Time>("Time", FieldOptions().Range(0.0f, 1000000.0f).Describe("Seconds into the clip; set it to seek.")),
+																   }));
+
 			components.push_back(MakeComponent<ScriptComponent>("Script", "Runs a Lua script (OnCreate, OnUpdate, OnDestroy) while the scene is running.",
 																{
 																	MakeField<&ScriptComponent::Script>("Script", FieldOptions().Describe("Script asset (.lua) returning a table with the callbacks.")),

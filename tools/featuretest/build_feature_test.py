@@ -38,7 +38,7 @@ def clean() -> None:
     assets = PROJECT / "Assets"
     for name in ("AssetRegistry.json",):
         (assets / name).unlink(missing_ok=True)
-    for folder in ("Scenes", "Prefabs", "Materials", "Audio"):
+    for folder in ("Scenes", "Prefabs", "Materials", "Audio", "Models"):
         shutil.rmtree(assets / folder, ignore_errors=True)
 
 
@@ -56,6 +56,34 @@ def write_beep(path: Path) -> None:
             fade = min(1.0, i / 400, (frames - 1 - i) / 400)
             samples.append(int(0.3 * fade * 32767 * math.sin(2 * math.pi * 660 * i / rate)))
         file.writeframes(struct.pack(f"<{frames}h", *samples))
+
+
+def write_swing_model(path: Path) -> None:
+    """A glTF model with one triangle on a node "Swing" and an animation moving it up 1 m and back over 2 s (linear)."""
+    import base64
+    import json
+    data = b"".join(struct.pack("<3f", *p) for p in ((-0.5, 0, 0), (0.5, 0, 0), (0, 0.8, 0)))      # positions, 36 bytes
+    data += struct.pack("<3H", 0, 1, 2) + b"\0\0"                                                 # indices, 6 + 2 padding
+    data += struct.pack("<3f", 0.0, 1.0, 2.0)                                                     # key times, 12 bytes
+    data += b"".join(struct.pack("<3f", 3.0, y, -2.0) for y in (1.0, 2.0, 1.0))                   # translations, 36 bytes
+    document = {
+        "asset": {"version": "2.0", "generator": "Paralax build_feature_test.py"},
+        "buffers": [{"byteLength": len(data), "uri": "data:application/octet-stream;base64," + base64.b64encode(data).decode()}],
+        "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}, {"buffer": 0, "byteOffset": 36, "byteLength": 6},
+                        {"buffer": 0, "byteOffset": 44, "byteLength": 12}, {"buffer": 0, "byteOffset": 56, "byteLength": 36}],
+        "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [-0.5, 0, 0], "max": [0.5, 0.8, 0]},
+                      {"bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR"},
+                      {"bufferView": 2, "componentType": 5126, "count": 3, "type": "SCALAR", "min": [0.0], "max": [2.0]},
+                      {"bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC3"}],
+        "meshes": [{"name": "SwingMesh", "primitives": [{"attributes": {"POSITION": 0}, "indices": 1}]}],
+        "nodes": [{"name": "Swing", "mesh": 0, "translation": [3.0, 1.0, -2.0]}],
+        "animations": [{"name": "SwingUpDown", "samplers": [{"input": 2, "output": 3}],
+                        "channels": [{"sampler": 0, "target": {"node": 0, "path": "translation"}}]}],
+        "scenes": [{"nodes": [0]}],
+        "scene": 0,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(document), encoding="utf-8")
 
 
 def entity(editor: EditorSession, name: str, components: dict, parent: str | None = None) -> str:
@@ -110,6 +138,15 @@ def build(editor: EditorSession) -> None:
     entity(editor, "Speaker", {"AudioSource": {"Clip": beep, "Volume": 0.5, "Loop": True, "PlayOnStart": True, "Spatial": True,
                                                "MinDistance": 1.0, "MaxDistance": 30.0},
                                "Transform": {"Translation": [2.2, 1.0, 2.5]}})
+    # An imported model as entities (model.create_prefab): its clip plays on the Swing entity (Animation component).
+    write_swing_model(PROJECT / "Assets" / "Models" / "Swing.gltf")
+    swing_prefab = editor.call("model.create_prefab", model="Models/Swing.gltf", path="Prefabs/Swing.pxprefab", name="SwingModel")
+    if swing_prefab["animations"] != 1 or swing_prefab["warnings"]:
+        raise SystemExit(f"Swing model import: {swing_prefab}")
+    swing_root = editor.call("prefab.instantiate", prefab=swing_prefab["handle"])["id"]
+    editor.call("component.set", id=swing_root, components={"Tag": {"Tag": "Feature"}})
+    for child in editor.call("entity.get", id=swing_root)["children"]:
+        editor.call("component.set", id=child, components={"Tag": {"Tag": "Feature"}})
     entity(editor, "FeatureTest", {"Script": {"Script": scripts["FeatureTest"]}})
 
     editor.call("scene.save", path="Scenes/FeatureTest.pxscene")

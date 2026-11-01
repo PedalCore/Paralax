@@ -1,42 +1,64 @@
 {
 	"Assets": [
 		{
-			"Handle": "18360999957996567861",
+			"Handle": "10559868990839588515",
 			"Path": "Audio/Beep.wav",
 			"Type": "Audio"
 		},
 		{
-			"Handle": "2780602726278069989",
+			"Handle": "4371992063474695301",
 			"Path": "Materials/Gold.pxmat",
 			"Type": "Material"
 		},
 		{
-			"Handle": "2983217015136112442",
+			"Handle": "6951885529884599992",
+			"Path": "Models/Swing.gltf",
+			"Type": "Mesh"
+		},
+		{
+			"Handle": "8052249783895638988",
+			"Parent": "6951885529884599992",
+			"Path": "Models/Swing.gltf",
+			"Type": "Mesh"
+		},
+		{
+			"Handle": "16538595053922490369",
+			"Parent": "6951885529884599992",
+			"Path": "Models/Swing.gltf",
+			"Type": "AnimationClip"
+		},
+		{
+			"Handle": "6926976669084504879",
 			"Path": "Prefabs/Crate.pxprefab",
 			"Type": "Prefab"
 		},
 		{
-			"Handle": "9763718452380135951",
+			"Handle": "9330901319333669908",
+			"Path": "Prefabs/Swing.pxprefab",
+			"Type": "Prefab"
+		},
+		{
+			"Handle": "6968655049352227728",
 			"Path": "Scenes/FeatureTest.pxscene",
 			"Type": "Scene"
 		},
 		{
-			"Handle": "9000898865851366975",
+			"Handle": "8229717043348178496",
 			"Path": "Scripts/Ball.lua",
 			"Type": "Script"
 		},
 		{
-			"Handle": "10236783853220958186",
+			"Handle": "547643989245741527",
 			"Path": "Scripts/FeatureTest.lua",
 			"Type": "Script"
 		},
 		{
-			"Handle": "11428764177108119871",
+			"Handle": "1644929829930364581",
 			"Path": "Scripts/Spinner.lua",
 			"Type": "Script"
 		},
 		{
-			"Handle": "13852502645935829702",
+			"Handle": "15953260935399203568",
 			"Path": "Scripts/Util.lua",
 			"Type": "Script"
 		}

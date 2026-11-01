@@ -161,6 +161,16 @@ namespace Paralax {
 		bool Active = true;
 	};
 
+	// Plays an animation clip on the entity and the entities below it while the scene is running (see AnimationSystem).
+	struct AnimationComponent
+	{
+		AssetHandle Clip = 0;
+		bool Playing = true; // Cleared when a clip that does not loop reaches its end.
+		bool Loop = true;
+		float Speed = 1.0f; // Negative plays backwards.
+		float Time = 0.0f;  // Seconds into the clip; set it to start part-way or to seek.
+	};
+
 	// Runs a Lua script on the entity while the scene is running (see ScriptSystem).
 	struct ScriptComponent
 	{

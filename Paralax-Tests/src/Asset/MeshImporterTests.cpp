@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <optional>
 
@@ -390,6 +391,174 @@ TEST_CASE("MeshImporter: extras of any type are accepted")
 		CHECK(result.Nodes.size() == 7);
 		CHECK(result.Nodes[4].Light); // Lights still come through.
 	}
+}
+
+TEST_CASE("MeshImporter: animations become clips, each meant for the deepest node above what it animates")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfAnimations");
+	json document = Paralax::Testing::MakeTriangleDocument(directory);
+	Paralax::Testing::AddCamerasAndLights(document);
+	Paralax::Testing::AddAnimations(document);
+	MeshImportResult result;
+	std::string error;
+	REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), result, error), error);
+	CHECK(result.Warnings.empty());
+	REQUIRE(result.Animations.size() == 3);
+
+	// LampBob: one node, so the lamp plays it itself.
+	const ImportedAnimation& bob = result.Animations[0];
+	CHECK(bob.Clip->Name == "LampBob");
+	CHECK(bob.Host == std::optional<size_t>(5));
+	CHECK(bob.Clip->Duration == 2.0f);
+	REQUIRE(bob.Clip->Channels.size() == 1);
+	CHECK(bob.Clip->Channels[0].Target.empty());
+	CHECK(bob.Clip->Channels[0].Property == AnimationProperty::Translation);
+	CHECK(AnimationClipAsset::Sample(bob.Clip->Channels[0], 1.0f).y == 4.0f);
+
+	// CameraMove: the camera and its child; the camera plays it, the child is named by path.
+	const ImportedAnimation& move = result.Animations[1];
+	CHECK(move.Host == std::optional<size_t>(2));
+	REQUIRE(move.Clip->Channels.size() == 2);
+	CHECK(move.Clip->Channels[0].Target.empty());
+	CHECK(move.Clip->Channels[1].Target == std::vector<std::string>{"TopView"});
+	CHECK(move.Clip->Channels[1].Interpolation == AnimationInterpolation::Step);
+	CHECK(move.Clip->Channels[1].Property == AnimationProperty::Rotation);
+
+	// Mixed: nodes in different subtrees, so the model's root plays it; paths start below the root.
+	const ImportedAnimation& mixed = result.Animations[2];
+	CHECK_FALSE(mixed.Host.has_value());
+	REQUIRE(mixed.Clip->Channels.size() == 2);
+	CHECK(mixed.Clip->Channels[0].Target == std::vector<std::string>{"Node0"});
+	CHECK(mixed.Clip->Channels[1].Target == std::vector<std::string>{"Sun", "Lamp"});
+	CHECK(mixed.Clip->Channels[0].Interpolation == AnimationInterpolation::CubicSpline);
+	CHECK(AnimationClipAsset::Sample(mixed.Clip->Channels[0], 0.5f).x == doctest::Approx(1.5));
+
+	// Handles follow the clips' names.
+	CHECK(bob.Clip->Handle != move.Clip->Handle);
+	json renamed = document;
+	std::swap(renamed["animations"][0], renamed["animations"][1]);
+	MeshImportResult again;
+	REQUIRE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, renamed), UUID(1000), again, error));
+	CHECK(again.Animations[1].Clip->Handle == bob.Clip->Handle);
+}
+
+TEST_CASE("MeshImporter: animation data Paralax cannot play is skipped with warnings, and invalid data rejected")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfBadAnimations");
+	auto import = [&](const std::function<void(json&)>& spoil, MeshImportResult& result) {
+		json document = Paralax::Testing::MakeTriangleDocument(directory);
+		Paralax::Testing::AddCamerasAndLights(document);
+		Paralax::Testing::AddAnimations(document);
+		spoil(document);
+		std::string error;
+		Paralax::Testing::ScopedLogCapture capture;
+		return MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), result, error);
+	};
+	auto hasWarning = [](const MeshImportResult& result, const std::string& text) {
+		return std::any_of(result.Warnings.begin(), result.Warnings.end(), [&](const std::string& w) { return w.find(text) != std::string::npos; });
+	};
+
+	// Valid glTF, not supported: morph target weights (the clip has nothing else, so it is dropped)...
+	MeshImportResult weights;
+	REQUIRE(import([](json& d) { d["animations"][0]["channels"][0]["target"]["path"] = "weights"; }, weights));
+	CHECK(weights.Animations.size() == 2);
+	CHECK(hasWarning(weights, "morph target weights"));
+	CHECK(hasWarning(weights, "nothing Paralax can play"));
+
+	// ...rotation keys stored as normalised integers (the clip keeps its other channel)...
+	MeshImportResult integers;
+	REQUIRE(import(
+		[](json& d) {
+			const size_t accessor = d["animations"][1]["samplers"][1]["output"];
+			d["accessors"][accessor]["componentType"] = 5122; // SHORT, 8 bytes a key: still inside its view.
+			d["accessors"][accessor]["normalized"] = true;
+		},
+		integers));
+	REQUIRE(integers.Animations.size() == 3);
+	CHECK(integers.Animations[1].Clip->Channels.size() == 1);
+	CHECK(hasWarning(integers, "only float keyframes"));
+
+	// ...and a node that is not in the scene.
+	MeshImportResult orphan;
+	REQUIRE(import(
+		[](json& d) {
+			d["nodes"].push_back({{"name", "Orphan"}});
+			d["animations"][0]["channels"][0]["target"]["node"] = d["nodes"].size() - 1;
+		},
+		orphan));
+	CHECK(orphan.Animations.size() == 2);
+	CHECK(hasWarning(orphan, "outside the scene"));
+
+	// Translation keys that are not floats are invalid glTF, but fastgltf lets them through: the importer skips the
+	// channel itself.
+	MeshImportResult integerTranslations;
+	REQUIRE(import([](json& d) { d["accessors"][d["animations"][0]["samplers"][0]["output"].get<size_t>()]["componentType"] = 5125; }, integerTranslations));
+	CHECK(integerTranslations.Animations.size() == 2);
+	CHECK(hasWarning(integerTranslations, "only float keyframes"));
+
+	// Invalid glTF is rejected as a whole: values not matching the key times, a sampler or accessor that does not
+	// exist (fastgltf read past the end for these; patched, see cmake/patches).
+	for (const std::function<void(json&)>& spoil : std::vector<std::function<void(json&)>>{
+			 [](json& d) { d["accessors"][d["animations"][1]["samplers"][0]["output"].get<size_t>()]["count"] = 1; },
+			 [](json& d) { d["animations"][1]["channels"][1]["sampler"] = 7; },
+			 [](json& d) { d["animations"][0]["samplers"][0]["input"] = 999; },
+			 [](json& d) { d["animations"][0]["samplers"][0]["output"] = 999; }})
+	{
+		MeshImportResult result;
+		CHECK_FALSE(import(spoil, result));
+	}
+}
+
+TEST_CASE("MeshImporter: out-of-range indices that fastgltf read unchecked are rejected")
+{
+	// fastgltf v0.9.1 used these indices from the file without range checks (patched, see cmake/patches); found
+	// under ASan while testing animation import.
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfUncheckedIndices");
+	for (const std::function<void(json&)>& spoil : std::vector<std::function<void(json&)>>{
+			 // A primitive without indices (GenerateMeshIndices makes them) whose POSITION accessor does not exist.
+			 [](json& d) {
+				 d["meshes"][0]["primitives"][0].erase("indices");
+				 d["meshes"][0]["primitives"][0]["attributes"]["POSITION"] = 999;
+			 },
+			 // A strip without indices and with no vertices: the index count wrapped around (and was allocated).
+			 [](json& d) {
+				 d["meshes"][0]["primitives"][0].erase("indices");
+				 d["meshes"][0]["primitives"][0]["mode"] = 5;
+				 d["accessors"][0]["count"] = 0;
+			 },
+			 // A primitive without indices claiming far more vertices than it has: that many indices were allocated
+			 // before validation (std::bad_alloc, or the memory taken).
+			 [](json& d) {
+				 d["meshes"][0]["primitives"][0].erase("indices");
+				 d["accessors"][0]["count"] = 4000000000000;
+			 },
+			 // A sparse accessor naming buffer views that do not exist.
+			 [](json& d) {
+				 d["accessors"][1]["sparse"] = {{"count", 1}, {"indices", {{"bufferView", 77}, {"componentType", 5123}}}, {"values", {{"bufferView", 78}}}};
+			 }})
+	{
+		json document = Paralax::Testing::MakeTriangleDocument(directory);
+		spoil(document);
+		MeshImportResult result;
+		std::string error;
+		CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), result, error));
+	}
+}
+
+TEST_CASE("MeshImporter: an animation target sharing its name with a sibling is warned about")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfAmbiguousTargets");
+	json document = Paralax::Testing::MakeTriangleDocument(directory);
+	Paralax::Testing::AddCamerasAndLights(document);
+	Paralax::Testing::AddAnimations(document);
+	document["nodes"][6]["name"] = "Lamp"; // Spot, beside Lamp under Sun, now shares its name.
+	MeshImportResult result;
+	std::string error;
+	REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), result, error), error);
+	// Mixed reaches Lamp by name from the root: Sun/Lamp could be either.
+	CHECK(std::count_if(result.Warnings.begin(), result.Warnings.end(), [](const std::string& w) { return w.find("'Mixed'") != std::string::npos && w.find("sibling") != std::string::npos; }) == 1);
+	// LampBob plays on the lamp itself (an empty path): nothing to confuse.
+	CHECK(std::none_of(result.Warnings.begin(), result.Warnings.end(), [](const std::string& w) { return w.find("'LampBob'") != std::string::npos; }));
 }
 
 TEST_CASE("MeshImporter: computes normals when missing and warns about missing images")

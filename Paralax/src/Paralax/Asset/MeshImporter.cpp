@@ -1,6 +1,7 @@
 #include "pxpch.h"
 #include "Paralax/Asset/MeshImporter.h"
 
+#include "Paralax/Animation/AnimationClip.h"
 #include "Paralax/Asset/AssetManager.h"
 #include "Paralax/Math/Math.h"
 
@@ -17,6 +18,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -133,6 +135,45 @@ namespace Paralax {
 			if (extras->at_key("texture_repeat_m").get_double().get(repeat) == simdjson::SUCCESS)
 				material.RepeatMeters = repeat;
 			material.Parallax = pom || mode == "POM";
+		}
+
+		struct ParseOutcome
+		{
+			fastgltf::Error Parse = fastgltf::Error::None;
+			fastgltf::Error Validation = fastgltf::Error::None;
+			bool Threw = false;
+		};
+
+		// Parses (from the start of data) and validates a document, reading material extras into materialExtras. fastgltf
+		// can throw (std::bad_alloc for absurd sizes in a hostile file); that is caught here, at the boundary, and reported
+		// as a parse failure. outAsset is set only on success.
+		ParseOutcome Parse(fastgltf::GltfDataGetter& data, const std::filesystem::path& directory, fastgltf::Extensions extensions, fastgltf::Options options,
+						   std::vector<MaterialExtras>& materialExtras, std::optional<fastgltf::Asset>& outAsset)
+		{
+			ParseOutcome outcome;
+			outAsset.reset();
+			materialExtras.clear();
+			try
+			{
+				fastgltf::Parser parser(extensions);
+				parser.setExtrasParseCallback(&ReadMaterialExtras);
+				parser.setUserPointer(&materialExtras);
+				data.reset();
+				auto loaded = parser.loadGltf(data, directory, options);
+				outcome.Parse = loaded.error();
+				if (outcome.Parse != fastgltf::Error::None)
+					return outcome;
+				outcome.Validation = fastgltf::validate(loaded.get());
+				if (outcome.Validation == fastgltf::Error::None)
+					outAsset.emplace(std::move(loaded.get()));
+			}
+			catch (const std::exception&)
+			{
+				outcome.Parse = fastgltf::Error::InvalidGltf;
+				outcome.Threw = true;
+				outAsset.reset();
+			}
+			return outcome;
 		}
 
 		// Returns the encoded bytes of an image, or an empty vector if the source is unsupported.
@@ -377,6 +418,157 @@ namespace Paralax {
 
 	}
 
+	namespace {
+
+		// Reads one channel's keys, or explains why it cannot be used.
+		bool ReadChannel(const fastgltf::Asset& asset, const fastgltf::AnimationSampler& sampler, fastgltf::AnimationPath path, AnimationChannel& outChannel, size_t& budget, std::string& outProblem)
+		{
+			const bool rotation = path == fastgltf::AnimationPath::Rotation;
+			const fastgltf::AccessorType valueType = rotation ? fastgltf::AccessorType::Vec4 : fastgltf::AccessorType::Vec3;
+			if (!ValidateAccessor(asset, sampler.inputAccessor, fastgltf::AccessorType::Scalar, outProblem) || !ValidateAccessor(asset, sampler.outputAccessor, valueType, outProblem))
+				return false;
+			const fastgltf::Accessor& input = asset.accessors[sampler.inputAccessor];
+			const fastgltf::Accessor& output = asset.accessors[sampler.outputAccessor];
+			if (input.componentType != fastgltf::ComponentType::Float || output.componentType != fastgltf::ComponentType::Float)
+			{
+				outProblem = "only float keyframes are supported";
+				return false;
+			}
+			const bool cubic = sampler.interpolation == fastgltf::AnimationInterpolation::CubicSpline;
+			if (input.count == 0 || output.count != input.count * (cubic ? 3 : 1))
+			{
+				outProblem = fmt::format("{} key times but {} values", input.count, output.count);
+				return false;
+			}
+			if (input.count + output.count > budget)
+			{
+				outProblem = "the file has too many keyframes";
+				return false;
+			}
+			budget -= input.count + output.count;
+
+			outChannel.Property = rotation ? AnimationProperty::Rotation : path == fastgltf::AnimationPath::Scale ? AnimationProperty::Scale
+																												  : AnimationProperty::Translation;
+			outChannel.Interpolation = cubic                                                             ? AnimationInterpolation::CubicSpline
+									   : sampler.interpolation == fastgltf::AnimationInterpolation::Step ? AnimationInterpolation::Step
+																										 : AnimationInterpolation::Linear;
+			outChannel.Times.resize(input.count);
+			fastgltf::copyFromAccessor<float>(asset, input, outChannel.Times.data());
+			outChannel.Values.resize(output.count);
+			if (rotation)
+				fastgltf::iterateAccessorWithIndex<glm::vec4>(asset, output, [&](glm::vec4 value, size_t index) { outChannel.Values[index] = value; });
+			else
+				fastgltf::iterateAccessorWithIndex<glm::vec3>(asset, output, [&](glm::vec3 value, size_t index) { outChannel.Values[index] = glm::vec4(value, 0.0f); });
+			return true;
+		}
+
+		// The glTF file's animations as clips. Each clip is meant to be played by the deepest node above (or at) every
+		// node it animates (its host; none means the model's root); its channels name their targets relative to it.
+		void ImportAnimations(const fastgltf::Asset& asset, AssetHandle meshHandle, const std::vector<std::optional<size_t>>& recordOf, MeshImportResult& outResult)
+		{
+			std::unordered_map<std::string_view, size_t> nameCounts;
+			for (const fastgltf::Animation& animation : asset.animations)
+				nameCounts[std::string_view(animation.name.data(), animation.name.size())]++;
+			size_t budget = s_MaxElements * 4; // Keyframes (times and values) in all clips.
+			if (asset.animations.empty())
+				return;
+
+			// Targets are found by name below the playing entity, so a node sharing its name with a sibling is ambiguous.
+			// Counted once for all clips (records with no parent are siblings under the model's root).
+			std::map<std::pair<size_t, std::string_view>, size_t> siblingNames;
+			for (const ImportedNode& node : outResult.Nodes)
+				siblingNames[{node.Parent ? *node.Parent + 1 : 0, node.Name}]++;
+			auto shared = [&](size_t record) {
+				const ImportedNode& node = outResult.Nodes[record];
+				return siblingNames[{node.Parent ? *node.Parent + 1 : 0, node.Name}] > 1;
+			};
+
+			for (size_t a = 0; a < asset.animations.size(); a++)
+			{
+				const fastgltf::Animation& source = asset.animations[a];
+				const std::string_view name(source.name.data(), source.name.size());
+				auto clip = CreateRef<AnimationClipAsset>();
+				clip->Name = name.empty() ? fmt::format("Animation{}", a) : NodeName(name, a);
+				clip->Handle = !name.empty() && nameCounts[name] == 1 ? DeriveSubAssetHandle(meshHandle, SubAssetKind::Animation, HashName(name))
+																	  : DeriveSubAssetHandle(meshHandle, SubAssetKind::AnimationByIndex, a);
+
+				std::vector<size_t> targets; // Node records, one per channel.
+				for (size_t c = 0; c < source.channels.size(); c++)
+				{
+					const fastgltf::AnimationChannel& channel = source.channels[c];
+					std::string problem;
+					if (channel.path == fastgltf::AnimationPath::Weights)
+						problem = "morph target weights are not supported";
+					else if (!channel.nodeIndex || *channel.nodeIndex >= recordOf.size() || !recordOf[*channel.nodeIndex])
+						problem = "it animates a node outside the scene";
+					else if (channel.samplerIndex >= source.samplers.size())
+						problem = "its sampler does not exist";
+					AnimationChannel imported;
+					if (problem.empty() && ReadChannel(asset, source.samplers[channel.samplerIndex], channel.path, imported, budget, problem))
+					{
+						clip->Channels.push_back(std::move(imported));
+						targets.push_back(*recordOf[*channel.nodeIndex]);
+					}
+					else
+					{
+						outResult.Warnings.push_back(fmt::format("animation '{}' channel {} is skipped: {}", clip->Name, c, problem));
+					}
+				}
+				if (clip->Channels.empty())
+				{
+					outResult.Warnings.push_back(fmt::format("animation '{}' has nothing Paralax can play; skipped", clip->Name));
+					continue;
+				}
+
+				// The host: the deepest node that is (or is above) every target. Ancestor chains run root first.
+				auto chainOf = [&](size_t record) {
+					std::vector<size_t> chain;
+					for (std::optional<size_t> at = record; at; at = outResult.Nodes[*at].Parent)
+						chain.push_back(*at);
+					std::reverse(chain.begin(), chain.end());
+					return chain;
+				};
+				std::vector<std::vector<size_t>> chains;
+				chains.reserve(targets.size());
+				for (size_t target : targets)
+					chains.push_back(chainOf(target));
+				std::vector<size_t> common = chains[0];
+				for (const std::vector<size_t>& chain : chains)
+				{
+					size_t same = 0;
+					while (same < common.size() && same < chain.size() && common[same] == chain[same])
+						same++;
+					common.resize(same);
+				}
+				std::optional<size_t> host = common.empty() ? std::nullopt : std::optional<size_t>(common.back());
+
+				// Each target as the names of the nodes from just below the host down to it.
+				bool ambiguous = false;
+				for (size_t c = 0; c < clip->Channels.size(); c++)
+				{
+					for (size_t i = host ? common.size() : 0; i < chains[c].size(); i++)
+					{
+						clip->Channels[c].Target.push_back(outResult.Nodes[chains[c][i]].Name);
+						ambiguous = ambiguous || shared(chains[c][i]);
+					}
+				}
+				if (ambiguous)
+					outResult.Warnings.push_back(fmt::format("animation '{}' animates a node whose name a sibling shares; give them different names", clip->Name));
+
+				for (const AnimationChannel& channel : clip->Channels)
+					clip->Duration = std::max(clip->Duration, channel.Times.back());
+				std::string problem;
+				if (!clip->Validate(problem))
+				{
+					outResult.Warnings.push_back(fmt::format("animation '{}' is skipped: {}", clip->Name, problem));
+					continue;
+				}
+				outResult.Animations.push_back({clip, host});
+			}
+		}
+
+	}
+
 	AssetHandle DeriveSubAssetHandle(AssetHandle parent, SubAssetKind kind, uint64_t index)
 	{
 		uint64_t value = SplitMix64(static_cast<uint64_t>(parent) ^ SplitMix64(static_cast<uint64_t>(kind) * 0x100000001B3ull + index));
@@ -402,40 +594,30 @@ namespace Paralax {
 		const auto options = fastgltf::Options::LoadExternalBuffers | fastgltf::Options::GenerateMeshIndices;
 		const auto extensions = fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_texture_transform;
 		std::vector<MaterialExtras> materialExtras;
-		fastgltf::Parser parser(extensions | fastgltf::Extensions::KHR_lights_punctual);
-		parser.setExtrasParseCallback(&ReadMaterialExtras);
-		parser.setUserPointer(&materialExtras);
-		auto loaded = parser.loadGltf(data.get(), path.parent_path(), options);
-		fastgltf::Error validation = loaded.error() == fastgltf::Error::None ? fastgltf::validate(loaded.get()) : fastgltf::Error::None;
-		if (loaded.error() != fastgltf::Error::None || validation != fastgltf::Error::None)
+		std::optional<fastgltf::Asset> parsed;
+		ParseOutcome outcome = Parse(data.get(), path.parent_path(), extensions | fastgltf::Extensions::KHR_lights_punctual, options, materialExtras, parsed);
+		if (outcome.Parse != fastgltf::Error::None || outcome.Validation != fastgltf::Error::None)
 		{
 			// fastgltf rejects a whole file over malformed light data (an unknown type, a zero range...), which the
 			// meshes do not need: try once more without lights.
-			fastgltf::Parser withoutLights(extensions);
-			withoutLights.setExtrasParseCallback(&ReadMaterialExtras);
-			materialExtras.clear();
-			withoutLights.setUserPointer(&materialExtras);
-			data.get().reset();
-			auto retry = withoutLights.loadGltf(data.get(), path.parent_path(), options);
-			const fastgltf::Error retryValidation = retry.error() == fastgltf::Error::None ? fastgltf::validate(retry.get()) : fastgltf::Error::None;
-			if (retry.error() == fastgltf::Error::None && retryValidation == fastgltf::Error::None)
+			const ParseOutcome retry = Parse(data.get(), path.parent_path(), extensions, options, materialExtras, parsed);
+			if (retry.Parse == fastgltf::Error::None && retry.Validation == fastgltf::Error::None)
 			{
-				loaded = std::move(retry);
-				validation = retryValidation;
+				outcome = retry;
 				outResult.Warnings.push_back("the file's lights (KHR_lights_punctual) are malformed and were not imported");
 			}
 		}
-		if (loaded.error() != fastgltf::Error::None)
+		if (outcome.Parse != fastgltf::Error::None)
 		{
-			outError = fmt::format("cannot parse '{}': {}", path.string(), fastgltf::getErrorMessage(loaded.error()));
+			outError = fmt::format("cannot parse '{}': {}", path.string(), outcome.Threw ? "it is too large or malformed" : fastgltf::getErrorMessage(outcome.Parse));
 			return false;
 		}
-		if (validation != fastgltf::Error::None)
+		if (outcome.Validation != fastgltf::Error::None)
 		{
-			outError = fmt::format("'{}' is not a valid glTF file: {}", path.string(), fastgltf::getErrorMessage(validation));
+			outError = fmt::format("'{}' is not a valid glTF file: {}", path.string(), fastgltf::getErrorMessage(outcome.Validation));
 			return false;
 		}
-		const fastgltf::Asset& asset = loaded.get();
+		const fastgltf::Asset& asset = *parsed;
 		const std::filesystem::path directory = path.parent_path();
 
 		// Textures: one TextureAsset per (glTF texture, color space) pair actually used by materials.
@@ -585,8 +767,6 @@ namespace Paralax {
 			outError = fmt::format("'{}' contains no usable scene", path.string());
 			return false;
 		}
-		if (!asset.animations.empty())
-			outResult.Warnings.push_back(fmt::format("{} animation(s) are not imported", asset.animations.size()));
 		if (!asset.skins.empty())
 			outResult.Warnings.push_back(fmt::format("{} skin(s) are not imported; skinned meshes appear in their bind pose", asset.skins.size()));
 
@@ -806,6 +986,7 @@ namespace Paralax {
 			std::optional<size_t> ParentRecord;
 		};
 		std::vector<bool> visited(asset.nodes.size(), false);
+		std::vector<std::optional<size_t>> recordOf(asset.nodes.size()); // glTF node -> MeshImportResult::Nodes.
 		std::vector<PendingNode> stack;
 		const auto& roots = asset.scenes[sceneIndex].nodeIndices;
 		for (auto it = roots.rbegin(); it != roots.rend(); ++it)
@@ -843,6 +1024,7 @@ namespace Paralax {
 			}
 			const size_t recordIndex = outResult.Nodes.size();
 			outResult.Nodes.push_back(std::move(record));
+			recordOf[pending.Index] = recordIndex;
 
 			for (auto it = node.children.rbegin(); it != node.children.rend(); ++it)
 				stack.push_back({*it, matrix, pending.Depth + 1, recordIndex});
@@ -850,6 +1032,7 @@ namespace Paralax {
 
 		if (!outError.empty())
 			return false;
+		ImportAnimations(asset, meshHandle, recordOf, outResult);
 		if (mesh->Submeshes.empty())
 		{
 			outError = fmt::format("'{}' contains no triangle meshes", path.string());

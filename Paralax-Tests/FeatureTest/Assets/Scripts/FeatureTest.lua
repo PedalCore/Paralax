@@ -66,6 +66,8 @@ local function TestComponents(self)
 	assert(probe:AddComponent("Rigidbody", { Type = "Kinematic", Mass = 3 }).Mass == 3)
 	assert(probe:AddComponent("AudioSource", { Volume = 0.5, Loop = true }).Loop == true)
 	assert(probe:AddComponent("AudioListener", { Active = false }).Active == false)
+	local animation = probe:AddComponent("Animation", { Loop = false, Speed = 2 })
+	assert(animation.Clip == "0" and animation.Playing == true and animation.Loop == false and animation.Speed == 2 and animation.Time == 0)
 	assert(probe:RemoveComponent("PointLight") and not probe:HasComponent("PointLight") and not probe:RemoveComponent("PointLight"))
 	-- Invalid values raise errors and change nothing.
 	assert(not pcall(function() transform.Translation = "up" end))
@@ -73,7 +75,7 @@ local function TestComponents(self)
 	assert(not pcall(function() probe:GetComponent("NoSuchComponent") end))
 	-- Every component type in the engine appears in the authored scene.
 	for _, name in ipairs({ "Tag", "Transform", "Camera", "DirectionalLight", "PointLight", "SpotLight", "SkyLight", "Mesh", "Rigidbody",
-		"Collider", "AudioSource", "AudioListener", "Script", "PrefabInstance" }) do
+		"Collider", "AudioSource", "AudioListener", "Animation", "Script", "PrefabInstance" }) do
 		local found = false
 		for _, entity in ipairs(Scene.FindEntitiesByTag("Feature")) do
 			found = found or entity:HasComponent(name)
@@ -213,6 +215,12 @@ function FeatureTest:OnUpdate(dt)
 		assert(BallFixedSteps and BallFixedSteps > 0, "OnFixedUpdate should run before each physics step")
 		assert(Scene.FindEntityByName("PhysicsBall"):GetWorldPosition().y < 1, "gravity should have pulled the ball down")
 		assert(Audio.IsPlaying(Scene.FindEntityByName("Speaker")), "the looping speaker should still be playing")
+		-- The imported model's clip (Swing: up 1 m and back over 2 s, looping) plays on its own entity.
+		local swing = Scene.FindEntityByName("Swing")
+		local clip = swing:GetComponent("Animation")
+		assert(clip.Playing and clip.Loop and clip.Time > 0.5, "the Swing clip should be playing")
+		local height = swing:GetComponent("Transform").Translation.y
+		assert(height > 1.2 and height < 2.0, "the Swing clip should have lifted its entity (y " .. height .. ")")
 		self.done = true
 		Log.Info("FeatureTest: all checks passed at frame " .. Time.frame)
 		if not self.reloaded then

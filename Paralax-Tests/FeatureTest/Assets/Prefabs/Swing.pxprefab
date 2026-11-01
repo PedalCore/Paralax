@@ -1,0 +1,77 @@
+{
+	"Entities": [
+		{
+			"Components": {
+				"Tag": {
+					"Name": "SwingModel",
+					"Tag": ""
+				},
+				"Transform": {
+					"Rotation": [
+						0.0,
+						0.0,
+						0.0,
+						1.0
+					],
+					"Scale": [
+						1.0,
+						1.0,
+						1.0
+					],
+					"Translation": [
+						0.0,
+						0.0,
+						0.0
+					]
+				}
+			},
+			"ID": "15194800555535951947",
+			"Parent": "0"
+		},
+		{
+			"Components": {
+				"Animation": {
+					"Clip": "16538595053922490369",
+					"Loop": true,
+					"Playing": true,
+					"Speed": 1.0,
+					"Time": 0.0
+				},
+				"Mesh": {
+					"CastShadows": true,
+					"Materials": [],
+					"Mesh": "8052249783895638988"
+				},
+				"Tag": {
+					"Name": "Swing",
+					"Tag": ""
+				},
+				"Transform": {
+					"Rotation": [
+						0.0,
+						0.0,
+						0.0,
+						1.0
+					],
+					"Scale": [
+						1.0,
+						1.0,
+						1.0
+					],
+					"Translation": [
+						3.0,
+						1.0,
+						-2.0
+					]
+				}
+			},
+			"ID": "11389091569847370114",
+			"Parent": "15194800555535951947"
+		}
+	],
+	"Name": "Prefab",
+	"Paralax": {
+		"Type": "Prefab",
+		"Version": 1
+	}
+}
