@@ -2,6 +2,7 @@
 #include "Paralax/Renderer/GraphicsDevice.h"
 
 #include "Paralax/Core/DynamicLibrary.h"
+#include "Platform/Vulkan/VulkanDiagnostics.h"
 #include "Platform/Vulkan/VulkanHppDispatcher.h"
 #include "Platform/Vulkan/VulkanLoader.h"
 
@@ -706,6 +707,8 @@ namespace Paralax {
 
 		if (specification.EnableValidation)
 			m_Device = nvrhi::validation::createValidationLayer(m_Device);
+		if (!VulkanDiagnostics::EnableBRDFTrace())
+			return false;
 
 		PX_CORE_INFO("Graphics device: {} (Vulkan {}.{}, {}){}", m_Info.AdapterName, m_Info.ApiVersionMajor, m_Info.ApiVersionMinor, m_Info.DriverName,
 					 specification.EnableValidation ? " with validation" : "");

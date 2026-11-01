@@ -99,7 +99,7 @@ jobs:
           (destination / manifest.name).write_text(json.dumps(data))
           PY
           echo "VK_LAYER_PATH=$RUNNER_TEMP/paralax-vulkan-layers" >> "$GITHUB_ENV"
-          echo "VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT" >> "$GITHUB_ENV"
+          echo "VK_LAYER_VALIDATE_SYNC=1" >> "$GITHUB_ENV"
 
       - name: Cache CPM sources
         uses: actions/cache@v4

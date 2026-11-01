@@ -92,7 +92,7 @@ def main():
         return 1
     (run / "Cache.txt").write_text(cache_report)
     print(cache_report.strip(), flush=True)
-    environment = dict(os.environ, PX_REQUIRE_GPU="1", MVK_CONFIG_LOG_LEVEL="3", VK_LOADER_DEBUG="layer")
+    environment = dict(os.environ, PX_REQUIRE_GPU="1", MVK_CONFIG_LOG_LEVEL="3", VK_LOADER_DEBUG="layer", PX_TRACE_BRDF_BARRIERS="1")
     environment.pop("MVK_CONFIG_FAST_MATH_ENABLED", None)
     failed = False
     for phase in ["AfterCacheClear", "WarmRepeat"]:
