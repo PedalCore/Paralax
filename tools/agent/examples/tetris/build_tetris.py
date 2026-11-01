@@ -4,14 +4,18 @@
     python3 tools/agent/examples/tetris/build_tetris.py <Paralax-Editor> <new project dir> [--export <dir>]
 
 The game logic is one Lua script (Tetris.lua, beside this file); everything else (project, materials, the well,
-camera, lights, sky, the scene) is created with agent commands. Run the result with Paralax-Runtime --project <dir>,
+camera, lights, sky, the scene) is created with agent commands. The two sound effects are generated here and written
+into the project's Assets folder, then imported with asset.import: there is no command for writing binary files. Run the result with Paralax-Runtime --project <dir>,
 or open it in the editor. tools/agent/tests/tetris_test.py plays it with injected input.
 """
 
 from __future__ import annotations
 
 import argparse
+import math
+import struct
 import sys
+import wave
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -20,20 +24,45 @@ from paralax_agent import EditorSession  # noqa: E402
 HERE = Path(__file__).resolve().parent
 CUBE = "1"
 SKY_ENVIRONMENT = "18"
+# Linear colours (materials are linear): the classic palette, saturated so it survives lighting and tonemapping.
 PIECE_COLORS = {
-    "I": [0.20, 0.80, 0.95, 1.0],
-    "O": [0.95, 0.85, 0.20, 1.0],
-    "T": [0.65, 0.30, 0.90, 1.0],
-    "S": [0.30, 0.85, 0.35, 1.0],
-    "Z": [0.90, 0.25, 0.25, 1.0],
-    "J": [0.25, 0.40, 0.95, 1.0],
-    "L": [0.95, 0.55, 0.15, 1.0],
+    "I": [0.02, 0.60, 0.90, 1.0],
+    "O": [0.90, 0.70, 0.02, 1.0],
+    "T": [0.35, 0.05, 0.75, 1.0],
+    "S": [0.05, 0.70, 0.08, 1.0],
+    "Z": [0.80, 0.03, 0.03, 1.0],
+    "J": [0.03, 0.10, 0.85, 1.0],
+    "L": [0.90, 0.30, 0.02, 1.0],
 }
+
+
+def write_tone(path: Path, frequencies: list[float], seconds: float) -> None:
+    """A short tone (a quick sweep through the given frequencies), 16-bit mono, faded at both ends."""
+    rate = 22050
+    frames = int(rate * seconds)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    samples = []
+    phase = 0.0
+    for i in range(frames):
+        frequency = frequencies[min(len(frequencies) - 1, i * len(frequencies) // frames)]
+        phase += 2 * math.pi * frequency / rate
+        fade = min(1.0, i / 200, (frames - 1 - i) / 400)
+        samples.append(int(0.25 * fade * 32767 * math.sin(phase)))
+    with wave.open(str(path), "wb") as file:
+        file.setnchannels(1)
+        file.setsampwidth(2)
+        file.setframerate(rate)
+        file.writeframes(struct.pack(f"<{frames}h", *samples))
 
 
 def build(editor: EditorSession) -> None:
     """Creates the Tetris scene in the editor's open project and makes it the start scene."""
     editor.call("scene.new", name="Tetris")
+    assets = Path(editor.call("project.info")["assets"])
+    write_tone(assets / "Audio" / "Drop.wav", [220.0, 165.0], 0.08)
+    write_tone(assets / "Audio" / "Clear.wav", [523.0, 659.0, 784.0, 1047.0], 0.35)
+    for sound in ("Drop", "Clear"):
+        editor.call("asset.import", path=f"Audio/{sound}.wav")
 
     materials = {}
     for name, color in PIECE_COLORS.items():

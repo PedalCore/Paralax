@@ -178,6 +178,7 @@ function Tetris:Lock()
 			y = y - 1
 		end
 	end
+	Audio.PlayOneShot(cleared > 0 and "Audio/Clear.wav" or "Audio/Drop.wav")
 	if cleared > 0 then
 		self.score = self.score + LineScores[cleared] * self.level
 		self.lines = self.lines + cleared
