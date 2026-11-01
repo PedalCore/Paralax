@@ -15,6 +15,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <limits>
 
 using namespace Paralax;
@@ -92,6 +93,63 @@ namespace {
 	float Luminance(glm::u8vec4 c)
 	{
 		return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
+	}
+
+	void CheckLightingTexture(nvrhi::IDevice* device, nvrhi::ITexture* texture, uint32_t channels, const char* name, std::ostream& report)
+	{
+		REQUIRE(texture);
+		const auto& source = texture->getDesc();
+		for (uint32_t mip = 0; mip < source.mipLevels; mip++)
+			for (uint32_t face = 0; face < source.arraySize; face++)
+			{
+				CAPTURE(name);
+				CAPTURE(mip);
+				CAPTURE(face);
+				nvrhi::TextureDesc desc;
+				desc.width = std::max(1u, source.width >> mip);
+				desc.height = std::max(1u, source.height >> mip);
+				desc.format = source.format;
+				desc.initialState = nvrhi::ResourceStates::CopyDest;
+				desc.keepInitialState = true;
+				auto staging = device->createStagingTexture(desc, nvrhi::CpuAccessMode::Read);
+				REQUIRE(staging);
+				auto commands = device->createCommandList();
+				REQUIRE(commands);
+				commands->open();
+				commands->copyTexture(staging, nvrhi::TextureSlice(), texture, nvrhi::TextureSlice().setMipLevel(mip).setArraySlice(face));
+				commands->close();
+				device->executeCommandList(commands);
+				device->waitForIdle();
+				size_t pitch = 0;
+				const auto* mapped = static_cast<const uint8_t*>(device->mapStagingTexture(staging, nvrhi::TextureSlice(), nvrhi::CpuAccessMode::Read, &pitch));
+				REQUIRE(mapped);
+				float minimumEnergy = std::numeric_limits<float>::max();
+				float maximumEnergy = 0.0f;
+				double sum = 0.0;
+				size_t invalid = 0;
+				for (uint32_t y = 0; y < desc.height; y++)
+					for (uint32_t x = 0; x < desc.width; x++)
+					{
+						float energy = 0.0f;
+						for (uint32_t channel = 0; channel < std::min(channels, 3u); channel++)
+						{
+							uint16_t bits;
+							std::memcpy(&bits, mapped + y * pitch + (x * channels + channel) * sizeof(bits), sizeof(bits));
+							const float value = glm::unpackHalf1x16(bits);
+							invalid += !std::isfinite(value) || value < 0.0f ? 1 : 0;
+							energy += value;
+						}
+						minimumEnergy = std::min(minimumEnergy, energy);
+						maximumEnergy = std::max(maximumEnergy, energy);
+						sum += static_cast<double>(energy);
+					}
+				device->unmapStagingTexture(staging);
+				report << name << " mip=" << mip << " face=" << face << " min=" << minimumEnergy << " max=" << maximumEnergy
+					   << " mean=" << sum / (static_cast<double>(desc.width) * desc.height) << " invalid=" << invalid << '\n';
+				INFO("minimum energy: ", minimumEnergy, ", maximum energy: ", maximumEnergy);
+				CHECK(invalid == 0);
+				CHECK(minimumEnergy > 0.01f);
+			}
 	}
 
 	void CheckMetalLighting(GraphicsDevice& graphics, SceneRenderer& renderer, Scene& scene, const CameraView& camera,
@@ -276,6 +334,16 @@ TEST_CASE("SceneRenderer: fixed look matches the reviewed reference image")
 				blackPixels += Luminance(pixel) < 1.0f ? 1 : 0;
 			}
 		CHECK(blackPixels < 10);
+
+		// Inspect the exact textures used by this renderer, after capturing its first two frames.
+		std::ofstream report(Testing::GetTestOutputDirectory() / "ReferenceLightingTextures.txt");
+		REQUIRE(report.is_open());
+		report << "adapter=" << graphics.GetInfo().AdapterName << " driver=" << graphics.GetInfo().DriverName << '\n';
+		const auto& maps = renderer.GetEnvironmentMaps();
+		CheckLightingTexture(graphics.GetDevice(), renderer.GetBRDFLut(), 2, "BRDFLut", report);
+		CheckLightingTexture(graphics.GetDevice(), maps.Radiance, 4, "Radiance", report);
+		CheckLightingTexture(graphics.GetDevice(), maps.Diffuse, 4, "Diffuse", report);
+		CheckLightingTexture(graphics.GetDevice(), maps.Specular, 4, "Specular", report);
 
 		const auto& info = graphics.GetInfo();
 		const bool referenceDevice = info.AdapterName.find("llvmpipe") != std::string::npos ||
