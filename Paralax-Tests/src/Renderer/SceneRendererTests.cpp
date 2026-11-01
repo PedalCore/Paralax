@@ -217,11 +217,9 @@ namespace {
 			renderer.GetSettings().DefaultEnvironmentIntensity = 0.0f;
 			renderer.GetSettings().Shadows = false;
 			SkyLightComponent* sky = nullptr;
-			for (auto handle : scene.GetAllEntitiesWith<SkyLightComponent>())
-			{
-				sky = &Entity(handle, &scene).GetComponent<SkyLightComponent>();
-				break;
-			}
+			auto skies = scene.GetAllEntitiesWith<SkyLightComponent>();
+			if (auto skyIt = skies.begin(); skyIt != skies.end())
+				sky = &Entity(*skyIt, &scene).GetComponent<SkyLightComponent>();
 			const float skyIntensity = sky ? sky->Intensity : 0.0f;
 			if (sky)
 				sky->Intensity = 0.0f;
