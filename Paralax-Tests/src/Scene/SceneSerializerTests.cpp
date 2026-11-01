@@ -3,7 +3,6 @@
 #include "TestUtilities.h"
 
 #include <Paralax/Scene/Entity.h>
-#include <Paralax/Core/Timer.h>
 #include <Paralax/Scene/SceneSerializer.h>
 
 using namespace Paralax;
@@ -187,30 +186,23 @@ TEST_CASE("SceneSerializer: cycles, self-parenting and missing parents become ro
 	CHECK(scene.GetEntityByUUID(UUID(6)).GetName() == "Entity");
 }
 
-TEST_CASE("SceneSerializer: deep hierarchies load in linear time")
+TEST_CASE("SceneSerializer: very deep hierarchies load and save without recursion or quadratic work")
 {
-	// Compares two sizes instead of using an absolute time limit, so it is robust under sanitizers and loaded
-	// machines: linear loading scales by ~8x for 8x the entities; the old quadratic version scaled by ~64x.
-	auto timeLoad = [](uint64_t depth) {
-		json entities = json::array();
-		for (uint64_t i = 1; i <= depth; i++)
-			entities.push_back({{"ID", std::to_string(i)}, {"Parent", std::to_string(i - 1)}});
-		const json document = {{"Paralax", {{"Type", "Scene"}, {"Version", 1}}}, {"Entities", entities}};
+	// No wall-clock comparison (flaky on loaded machines): a quadratic loader would need ~10^10 steps for this depth
+	// and hit the test timeout, a recursive one would overflow the stack; the linear one takes seconds even unoptimized.
+	constexpr uint64_t depth = 100000;
+	json entities = json::array();
+	for (uint64_t i = 1; i <= depth; i++)
+		entities.push_back({{"ID", std::to_string(i)}, {"Parent", std::to_string(i - 1)}});
+	const json document = {{"Paralax", {{"Type", "Scene"}, {"Version", 1}}}, {"Entities", entities}};
 
-		Scene scene;
-		std::string error;
-		Paralax::Timer timer;
-		REQUIRE(SceneSerializer::Deserialize(scene, document, error));
-		const float elapsed = timer.Elapsed();
-		CHECK(scene.GetEntityCount() == depth);
-		CHECK(SceneSerializer::Serialize(scene)["Entities"].size() == depth);
-		return std::max(elapsed, 1e-4f);
-	};
-
-	timeLoad(500); // Warm-up.
-	const float small = timeLoad(2500);
-	const float large = timeLoad(20000);
-	CAPTURE(small);
-	CAPTURE(large);
-	CHECK(large / small < 24.0f);
+	Scene scene;
+	std::string error;
+	REQUIRE(SceneSerializer::Deserialize(scene, document, error));
+	CHECK(scene.GetEntityCount() == depth);
+	CHECK(scene.GetRootEntities() == std::vector<UUID>{UUID(1)});
+	CHECK(scene.GetParent(scene.GetEntityByUUID(UUID(depth)))->GetUUID() == UUID(depth - 1));
+	const json saved = SceneSerializer::Serialize(scene);
+	REQUIRE(saved["Entities"].size() == depth);
+	CHECK(saved["Entities"][depth - 1]["ID"] == std::to_string(depth));
 }
