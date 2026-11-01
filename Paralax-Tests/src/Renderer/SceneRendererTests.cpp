@@ -7,11 +7,20 @@
 #include <Paralax/Asset/MaterialAsset.h>
 #include <Paralax/Renderer/GraphicsDevice.h>
 #include <Paralax/Renderer/SceneRenderer.h>
+#include <Paralax/Renderer/SceneRendererTypes.h>
 #include <Paralax/Renderer/TextureReadback.h>
 #include <Paralax/Scene/Entity.h>
 
+#include <glm/gtc/packing.hpp>
+
 #include <array>
+#include <cmath>
+#include <chrono>
+#include <fstream>
+#include <cstring>
 #include <limits>
+#include <string>
+#include <vector>
 
 using namespace Paralax;
 
@@ -90,6 +99,225 @@ namespace {
 		return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
 	}
 
+	void CheckLightingSnapshot(nvrhi::IDevice* device, nvrhi::IStagingTexture* staging, uint32_t channels, const char* name,
+							   uint32_t mip, uint32_t face, const std::filesystem::path& directory, std::ostream& report)
+	{
+		REQUIRE(staging);
+		const auto& desc = staging->getDesc();
+		size_t pitch = 0;
+		const auto* mapped = static_cast<const uint8_t*>(device->mapStagingTexture(staging, nvrhi::TextureSlice(), nvrhi::CpuAccessMode::Read, &pitch));
+		REQUIRE(mapped);
+		std::ofstream raw(directory / (std::string(name) + "-mip-" + std::to_string(mip) + "-face-" + std::to_string(face) + ".bin"), std::ios::binary);
+		for (uint32_t row = 0; row < desc.height; row++)
+			raw.write(reinterpret_cast<const char*>(mapped + row * pitch), static_cast<std::streamsize>(desc.width * channels * sizeof(uint16_t)));
+		raw.close();
+		const bool rawSaved = raw.good();
+		float minimumEnergy = std::numeric_limits<float>::max();
+		float maximumEnergy = 0.0f;
+		double sum = 0.0;
+		size_t invalid = 0;
+		for (uint32_t y = 0; y < desc.height; y++)
+			for (uint32_t x = 0; x < desc.width; x++)
+			{
+				float energy = 0.0f;
+				for (uint32_t channel = 0; channel < std::min(channels, 3u); channel++)
+				{
+					uint16_t bits;
+					std::memcpy(&bits, mapped + y * pitch + (x * channels + channel) * sizeof(bits), sizeof(bits));
+					const float value = glm::unpackHalf1x16(bits);
+					invalid += !std::isfinite(value) || value < 0.0f ? 1 : 0;
+					energy += value;
+				}
+				minimumEnergy = std::min(minimumEnergy, energy);
+				maximumEnergy = std::max(maximumEnergy, energy);
+				sum += static_cast<double>(energy);
+			}
+		device->unmapStagingTexture(staging);
+		report << name << " mip=" << mip << " face=" << face << " min=" << minimumEnergy << " max=" << maximumEnergy
+			   << " width=" << desc.width << " height=" << desc.height << " channels=" << channels << " rawSaved=" << rawSaved
+			   << " mean=" << sum / (static_cast<double>(desc.width) * desc.height) << " invalid=" << invalid << '\n';
+		report.flush();
+	}
+
+	void CheckLightingTexture(nvrhi::IDevice* device, nvrhi::ITexture* texture, uint32_t channels, const char* name, const std::filesystem::path& directory, std::ostream& report)
+	{
+		REQUIRE(texture);
+		const auto& source = texture->getDesc();
+		for (uint32_t mip = 0; mip < source.mipLevels; mip++)
+			for (uint32_t face = 0; face < source.arraySize; face++)
+			{
+				CAPTURE(name);
+				CAPTURE(mip);
+				CAPTURE(face);
+				nvrhi::TextureDesc desc;
+				desc.width = std::max(1u, source.width >> mip);
+				desc.height = std::max(1u, source.height >> mip);
+				desc.format = source.format;
+				desc.initialState = nvrhi::ResourceStates::CopyDest;
+				desc.keepInitialState = true;
+				auto staging = device->createStagingTexture(desc, nvrhi::CpuAccessMode::Read);
+				REQUIRE(staging);
+				auto commands = device->createCommandList();
+				REQUIRE(commands);
+				commands->open();
+				commands->copyTexture(staging, nvrhi::TextureSlice(), texture, nvrhi::TextureSlice().setMipLevel(mip).setArraySlice(face));
+				commands->close();
+				device->executeCommandList(commands);
+				device->waitForIdle();
+				CheckLightingSnapshot(device, staging, channels, name, mip, face, directory, report);
+			}
+	}
+
+	void CheckMetalLighting(GraphicsDevice& graphics, SceneRenderer& renderer, Scene& scene, const CameraView& camera,
+							const RenderTarget& output, const Image& first, const std::string& name, bool checkAppearance = true)
+	{
+		auto* device = graphics.GetDevice();
+		const auto metal = first.GetPixel(195, 95);
+		INFO("metal RGB: ", int(metal.r), ", ", int(metal.g), ", ", int(metal.b));
+		const bool lit = Luminance(metal) > 25.0f && metal.r > metal.b + 10 && metal.g > metal.b + 10;
+		if (checkAppearance)
+			CHECK(lit);
+
+		// Tonemapping can hide NaNs as black: inspect the linear half-float render target as well.
+		nvrhi::TextureDesc desc = renderer.GetHDRTarget()->getDesc();
+		desc.isRenderTarget = false;
+		desc.initialState = nvrhi::ResourceStates::CopyDest;
+		auto staging = device->createStagingTexture(desc, nvrhi::CpuAccessMode::Read);
+		REQUIRE(staging);
+		auto commands = device->createCommandList();
+		REQUIRE(commands);
+		commands->open();
+		commands->copyTexture(staging, nvrhi::TextureSlice(), renderer.GetHDRTarget(), nvrhi::TextureSlice());
+		commands->close();
+		device->executeCommandList(commands);
+		device->waitForIdle();
+		size_t pitch = 0;
+		const auto* mapped = static_cast<const uint8_t*>(device->mapStagingTexture(staging, nvrhi::TextureSlice(), nvrhi::CpuAccessMode::Read, &pitch));
+		REQUIRE(mapped);
+		size_t invalid = 0;
+		glm::vec3 hdrMetal(0.0f);
+		for (uint32_t y = 0; y < desc.height; y++)
+			for (uint32_t x = 0; x < desc.width; x++)
+				for (uint32_t channel = 0; channel < 3; channel++)
+				{
+					uint16_t bits;
+					std::memcpy(&bits, mapped + y * pitch + (x * 4 + channel) * sizeof(bits), sizeof(bits));
+					const float value = glm::unpackHalf1x16(bits);
+					invalid += !std::isfinite(value) || value < 0.0f ? 1 : 0;
+					if (x == 195 && y == 95)
+						hdrMetal[channel] = value;
+				}
+		device->unmapStagingTexture(staging);
+		INFO("linear metal RGB: ", hdrMetal.r, ", ", hdrMetal.g, ", ", hdrMetal.b);
+		CHECK(invalid == 0);
+		const bool hdrLit = glm::dot(hdrMetal, glm::vec3(0.2126f, 0.7152f, 0.0722f)) > 0.01f;
+		CHECK(hdrLit);
+
+		if (!lit || !hdrLit || invalid != 0)
+		{
+			const auto originalSettings = renderer.GetSettings();
+			const auto directory = Testing::GetTestOutputDirectory() / name;
+			REQUIRE(first.SavePNG(directory / "Lit.png"));
+			for (auto debug : {RenderDebugView::BaseColor, RenderDebugView::Normals})
+			{
+				renderer.GetSettings().DebugView = debug;
+				renderer.Render(scene, camera, output.Framebuffer);
+				REQUIRE(ReadbackTexture(device, output.Texture).SavePNG(directory / (debug == RenderDebugView::BaseColor ? "BaseColor.png" : "Normals.png")));
+			}
+			renderer.GetSettings().DebugView = RenderDebugView::None;
+			renderer.GetSettings().DefaultEnvironmentIntensity = 0.0f;
+			renderer.GetSettings().Shadows = false;
+			SkyLightComponent* sky = nullptr;
+			auto skies = scene.GetAllEntitiesWith<SkyLightComponent>();
+			if (auto skyIt = skies.begin(); skyIt != skies.end())
+				sky = &Entity(*skyIt, &scene).GetComponent<SkyLightComponent>();
+			const float skyIntensity = sky ? sky->Intensity : 0.0f;
+			if (sky)
+				sky->Intensity = 0.0f;
+			renderer.Render(scene, camera, output.Framebuffer);
+			REQUIRE(ReadbackTexture(device, output.Texture).SavePNG(directory / "DirectOnly.png"));
+			if (sky)
+				sky->Intensity = skyIntensity;
+			renderer.GetSettings() = originalSettings;
+		}
+	}
+
+	void CaptureLightingFailure(GraphicsDevice& graphics, SceneRenderer& renderer, Scene& scene, const CameraView& camera,
+								const RenderTarget& output, const Image& image, const std::string& name, const char* testCase)
+	{
+		const auto directory = Testing::GetTestOutputDirectory() / name;
+		std::error_code error;
+		std::filesystem::create_directories(directory, error);
+		REQUIRE_FALSE(error);
+		std::ofstream report(directory / "LightingTextures.txt");
+		REQUIRE(report.is_open());
+		report << "TestCase=" << testCase << '\n';
+		report << "CapturedEpochMilliseconds=" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << '\n';
+		report << "adapter=" << graphics.GetInfo().AdapterName << " driver=" << graphics.GetInfo().DriverName << '\n';
+		report << "Raw data: tightly packed native half-float components, dimensions and channels below\n";
+		report << "BRDFTrackedStateBeforeInitializationClose=" << static_cast<uint32_t>(renderer.GetBRDFStateBeforeInitializationClose())
+			   << " BRDFTrackedStateAtFirstFrame=" << static_cast<uint32_t>(renderer.GetBRDFStateAtFirstFrame())
+			   << " ExpectedCopySource=" << static_cast<uint32_t>(nvrhi::ResourceStates::CopySource)
+			   << " ExpectedShaderResource=" << static_cast<uint32_t>(nvrhi::ResourceStates::ShaderResource) << '\n';
+		graphics.GetDevice()->waitForIdle();
+		CheckLightingSnapshot(graphics.GetDevice(), renderer.GetInitialBRDFLut(), 2, "BRDFLutAtInitialization", 0, 0, directory, report);
+		CheckLightingSnapshot(graphics.GetDevice(), renderer.GetFirstFrameBRDFLut(), 2, "BRDFLutAtFirstFrame", 0, 0, directory, report);
+		const auto& maps = renderer.GetEnvironmentMaps();
+		CheckLightingTexture(graphics.GetDevice(), renderer.GetBRDFLut(), 2, "BRDFLut", directory, report);
+		CheckLightingTexture(graphics.GetDevice(), maps.Specular, 4, "Specular", directory, report);
+		CheckLightingTexture(graphics.GetDevice(), maps.Diffuse, 4, "Diffuse", directory, report);
+		CheckLightingTexture(graphics.GetDevice(), maps.Radiance, 4, "Radiance", directory, report);
+		// The caller already checked appearance; HDR environments need not have the procedural sky's gold hue.
+		CheckMetalLighting(graphics, renderer, scene, camera, output, image, name, false);
+
+		// Preserve all original evidence before changing the failed texture. This is a diagnostic, never a recovery path.
+		auto* device = graphics.GetDevice();
+		auto* lut = renderer.GetBRDFLut();
+		auto* pipeline = renderer.GetBRDFLutPipeline();
+		REQUIRE(pipeline);
+		REQUIRE(pipeline->getDesc().bindingLayouts.size() == 1);
+		report << "Probe: same texture and compute pipeline; fresh binding set and command list\n";
+		report << "LUT description: format=" << static_cast<uint32_t>(lut->getDesc().format) << " isUAV=" << lut->getDesc().isUAV << '\n';
+		report << "Sentinel expected per texel: R=4 G=8\n";
+		auto backupDesc = lut->getDesc();
+		backupDesc.isUAV = false;
+		backupDesc.debugName = "BRDFLutDiagnosticBackup";
+		auto backup = device->createTexture(backupDesc);
+		REQUIRE(backup);
+		auto commands = device->createCommandList();
+		REQUIRE(commands);
+		commands->open();
+		commands->copyTexture(backup, nvrhi::TextureSlice(), lut, nvrhi::TextureSlice());
+		commands->clearTextureFloat(lut, nvrhi::AllSubresources, nvrhi::Color(4.0f, 8.0f, 0.0f, 0.0f));
+		commands->close();
+		device->executeCommandList(commands);
+		CheckLightingTexture(device, lut, 2, "BRDFLutSentinel", directory, report);
+
+		nvrhi::BindingSetDesc bindingDesc;
+		bindingDesc.bindings = {nvrhi::BindingSetItem::PushConstants(0, sizeof(GPU::IBLConstants)), nvrhi::BindingSetItem::Texture_UAV(1, lut)};
+		auto bindings = device->createBindingSet(bindingDesc, pipeline->getDesc().bindingLayouts[0]);
+		REQUIRE(bindings);
+		commands->open();
+		nvrhi::ComputeState state;
+		state.pipeline = pipeline;
+		state.bindings = {bindings};
+		commands->setComputeState(state);
+		GPU::IBLConstants constants{};
+		commands->setPushConstants(&constants, sizeof(constants));
+		commands->dispatch(16, 16, 1);
+		commands->close();
+		device->executeCommandList(commands);
+		CheckLightingTexture(device, lut, 2, "BRDFLutRedispatched", directory, report);
+		renderer.Render(scene, camera, output.Framebuffer);
+		REQUIRE(ReadbackTexture(device, output.Texture).SavePNG(directory / "Redispatched.png"));
+		// Later checks in the same test must still observe the original contents, even if redispatch repaired this LUT.
+		commands->open();
+		commands->copyTexture(lut, nvrhi::TextureSlice(), backup, nvrhi::TextureSlice());
+		commands->close();
+		device->executeCommandList(commands);
+		CheckLightingTexture(device, lut, 2, "BRDFLutRestored", directory, report);
+	}
+
 }
 
 TEST_CASE("SceneRenderer: renders a lit, shadowed PBR scene without validation errors")
@@ -144,6 +372,198 @@ TEST_CASE("SceneRenderer: renders a lit, shadowed PBR scene without validation e
 		for (uint32_t y = 20; y < height; y += 20)
 			for (uint32_t x = 20; x < width; x += 20)
 				REQUIRE(image.GetPixel(x, y).a == 255);
+	}
+	CHECK(graphics.GetValidationErrorCount() == initialErrors);
+}
+
+namespace {
+	enum class TargetPreparation
+	{
+		DuringRender,
+		BeforeRender,
+		DuringPreparation,
+		BeforeLutGeneration
+	};
+
+	void CheckBRDFTargetOrdering(TargetPreparation preparation)
+	{
+		if (!Testing::RequireTestGraphicsDevice())
+			return;
+		auto& graphics = *Testing::GetTestGraphicsDevice();
+		const auto initialErrors = graphics.GetValidationErrorCount();
+		{
+			auto* device = graphics.GetDevice();
+			AssetManager assets;
+			Scene scene("AllocationCheckpoints");
+			BuildTestScene(scene, assets);
+			SceneRenderer renderer(graphics, assets);
+			if (preparation == TargetPreparation::BeforeLutGeneration)
+				REQUIRE(renderer.InitializeWithTargetsForDiagnostics(320, 180));
+			else
+				REQUIRE(renderer.Initialize());
+
+			const auto readSnapshot = [device](nvrhi::IStagingTexture* staging) {
+				REQUIRE(staging);
+				const auto& desc = staging->getDesc();
+				REQUIRE(desc.format == nvrhi::Format::RG16_FLOAT);
+				REQUIRE(desc.width == 128);
+				REQUIRE(desc.height == 128);
+				std::vector<uint16_t> pixels(128 * 128 * 2);
+				constexpr size_t RowBytes = 128 * 2 * sizeof(uint16_t);
+				size_t pitch = 0;
+				const auto* mapped = static_cast<const uint8_t*>(device->mapStagingTexture(staging, nvrhi::TextureSlice(), nvrhi::CpuAccessMode::Read, &pitch));
+				REQUIRE(mapped);
+				const bool validPitch = pitch >= RowBytes;
+				if (validPitch)
+					for (size_t row = 0; row < 128; row++)
+						std::memcpy(pixels.data() + row * 128 * 2, mapped + row * pitch, RowBytes);
+				device->unmapStagingTexture(staging);
+				REQUIRE(validPitch);
+				return pixels;
+			};
+			const auto readCurrent = [&] {
+				auto staging = device->createStagingTexture(renderer.GetInitialBRDFLut()->getDesc(), nvrhi::CpuAccessMode::Read);
+				REQUIRE(staging);
+				auto commands = device->createCommandList();
+				REQUIRE(commands);
+				commands->open();
+				commands->copyTexture(staging, nvrhi::TextureSlice(), renderer.GetBRDFLut(), nvrhi::TextureSlice());
+				commands->close();
+				device->executeCommandList(commands);
+				device->waitForIdle();
+				return readSnapshot(staging);
+			};
+
+			// Waiting at each observation narrows the loss interval, but can change the intermittent failure's timing.
+			device->waitForIdle();
+			const auto initial = readSnapshot(renderer.GetInitialBRDFLut());
+			const auto afterInitialization = readCurrent();
+			auto output = CreateOutput(device, 320, 180);
+			REQUIRE(output.Texture);
+			REQUIRE(output.Framebuffer);
+			const auto afterOutputAllocation = readCurrent();
+			std::vector<uint16_t> afterTargetPreparation;
+			struct PreparationSnapshot
+			{
+				std::string Name;
+				double Milliseconds; // The step's wall-clock duration (diagnostic).
+				std::vector<uint16_t> Pixels;
+			};
+			std::vector<PreparationSnapshot> preparationSnapshots;
+			if (preparation != TargetPreparation::DuringRender)
+			{
+				if (preparation == TargetPreparation::DuringPreparation)
+				{
+					renderer.PrepareTargetsForDiagnostics(320, 180, [&](const char* checkpoint, double milliseconds) {
+						preparationSnapshots.push_back({checkpoint, milliseconds, readCurrent()});
+					});
+				}
+				else
+					renderer.PrepareTargetsForDiagnostics(320, 180);
+				afterTargetPreparation = readCurrent();
+			}
+			const auto camera = CameraView::LookAt({0, 2, 4.5f}, {0, 0.4f, 0}, glm::radians(50.0f), 320.0f / 180.0f);
+			renderer.Render(scene, camera, output.Framebuffer);
+			device->waitForIdle();
+			const auto atFirstFrame = readSnapshot(renderer.GetFirstFrameBRDFLut());
+			const auto afterRendering = readCurrent();
+
+			struct Observation
+			{
+				const char* Name;
+				const std::vector<uint16_t>& Pixels;
+			};
+			std::vector<Observation> observations = {{"initial dispatch snapshot", initial}, {"after initialization submission", afterInitialization}, {"after output allocation", afterOutputAllocation}};
+			if (preparation == TargetPreparation::DuringPreparation)
+			{
+				const char* expectedSteps[] = {"after target preparation idle wait", "after scene textures before framebuffer", "after scene textures and framebuffer",
+											   "after shadow texture and framebuffers", "after pipeline opaque", "after pipeline opaque mirrored",
+											   "after pipeline opaque double-sided", "after pipeline blend", "after pipeline sky", "after pipeline shadow",
+											   "after pipeline shadow mask"};
+				REQUIRE(preparationSnapshots.size() == std::size(expectedSteps));
+				for (size_t i = 0; i < preparationSnapshots.size(); i++)
+				{
+					CHECK(preparationSnapshots[i].Name == expectedSteps[i]);
+					observations.push_back({preparationSnapshots[i].Name.c_str(), preparationSnapshots[i].Pixels});
+				}
+			}
+			if (preparation != TargetPreparation::DuringRender)
+				observations.push_back({"after target preparation before Render", afterTargetPreparation});
+			observations.push_back({"first frame after internal target allocation", atFirstFrame});
+			observations.push_back({"after rendering", afterRendering});
+			// Emit diagnostics after collecting every observation, so logging does not delay later GPU work.
+			for (const PreparationSnapshot& snapshot : preparationSnapshots)
+				MESSAGE("preparation step '", snapshot.Name, "' took ", snapshot.Milliseconds, " ms");
+			for (const auto& observation : observations)
+			{
+				INFO("checkpoint: ", std::string(observation.Name));
+				REQUIRE(observation.Pixels.size() == initial.size());
+				size_t mismatches = 0, invalid = 0, firstMismatch = initial.size();
+				double energy = 0.0;
+				for (size_t component = 0; component < initial.size(); component++)
+				{
+					const float value = glm::unpackHalf1x16(observation.Pixels[component]);
+					invalid += !std::isfinite(value) || value < 0.0f ? 1 : 0;
+					energy += static_cast<double>(value);
+					if (observation.Pixels[component] != initial[component])
+					{
+						firstMismatch = std::min(firstMismatch, component);
+						mismatches++;
+					}
+				}
+				CAPTURE(energy);
+				CAPTURE(mismatches);
+				if (firstMismatch != initial.size())
+				{
+					INFO("first differing component: ", firstMismatch, ", initial: ", glm::unpackHalf1x16(initial[firstMismatch]),
+						 ", observed: ", glm::unpackHalf1x16(observation.Pixels[firstMismatch]));
+					CHECK(mismatches == 0);
+				}
+				CHECK(invalid == 0);
+				CHECK(energy > 1.0);
+			}
+		}
+		CHECK(graphics.GetValidationErrorCount() == initialErrors);
+	}
+}
+
+TEST_CASE("SceneRenderer: BRDF LUT survives output and internal target allocation")
+{
+	CheckBRDFTargetOrdering(TargetPreparation::DuringRender);
+}
+
+TEST_CASE("SceneRenderer: BRDF LUT survives target preparation before frame recording")
+{
+	CheckBRDFTargetOrdering(TargetPreparation::BeforeRender);
+}
+
+TEST_CASE("SceneRenderer: BRDF LUT survives each target preparation stage")
+{
+	CheckBRDFTargetOrdering(TargetPreparation::DuringPreparation);
+}
+
+TEST_CASE("SceneRenderer: BRDF LUT survives when targets precede LUT generation")
+{
+	CheckBRDFTargetOrdering(TargetPreparation::BeforeLutGeneration);
+}
+
+TEST_CASE("SceneRenderer: diagnostic target preparation requires valid state and dimensions")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto initialErrors = graphics.GetValidationErrorCount();
+	{
+		AssetManager assets;
+		SceneRenderer renderer(graphics, assets);
+		Testing::ScopedAssertionCapture capture;
+		CHECK_THROWS_AS(renderer.PrepareTargetsForDiagnostics(320, 180), Testing::AssertionFailedError);
+		CHECK_THROWS_AS(renderer.InitializeWithTargetsForDiagnostics(0, 180), Testing::AssertionFailedError);
+		CHECK_THROWS_AS(renderer.InitializeWithTargetsForDiagnostics(320, 0), Testing::AssertionFailedError);
+		REQUIRE(renderer.Initialize());
+		CHECK_THROWS_AS(renderer.PrepareTargetsForDiagnostics(0, 180), Testing::AssertionFailedError);
+		CHECK_THROWS_AS(renderer.PrepareTargetsForDiagnostics(320, 0), Testing::AssertionFailedError);
+		CHECK_THROWS_AS(renderer.InitializeWithTargetsForDiagnostics(320, 180), Testing::AssertionFailedError);
 	}
 	CHECK(graphics.GetValidationErrorCount() == initialErrors);
 }
@@ -211,6 +631,9 @@ TEST_CASE("SceneRenderer: fixed look matches the reviewed reference image")
 				blackPixels += Luminance(pixel) < 1.0f ? 1 : 0;
 			}
 		CHECK(blackPixels < 10);
+		if (Luminance(metal) <= 25.0f || metal.r <= metal.b + 10 || metal.g <= metal.b + 10)
+			CaptureLightingFailure(graphics, renderer, scene, camera, output, actual, "ReferenceLightingFailure",
+								   "SceneRenderer: fixed look matches the reviewed reference image");
 
 		const auto& info = graphics.GetInfo();
 		const bool referenceDevice = info.AdapterName.find("llvmpipe") != std::string::npos ||
@@ -443,6 +866,9 @@ TEST_CASE("SceneRenderer: built-in HDR rotation and intensity control image base
 			CHECK(Luminance(original.GetPixel(195, 95)) > 20.0f);
 			CHECK(Image::MaxChannelDifference(original, capture()) == 0);
 			REQUIRE(original.SavePNG(Testing::GetTestOutputDirectory() / ("R2-Environment-" + std::to_string(handle) + ".png")));
+			if (Luminance(original.GetPixel(195, 95)) <= 20.0f)
+				CaptureLightingFailure(graphics, renderer, scene, camera, output, original, "HDRLightingFailure-" + std::to_string(handle),
+									   "SceneRenderer: built-in HDR rotation and intensity control image based surface lighting");
 			environment.RotationDegrees = 180.0f;
 			const auto rotated = capture();
 			CHECK(Image::MaxChannelDifference(original, rotated) > 10);
@@ -486,6 +912,119 @@ TEST_CASE("SceneRenderer: missing built-in environment uses the procedural sky a
 		for (const auto& entry : log.GetEntries())
 			errors += entry.Level == spdlog::level::err ? 1 : 0;
 		CHECK(errors == 1);
+	}
+	CHECK(graphics.GetValidationErrorCount() == initialErrors);
+}
+
+TEST_CASE("SceneRenderer: fresh and regenerated environments retain finite metallic lighting immediately")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	auto* device = graphics.GetDevice();
+	const auto initialErrors = graphics.GetValidationErrorCount();
+	INFO("adapter: ", graphics.GetInfo().AdapterName, ", driver: ", graphics.GetInfo().DriverName);
+	for (int iteration = 0; iteration < 4; iteration++)
+	{
+		CAPTURE(iteration);
+		AssetManager assets;
+		Scene scene("ImmediateEnvironment");
+		BuildTestScene(scene, assets);
+		SceneRenderer renderer(graphics, assets);
+		REQUIRE(renderer.Initialize());
+		auto output = CreateOutput(device, 320, 180);
+		const auto camera = CameraView::LookAt({0, 2, 4.5f}, {0, 0.4f, 0}, glm::radians(50.0f), 320.0f / 180.0f);
+		const auto sun = scene.FindEntityByName("Sun");
+		REQUIRE(sun);
+		for (int generation = 0; generation < 3; generation++)
+		{
+			CAPTURE(generation);
+			// No readback or CPU wait between convolution and the forward pass consuming the new maps.
+			if (generation > 0)
+				sun->GetTransform().Rotation = Math::EulerToQuat(glm::radians(glm::vec3(-50.0f, 35.0f + 20.0f * static_cast<float>(generation), 0.0f)));
+			renderer.Render(scene, camera, output.Framebuffer);
+			const Image first = ReadbackTexture(device, output.Texture);
+			REQUIRE_FALSE(first.IsEmpty());
+			CheckMetalLighting(graphics, renderer, scene, camera, output, first,
+							   "LightingFailure-" + std::to_string(iteration) + "-" + std::to_string(generation));
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(Image::MaxChannelDifference(first, ReadbackTexture(device, output.Texture)) == 0);
+		}
+		device->waitForIdle();
+		device->runGarbageCollection();
+	}
+	CHECK(graphics.GetValidationErrorCount() == initialErrors);
+}
+
+TEST_CASE("SceneRenderer: static lighting is regenerated after render targets are allocated, with identical contents")
+{
+	if (!Paralax::Testing::RequireTestGraphicsDevice())
+		return;
+	GraphicsDevice& graphics = *Paralax::Testing::GetTestGraphicsDevice();
+	const uint32_t initialErrors = graphics.GetValidationErrorCount();
+	{
+		nvrhi::IDevice* device = graphics.GetDevice();
+		AssetManager assets;
+		Scene scene("StaticLighting");
+		BuildTestScene(scene, assets);
+		SceneRenderer renderer(graphics, assets);
+		REQUIRE(renderer.Initialize());
+
+		const auto readLut = [&] {
+			nvrhi::ITexture* lut = renderer.GetBRDFLut();
+			REQUIRE(lut);
+			nvrhi::TextureDesc desc = lut->getDesc();
+			desc.isUAV = false;
+			desc.debugName = "BRDFLutReadback";
+			auto staging = device->createStagingTexture(desc, nvrhi::CpuAccessMode::Read);
+			auto commands = device->createCommandList();
+			REQUIRE(staging);
+			REQUIRE(commands);
+			commands->open();
+			commands->copyTexture(staging, nvrhi::TextureSlice(), lut, nvrhi::TextureSlice());
+			commands->close();
+			device->executeCommandList(commands);
+			device->waitForIdle();
+			const size_t rowBytes = size_t(desc.width) * 2 * sizeof(uint16_t);
+			size_t pitch = 0;
+			const auto* mapped = static_cast<const uint8_t*>(device->mapStagingTexture(staging, nvrhi::TextureSlice(), nvrhi::CpuAccessMode::Read, &pitch));
+			REQUIRE(mapped);
+			REQUIRE(pitch >= rowBytes);
+			std::vector<uint16_t> pixels(size_t(desc.width) * desc.height * 2);
+			for (uint32_t row = 0; row < desc.height; row++)
+				std::memcpy(pixels.data() + size_t(row) * desc.width * 2, mapped + row * pitch, rowBytes);
+			device->unmapStagingTexture(staging);
+			return pixels;
+		};
+		const auto energy = [](const std::vector<uint16_t>& pixels) {
+			double sum = 0.0;
+			for (uint16_t value : pixels)
+				sum += static_cast<double>(glm::unpackHalf1x16(value));
+			return sum;
+		};
+
+		const CameraView camera = CameraView::LookAt({0.0f, 2.0f, 4.5f}, {0.0f, 0.4f, 0.0f}, glm::radians(50.0f), 16.0f / 9.0f);
+		RenderTarget small = CreateOutput(device, 320, 180);
+		REQUIRE(small.Framebuffer);
+		// The first frame allocates the internal targets and regenerates the LUT and environment maps after them.
+		renderer.Render(scene, camera, small.Framebuffer);
+		CHECK(renderer.GetStats().StaticLightingGenerations == 1);
+		const std::vector<uint16_t> first = readLut();
+		CHECK(energy(first) > 1.0);
+
+		// A frame that allocates nothing regenerates nothing.
+		renderer.Render(scene, camera, small.Framebuffer);
+		CHECK(renderer.GetStats().StaticLightingGenerations == 0);
+		CHECK(readLut() == first);
+
+		// A new output size reallocates the targets, and the regenerated LUT is bit-identical.
+		RenderTarget large = CreateOutput(device, 640, 360);
+		REQUIRE(large.Framebuffer);
+		renderer.Render(scene, camera, large.Framebuffer);
+		CHECK(renderer.GetStats().StaticLightingGenerations == 1);
+		CHECK(readLut() == first);
+		renderer.Render(scene, camera, large.Framebuffer);
+		CHECK(renderer.GetStats().StaticLightingGenerations == 0);
 	}
 	CHECK(graphics.GetValidationErrorCount() == initialErrors);
 }

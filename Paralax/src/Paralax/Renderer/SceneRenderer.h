@@ -13,6 +13,7 @@
 #include <nvrhi/nvrhi.h>
 
 #include <algorithm>
+#include <functional>
 #include <optional>
 #include <span>
 #include <unordered_map>
@@ -91,6 +92,8 @@ namespace Paralax {
 		uint32_t TextGlyphs = 0;
 		uint64_t Triangles = 0;
 		uint32_t Lights = 0;
+		// Frames that regenerated the BRDF LUT and environment maps after allocating render targets (see Render).
+		uint32_t StaticLightingGenerations = 0;
 	};
 
 	// Renders a Scene: cascaded soft shadows for the sun, forward PBR with point/spot lights and image-based lighting
@@ -108,6 +111,16 @@ namespace Paralax {
 		// Creates pipelines, the BRDF LUT and default resources. Returns false (with an error logged) on failure.
 		bool Initialize();
 
+		// Temporary main-thread ordering control. Owns the prepared targets; returns false on initialization failure.
+		// Verifies that the renderer is not initialized and that both dimensions are positive.
+		bool InitializeWithTargetsForDiagnostics(uint32_t width, uint32_t height);
+		// Temporary main-thread allocation checkpoint. Verifies initialization and positive dimensions.
+		// The optional observer is borrowed for this call; it must not mutate the renderer or throw. It is called after
+		// each step of target preparation with the step's name and the wall-clock milliseconds the step took (a
+		// diagnostic measurement, never used by the engine itself): slow steps point at driver work such as shader
+		// compilation.
+		void PrepareTargetsForDiagnostics(uint32_t width, uint32_t height, const std::function<void(const char*, double)>& observer = {});
+
 		// Renders the scene into output (a framebuffer with one 8-bit color attachment, e.g. a swapchain image).
 		// Internal targets are resized to the output's size as needed.
 		void Render(Scene& scene, const CameraView& camera, nvrhi::IFramebuffer* output);
@@ -115,9 +128,24 @@ namespace Paralax {
 		SceneRendererSettings& GetSettings() { return m_Settings; }
 		const SceneRenderStats& GetStats() const { return m_Stats; }
 		nvrhi::ITexture* GetHDRTarget() const { return m_HDRTarget; }
+		// Temporary main-thread diagnostic views, owned by the renderer; empty before the first render.
+		const EnvironmentMaps& GetEnvironmentMaps() const { return m_EnvironmentMaps; }
+		// Temporary main-thread diagnostic view, owned by the renderer; null before initialization succeeds.
+		nvrhi::ITexture* GetBRDFLut() const { return m_Environment.GetBRDFLut(); }
+		// Temporary main-thread diagnostic view, owned by the renderer; null before pipeline creation succeeds.
+		nvrhi::IComputePipeline* GetBRDFLutPipeline() const { return m_Environment.GetBRDFLutPipeline(); }
+		// Temporary borrowed main-thread snapshot; map only after GPU completion, null before initialization.
+		nvrhi::IStagingTexture* GetInitialBRDFLut() const { return m_Environment.GetInitialBRDFLut(); }
+		// Temporary borrowed main-thread snapshot; map after the first render completes, null before initialization.
+		nvrhi::IStagingTexture* GetFirstFrameBRDFLut() const { return m_FirstFrameBRDFLut; }
+		// Temporary main-thread state observations; Unknown until the corresponding checkpoint is reached.
+		nvrhi::ResourceStates GetBRDFStateBeforeInitializationClose() const { return m_BRDFStateBeforeInitializationClose; }
+		nvrhi::ResourceStates GetBRDFStateAtFirstFrame() const { return m_BRDFStateAtFirstFrame; }
 		GPUResourceCache& GetResourceCache() { return m_Resources; }
 
 	private:
+		bool InitializeInternal(uint32_t diagnosticTargetWidth, uint32_t diagnosticTargetHeight);
+
 		struct DrawItem
 		{
 			const GPUMesh* Mesh = nullptr;
@@ -149,7 +177,7 @@ namespace Paralax {
 		};
 
 		bool CreatePipelines();
-		void EnsureTargets(uint32_t width, uint32_t height);
+		void EnsureTargets(uint32_t width, uint32_t height, const std::function<void(const char*, double)>& observer = {});
 		nvrhi::IGraphicsPipeline* GetTonemapPipeline(nvrhi::IFramebuffer* output);
 		MaterialEntry* GetMaterial(AssetHandle handle);
 		nvrhi::ITexture* ResolveTexture(AssetHandle handle, nvrhi::ITexture* fallback);
@@ -178,6 +206,9 @@ namespace Paralax {
 		uint32_t m_Width = 0;
 		uint32_t m_Height = 0;
 		nvrhi::TextureHandle m_HDRTarget;
+		nvrhi::StagingTextureHandle m_FirstFrameBRDFLut;
+		nvrhi::ResourceStates m_BRDFStateBeforeInitializationClose = nvrhi::ResourceStates::Unknown;
+		nvrhi::ResourceStates m_BRDFStateAtFirstFrame = nvrhi::ResourceStates::Unknown;
 		nvrhi::TextureHandle m_DepthTarget;
 		nvrhi::FramebufferHandle m_HDRFramebuffer;
 		nvrhi::TextureHandle m_ShadowMap;
@@ -212,6 +243,8 @@ namespace Paralax {
 
 		// Environment cache: the environment is only regenerated when its inputs change.
 		uint64_t m_EnvironmentKey = 0;
+		// Set when render targets are (re)allocated; the next frame regenerates the static lighting textures.
+		bool m_StaticLightingDirty = false;
 		float m_EnvironmentIntensity = 1.0f;
 		float m_EnvironmentRotation = 0.0f;
 		bool m_ShowSky = true;

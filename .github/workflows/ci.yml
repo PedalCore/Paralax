@@ -26,6 +26,8 @@ jobs:
       - uses: actions/checkout@v5
       - name: Check formatting
         run: git ls-files '*.h' '*.cpp' | xargs clang-format-18 --dry-run --Werror
+      - name: Test Metal diagnostic orchestration without GPU or cache access
+        run: python3 -B .github/scripts/test-diagnose-metal.py
 
   build:
     name: ${{ matrix.name }}
@@ -82,6 +84,24 @@ jobs:
           brew list ninja >/dev/null 2>&1 || brew install ninja
           # Best effort: MoltenVK over the runner's paravirtual GPU. GPU tests skip with a warning if unavailable.
           brew install vulkan-loader molten-vk || true
+          brew install vulkan-validationlayers
+          validation_prefix="$(brew --prefix vulkan-validationlayers)"
+          python3 - "$validation_prefix" "$RUNNER_TEMP/paralax-vulkan-layers" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          prefix, destination = map(Path, sys.argv[1:])
+          manifest = prefix / "share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json"
+          library = prefix / "lib/libVkLayer_khronos_validation.dylib"
+          if not library.is_file():
+              raise RuntimeError(f"Validation library is missing: {library}")
+          data = json.loads(manifest.read_text())
+          data["layer"]["library_path"] = str(library.resolve())
+          destination.mkdir(parents=True, exist_ok=True)
+          (destination / manifest.name).write_text(json.dumps(data))
+          PY
+          echo "VK_LAYER_PATH=$RUNNER_TEMP/paralax-vulkan-layers" >> "$GITHUB_ENV"
+          echo "VK_LAYER_VALIDATE_SYNC=1" >> "$GITHUB_ENV"
 
       - name: Cache CPM sources
         uses: actions/cache@v4
@@ -114,6 +134,16 @@ jobs:
       - name: Unit tests
         shell: bash
         run: .github/scripts/run-step.sh "Unit tests" ctest --test-dir build --build-config ${{ matrix.config }} --parallel 4 --timeout 300 --no-tests=error
+
+      - name: Compare macOS lighting after clearing the runner Metal cache
+        if: always() && runner.os == 'macOS' && matrix.config == 'Debug'
+        shell: bash
+        run: python3 .github/scripts/diagnose-metal.py build
+
+      - name: Compare CPU and GPU contention in macOS lighting
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: python3 .github/scripts/diagnose-metal.py build --config ${{ matrix.config }} --contention-only
 
       - name: Headless smoke test
         shell: bash

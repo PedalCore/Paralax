@@ -3,6 +3,7 @@
 #include <doctest/doctest.h>
 
 #include <cstdlib>
+#include <chrono>
 
 namespace Paralax::Testing {
 
@@ -31,6 +32,7 @@ namespace Paralax::Testing {
 			GraphicsDeviceSpecification specification;
 			specification.Headless = true;
 			specification.EnableValidation = true;
+			MESSAGE("GPU device creation epoch_ms: ", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
 			holder.Device = GraphicsDevice::Create(specification);
 		}
 		return holder.Device.get();

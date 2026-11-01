@@ -28,8 +28,15 @@ namespace Paralax {
 
 		// Creates pipelines and computes the BRDF LUT. Returns false (with an error logged) on failure.
 		bool Initialize(nvrhi::ICommandList* commandList);
+		// Recomputes the BRDF LUT into its existing texture (one small dispatch). Initialize does this once; the scene
+		// renderer repeats it after allocating render targets, see SceneRenderer::Render.
+		void GenerateBRDFLut(nvrhi::ICommandList* commandList);
 
 		nvrhi::ITexture* GetBRDFLut() const { return m_BRDFLut; }
+		// Temporary main-thread diagnostic view, owned here; null before pipeline creation succeeds.
+		nvrhi::IComputePipeline* GetBRDFLutPipeline() const { return m_LutPipeline; }
+		// Temporary borrowed main-thread snapshot; null before initialization, map only after GPU completion.
+		nvrhi::IStagingTexture* GetInitialBRDFLut() const { return m_InitialBRDFLut; }
 
 		// Fills maps with a procedural clear sky lit by a sun travelling along sunDirection.
 		// sunDiskIntensity of 0 draws no sun disk.
@@ -50,6 +57,8 @@ namespace Paralax {
 		nvrhi::SamplerHandle m_LinearClamp;
 		nvrhi::SamplerHandle m_LinearWrapU;
 		nvrhi::TextureHandle m_BRDFLut;
+		nvrhi::StagingTextureHandle m_InitialBRDFLut;
+		nvrhi::BindingSetHandle m_LutBindings;
 
 		nvrhi::BindingLayoutHandle m_SkyLayout, m_EquirectLayout, m_FilterLayout, m_LutLayout;
 		nvrhi::ComputePipelineHandle m_DownsamplePipeline, m_SkyPipeline, m_EquirectPipeline, m_PrefilterPipeline, m_IrradiancePipeline, m_LutPipeline;
