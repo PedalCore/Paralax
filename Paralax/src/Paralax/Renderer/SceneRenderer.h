@@ -113,10 +113,6 @@ namespace Paralax {
 		SceneRendererSettings& GetSettings() { return m_Settings; }
 		const SceneRenderStats& GetStats() const { return m_Stats; }
 		nvrhi::ITexture* GetHDRTarget() const { return m_HDRTarget; }
-		// Main-thread diagnostic views, owned by the renderer; maps are empty before the first render.
-		const EnvironmentMaps& GetEnvironmentMaps() const { return m_EnvironmentMaps; }
-		// Main-thread diagnostic view, owned by the renderer; null before successful initialization.
-		nvrhi::ITexture* GetBRDFLut() const { return m_Environment.GetBRDFLut(); }
 		GPUResourceCache& GetResourceCache() { return m_Resources; }
 
 	private:

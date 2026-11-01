@@ -115,10 +115,10 @@ jobs:
         shell: bash
         run: .github/scripts/run-step.sh "Unit tests" ctest --test-dir build --build-config ${{ matrix.config }} --parallel 4 --timeout 300 --no-tests=error
 
-      - name: Diagnose macOS specular lighting with and without fast math
+      - name: Diagnose macOS specular lighting under GPU contention
         if: always() && runner.os == 'macOS' && matrix.config == 'Debug'
         shell: bash
-        run: bash .github/scripts/diagnose-metal.sh build
+        run: python3 .github/scripts/diagnose-metal.py build
 
       - name: Headless smoke test
         shell: bash
