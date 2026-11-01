@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare full-suite runs after clearing the ephemeral macOS runner's Metal cache."""
+"""Compare full suites and isolated cases after clearing the ephemeral runner Metal cache."""
 
 import os
 from pathlib import Path
@@ -99,11 +99,27 @@ def main():
     phases = [("AfterCacheClear", "1", "1"), ("WarmRepeat", "1", "1"),
               ("SilentPassThrough", "passthrough", "1"), ("DiscreteBindings", "passthrough", "0"),
               ("ArgumentBuffersAgain", "passthrough", "1"), ("DiscreteBindingsAgain", "passthrough", "0")]
-    for phase, trace, argument_buffers in phases:
+    phases = [(name, trace, bindings, None) for name, trace, bindings in phases]
+    isolated = [("Normal", "SceneRenderer: BRDF LUT survives output and internal target allocation"),
+                ("BeforeRender", "SceneRenderer: BRDF LUT survives target preparation before frame recording"),
+                ("Stages", "SceneRenderer: BRDF LUT survives each target preparation stage")]
+    # Each case starts after its own clear. Reverse round two to expose other persistent order effects.
+    for round_number, cases in [(1, isolated), (2, list(reversed(isolated)))]:
+        phases.extend((f"Isolated{round_number}{name}", "1", "1", test_case) for name, test_case in cases)
+    for phase, trace, argument_buffers, test_case in phases:
         environment["PX_TRACE_BRDF_BARRIERS"] = trace
         environment["MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS"] = argument_buffers
         destination = run / phase
         destination.mkdir()
+        if test_case is not None:
+            try:
+                cache_report = clear_metal_cache()
+            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                (destination / "Cache.txt").write_text(f"Cache operation failed; case not run: {error}\n")
+                print(f"{phase}: cache operation failed: {error}", file=sys.stderr)
+                return 1
+            (destination / "Cache.txt").write_text(cache_report)
+            print(f"{phase}: {cache_report.strip()}", flush=True)
         # Each phase must contain its own images, including when a test aborts before saving one.
         for name in IMAGES:
             (output / name).unlink(missing_ok=True)
@@ -113,8 +129,10 @@ def main():
         (build / "Testing" / "Temporary" / "LastTest.log").unlink(missing_ok=True)
         # Learned costs prioritize slow/failed tests and otherwise change the baseline's scheduling order.
         (build / "Testing" / "Temporary" / "CTestCostData.txt").unlink(missing_ok=True)
-        command = ["ctest", "--test-dir", str(build), "--build-config", "Debug", "--parallel", "4",
+        command = ["ctest", "--test-dir", str(build), "--build-config", "Debug", "--parallel", "1" if test_case is not None else "4",
                    "--timeout", "300", "--no-tests=error", "--verbose", "--output-junit", str(destination / "Results.xml")]
+        if test_case is not None:
+            command.extend(["--tests-regex", f"^{re.escape(test_case)}$"])
         with (destination / "Test.log").open("w") as log:
             result = subprocess.run(command, env=environment, stdout=log, stderr=subprocess.STDOUT, check=False)
         status = result.returncode
@@ -126,7 +144,7 @@ def main():
         if modes != {expected_mode}:
             print(f"{phase}: unexpected or missing binding-mode evidence: {sorted(modes)}", flush=True)
             status = 1
-        if status == 0 and not all((output / name).is_file() for name in IMAGES):
+        if status == 0 and test_case is None and not all((output / name).is_file() for name in IMAGES):
             status = 1
         failed |= status != 0
         capture(destination)
