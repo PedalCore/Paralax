@@ -46,7 +46,8 @@ build/release/bin/Paralax-Editor --headless --project path/to/MyGame --export pa
 path/to/MyGameBuild/MyGame
 ```
 
-Scripting is documented in [docs/Scripting.md](docs/Scripting.md).
+Scripting is documented in [docs/Scripting.md](docs/Scripting.md). To build a game with an AI agent (MCP or
+JSON-RPC), see [docs/Agents.md](docs/Agents.md).
 
 ## Contributing
 

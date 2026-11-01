@@ -11,7 +11,7 @@ This file is the source of truth for how work is done in this repository. Read i
 |---|---|
 | `Paralax/` | Core engine **static library** (`Paralax::Paralax`). All engine code lives here. |
 | `Paralax/src/Paralax/<Module>/` | Engine modules (`Core`, `Events`, `Renderer`, `Scene`, `Asset`, `Scripting`, `Physics`, `Audio`, `Game`, `ImGui`, `Network`, `Project`). `Game/GameSession` is a running game (a scene copy with its systems), used by the runtime and the editor's play mode. |
-| `docs/` | Reference documentation (e.g. `Scripting.md`, the Lua API). |
+| `docs/` | Reference documentation: `Scripting.md` (the Lua API) and `Agents.md` (driving the editor to build a game). Keep both current when adding scripting functions or commands. |
 | `Paralax/src/Platform/<Backend>/` | Platform/backend implementations (`GLFW`, later `Vulkan`). Never include these from module headers. |
 | `Paralax/src/pxpch.h` | Precompiled header. Every engine `.cpp` starts with `#include "pxpch.h"`. |
 | `Paralax/src/Paralax.h` | Public umbrella header for client code. |
