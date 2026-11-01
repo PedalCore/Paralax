@@ -72,8 +72,14 @@ TEST_CASE("EnvironmentLighting: BRDF integration and every specular mip retain f
 		device->executeCommandList(commands);
 
 		EnvironmentMaps maps;
+		float sunDiskIntensity = 0.0f;
+		SUBCASE("without sun disk") {}
+		SUBCASE("with bright sun disk")
+		{
+			sunDiskIntensity = 40.0f;
+		}
 		commands->open();
-		lighting.GenerateProceduralSky(commands, maps, glm::normalize(glm::vec3(0.3f, -1.0f, 0.2f)), glm::vec3(1.0f), 1.0f, 0.0f);
+		lighting.GenerateProceduralSky(commands, maps, glm::normalize(glm::vec3(0.3f, -1.0f, 0.2f)), glm::vec3(1.0f), 1.0f, sunDiskIntensity);
 		commands->close();
 		device->executeCommandList(commands);
 
@@ -100,7 +106,7 @@ TEST_CASE("EnvironmentLighting: BRDF integration and every specular mip retain f
 				for (float value : values)
 				{
 					minimum = std::min(minimum, value);
-					invalidChannels += !std::isfinite(value) || value < 0.02f || value > 2.0f ? 1 : 0;
+					invalidChannels += !std::isfinite(value) || value < 0.02f || value > 2.0f + sunDiskIntensity ? 1 : 0;
 				}
 				INFO("minimum specular value: ", minimum);
 				CHECK(invalidChannels == 0);

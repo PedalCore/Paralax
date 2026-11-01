@@ -10,7 +10,11 @@
 #include <Paralax/Renderer/TextureReadback.h>
 #include <Paralax/Scene/Entity.h>
 
+#include <glm/gtc/packing.hpp>
+
 #include <array>
+#include <cmath>
+#include <cstring>
 #include <limits>
 
 using namespace Paralax;
@@ -486,6 +490,99 @@ TEST_CASE("SceneRenderer: missing built-in environment uses the procedural sky a
 		for (const auto& entry : log.GetEntries())
 			errors += entry.Level == spdlog::level::err ? 1 : 0;
 		CHECK(errors == 1);
+	}
+	CHECK(graphics.GetValidationErrorCount() == initialErrors);
+}
+
+TEST_CASE("SceneRenderer: fresh and regenerated environments retain finite metallic lighting immediately")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	auto* device = graphics.GetDevice();
+	const auto initialErrors = graphics.GetValidationErrorCount();
+	INFO("adapter: ", graphics.GetInfo().AdapterName, ", driver: ", graphics.GetInfo().DriverName);
+	for (int iteration = 0; iteration < 4; iteration++)
+	{
+		CAPTURE(iteration);
+		AssetManager assets;
+		Scene scene("ImmediateEnvironment");
+		BuildTestScene(scene, assets);
+		SceneRenderer renderer(graphics, assets);
+		REQUIRE(renderer.Initialize());
+		auto output = CreateOutput(device, 320, 180);
+		const auto camera = CameraView::LookAt({0, 2, 4.5f}, {0, 0.4f, 0}, glm::radians(50.0f), 320.0f / 180.0f);
+		const auto sun = scene.FindEntityByName("Sun");
+		REQUIRE(sun);
+		for (int generation = 0; generation < 3; generation++)
+		{
+			CAPTURE(generation);
+			// No readback or CPU wait between convolution and the forward pass consuming the new maps.
+			sun->GetTransform().Rotation = Math::EulerToQuat(glm::radians(glm::vec3(-50.0f, 35.0f + 20.0f * static_cast<float>(generation), 0.0f)));
+			renderer.Render(scene, camera, output.Framebuffer);
+			const Image first = ReadbackTexture(device, output.Texture);
+			REQUIRE_FALSE(first.IsEmpty());
+			const auto metal = first.GetPixel(195, 95);
+			INFO("metal RGB: ", int(metal.r), ", ", int(metal.g), ", ", int(metal.b));
+			const bool lit = Luminance(metal) > 25.0f && metal.r > metal.b + 10 && metal.g > metal.b + 10;
+			CHECK(lit);
+
+			// Tonemapping can hide NaNs as black: inspect the linear half-float render target as well.
+			nvrhi::TextureDesc desc = renderer.GetHDRTarget()->getDesc();
+			desc.isRenderTarget = false;
+			desc.initialState = nvrhi::ResourceStates::CopyDest;
+			auto staging = device->createStagingTexture(desc, nvrhi::CpuAccessMode::Read);
+			REQUIRE(staging);
+			auto commands = device->createCommandList();
+			REQUIRE(commands);
+			commands->open();
+			commands->copyTexture(staging, nvrhi::TextureSlice(), renderer.GetHDRTarget(), nvrhi::TextureSlice());
+			commands->close();
+			device->executeCommandList(commands);
+			device->waitForIdle();
+			size_t pitch = 0;
+			const auto* mapped = static_cast<const uint8_t*>(device->mapStagingTexture(staging, nvrhi::TextureSlice(), nvrhi::CpuAccessMode::Read, &pitch));
+			REQUIRE(mapped);
+			size_t invalid = 0;
+			glm::vec3 hdrMetal(0.0f);
+			for (uint32_t y = 0; y < desc.height; y++)
+				for (uint32_t x = 0; x < desc.width; x++)
+					for (uint32_t channel = 0; channel < 3; channel++)
+					{
+						uint16_t bits;
+						std::memcpy(&bits, mapped + y * pitch + (x * 4 + channel) * sizeof(bits), sizeof(bits));
+						const float value = glm::unpackHalf1x16(bits);
+						invalid += !std::isfinite(value) || value < 0.0f ? 1 : 0;
+						if (x == 195 && y == 95)
+							hdrMetal[channel] = value;
+					}
+			device->unmapStagingTexture(staging);
+			INFO("linear metal RGB: ", hdrMetal.r, ", ", hdrMetal.g, ", ", hdrMetal.b);
+			CHECK(invalid == 0);
+			const bool hdrLit = glm::dot(hdrMetal, glm::vec3(0.2126f, 0.7152f, 0.0722f)) > 0.01f;
+			CHECK(hdrLit);
+
+			if (!lit || !hdrLit || invalid != 0)
+			{
+				const auto originalSettings = renderer.GetSettings();
+				const auto directory = Testing::GetTestOutputDirectory() / ("LightingFailure-" + std::to_string(iteration) + "-" + std::to_string(generation));
+				REQUIRE(first.SavePNG(directory / "Lit.png"));
+				for (auto debug : {RenderDebugView::BaseColor, RenderDebugView::Normals})
+				{
+					renderer.GetSettings().DebugView = debug;
+					renderer.Render(scene, camera, output.Framebuffer);
+					REQUIRE(ReadbackTexture(device, output.Texture).SavePNG(directory / (debug == RenderDebugView::BaseColor ? "BaseColor.png" : "Normals.png")));
+				}
+				renderer.GetSettings().DebugView = RenderDebugView::None;
+				renderer.GetSettings().DefaultEnvironmentIntensity = 0.0f;
+				renderer.GetSettings().Shadows = false;
+				renderer.Render(scene, camera, output.Framebuffer);
+				REQUIRE(ReadbackTexture(device, output.Texture).SavePNG(directory / "DirectOnly.png"));
+				renderer.GetSettings() = originalSettings;
+			}
+		}
+		device->waitForIdle();
+		device->runGarbageCollection();
 	}
 	CHECK(graphics.GetValidationErrorCount() == initialErrors);
 }
