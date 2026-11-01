@@ -129,7 +129,11 @@ jobs:
               echo "::error::$exe was not built (looked for $path)"
               exit 1
             fi
-            .github/scripts/run-step.sh "Smoke test $exe" "$path" --headless --frames 10 --fixed-timestep 0.016
+            args=(--headless --frames 10 --fixed-timestep 0.016)
+            # The runtime needs a game: play the feature test project, failing on any script error (also covers
+            # Dist builds, which have no test binary).
+            [[ "$exe" == Paralax-Runtime ]] && args=(--project Paralax-Tests/FeatureTest --headless --frames 40 --fixed-timestep 0.0166667 --fail-on-script-error)
+            .github/scripts/run-step.sh "Smoke test $exe" "$path" "${args[@]}"
           done
 
       - name: Upload test images
