@@ -42,6 +42,7 @@ namespace Paralax::VulkanDiagnostics {
 
 		TraceState s_Trace;
 		std::remove_reference_t<decltype(VULKAN_HPP_DEFAULT_DISPATCHER)> s_Original;
+		bool s_Record = false;
 
 		template<typename Handle>
 		uint64_t HandleID(Handle handle)
@@ -73,7 +74,7 @@ namespace Paralax::VulkanDiagnostics {
 		VKAPI_ATTR VkResult VKAPI_CALL CreateImage(VkDevice device, const VkImageCreateInfo* info, const VkAllocationCallbacks* allocator, VkImage* image)
 		{
 			const VkResult result = s_Original.vkCreateImage(device, info, allocator, image);
-			if (result == VK_SUCCESS && info && image)
+			if (s_Record && result == VK_SUCCESS && info && image)
 			{
 				std::scoped_lock lock(s_Trace.Mutex);
 				const bool isBRDF = info->format == VK_FORMAT_R16G16_SFLOAT && info->extent.width == 128 && info->extent.height == 128 &&
@@ -90,6 +91,7 @@ namespace Paralax::VulkanDiagnostics {
 
 		VKAPI_ATTR void VKAPI_CALL DestroyImage(VkDevice device, VkImage image, const VkAllocationCallbacks* allocator)
 		{
+			if (s_Record)
 			{
 				std::scoped_lock lock(s_Trace.Mutex);
 				auto it = s_Trace.Images.find(image);
@@ -108,7 +110,7 @@ namespace Paralax::VulkanDiagnostics {
 		VKAPI_ATTR VkResult VKAPI_CALL CreateImageView(VkDevice device, const VkImageViewCreateInfo* info, const VkAllocationCallbacks* allocator, VkImageView* view)
 		{
 			const VkResult result = s_Original.vkCreateImageView(device, info, allocator, view);
-			if (result == VK_SUCCESS && info && view)
+			if (s_Record && result == VK_SUCCESS && info && view)
 			{
 				std::scoped_lock lock(s_Trace.Mutex);
 				const bool isBRDF = IsBRDF(info->image);
@@ -121,6 +123,7 @@ namespace Paralax::VulkanDiagnostics {
 
 		VKAPI_ATTR void VKAPI_CALL DestroyImageView(VkDevice device, VkImageView view, const VkAllocationCallbacks* allocator)
 		{
+			if (s_Record)
 			{
 				std::scoped_lock lock(s_Trace.Mutex);
 				auto it = s_Trace.Views.find(view);
@@ -134,7 +137,7 @@ namespace Paralax::VulkanDiagnostics {
 		VKAPI_ATTR VkResult VKAPI_CALL AllocateMemory(VkDevice device, const VkMemoryAllocateInfo* info, const VkAllocationCallbacks* allocator, VkDeviceMemory* memory)
 		{
 			const VkResult result = s_Original.vkAllocateMemory(device, info, allocator, memory);
-			if (result == VK_SUCCESS && info && memory)
+			if (s_Record && result == VK_SUCCESS && info && memory)
 			{
 				std::scoped_lock lock(s_Trace.Mutex);
 				s_Trace.MemorySizes[*memory] = info->allocationSize;
@@ -146,6 +149,7 @@ namespace Paralax::VulkanDiagnostics {
 
 		VKAPI_ATTR void VKAPI_CALL FreeMemory(VkDevice device, VkDeviceMemory memory, const VkAllocationCallbacks* allocator)
 		{
+			if (s_Record)
 			{
 				std::scoped_lock lock(s_Trace.Mutex);
 				if (WindowOpen() || s_Trace.BRDFMemories.contains(memory))
@@ -180,7 +184,7 @@ namespace Paralax::VulkanDiagnostics {
 		VKAPI_ATTR VkResult VKAPI_CALL BindImageMemory(VkDevice device, VkImage image, VkDeviceMemory memory, VkDeviceSize offset)
 		{
 			const VkResult result = s_Original.vkBindImageMemory(device, image, memory, offset);
-			if (result == VK_SUCCESS)
+			if (s_Record && result == VK_SUCCESS)
 			{
 				std::scoped_lock lock(s_Trace.Mutex);
 				RecordImageBinding(image, memory, offset);
@@ -192,7 +196,7 @@ namespace Paralax::VulkanDiagnostics {
 		VkResult BindImages(Function function, VkDevice device, uint32_t count, const VkBindImageMemoryInfo* infos)
 		{
 			const VkResult result = function(device, count, infos);
-			if (result == VK_SUCCESS && infos)
+			if (s_Record && result == VK_SUCCESS && infos)
 			{
 				std::scoped_lock lock(s_Trace.Mutex);
 				for (uint32_t i = 0; i < count; i++)
@@ -213,7 +217,7 @@ namespace Paralax::VulkanDiagnostics {
 		VKAPI_ATTR VkResult VKAPI_CALL BindBufferMemory(VkDevice device, VkBuffer buffer, VkDeviceMemory memory, VkDeviceSize offset)
 		{
 			const VkResult result = s_Original.vkBindBufferMemory(device, buffer, memory, offset);
-			if (result == VK_SUCCESS)
+			if (s_Record && result == VK_SUCCESS)
 			{
 				std::scoped_lock lock(s_Trace.Mutex);
 				RecordBufferBinding(buffer, memory, offset);
@@ -225,7 +229,7 @@ namespace Paralax::VulkanDiagnostics {
 		VkResult BindBuffers(Function function, VkDevice device, uint32_t count, const VkBindBufferMemoryInfo* infos)
 		{
 			const VkResult result = function(device, count, infos);
-			if (result == VK_SUCCESS && infos)
+			if (s_Record && result == VK_SUCCESS && infos)
 			{
 				std::scoped_lock lock(s_Trace.Mutex);
 				for (uint32_t i = 0; i < count; i++)
@@ -243,26 +247,26 @@ namespace Paralax::VulkanDiagnostics {
 			return BindBuffers(s_Original.vkBindBufferMemory2KHR, device, count, infos);
 		}
 
-		void RecordBarrier(VkCommandBuffer commands, VkImage image, VkImageLayout before, VkImageLayout after,
+		void RecordBarrier(const char* api, VkCommandBuffer commands, VkImage image, VkImageLayout before, VkImageLayout after,
 						   VkPipelineStageFlags2 sourceStages, VkPipelineStageFlags2 destinationStages, VkAccessFlags2 sourceAccess, VkAccessFlags2 destinationAccess,
 						   const VkImageSubresourceRange& range)
 		{
 			if (IsBRDF(image))
-				PX_CORE_WARN("[BRDF Vulkan trace] seq={} barrier command={:#x} image={:#x} oldLayout={} newLayout={} srcStage={:#x} dstStage={:#x} srcAccess={:#x} dstAccess={:#x} mip={} mips={} layer={} layers={}",
-							 ++s_Trace.Sequence, HandleID(commands), HandleID(image), static_cast<uint32_t>(before), static_cast<uint32_t>(after), sourceStages, destinationStages, sourceAccess, destinationAccess,
+				PX_CORE_WARN("[BRDF Vulkan trace] seq={} barrier api={} command={:#x} image={:#x} oldLayout={} newLayout={} srcStage={:#x} dstStage={:#x} srcAccess={:#x} dstAccess={:#x} mip={} mips={} layer={} layers={}",
+							 ++s_Trace.Sequence, api, HandleID(commands), HandleID(image), static_cast<uint32_t>(before), static_cast<uint32_t>(after), sourceStages, destinationStages, sourceAccess, destinationAccess,
 							 range.baseMipLevel, range.levelCount, range.baseArrayLayer, range.layerCount);
 		}
 
 		template<typename Function>
-		void Barrier2(Function function, VkCommandBuffer commands, const VkDependencyInfo* info)
+		void Barrier2(Function function, const char* api, VkCommandBuffer commands, const VkDependencyInfo* info)
 		{
-			if (info && info->pImageMemoryBarriers)
+			if (s_Record && info && info->pImageMemoryBarriers)
 			{
 				std::scoped_lock lock(s_Trace.Mutex);
 				for (uint32_t i = 0; i < info->imageMemoryBarrierCount; i++)
 				{
 					const auto& barrier = info->pImageMemoryBarriers[i];
-					RecordBarrier(commands, barrier.image, barrier.oldLayout, barrier.newLayout, barrier.srcStageMask, barrier.dstStageMask, barrier.srcAccessMask, barrier.dstAccessMask, barrier.subresourceRange);
+					RecordBarrier(api, commands, barrier.image, barrier.oldLayout, barrier.newLayout, barrier.srcStageMask, barrier.dstStageMask, barrier.srcAccessMask, barrier.dstAccessMask, barrier.subresourceRange);
 				}
 			}
 			function(commands, info);
@@ -270,27 +274,28 @@ namespace Paralax::VulkanDiagnostics {
 
 		VKAPI_ATTR void VKAPI_CALL PipelineBarrier2(VkCommandBuffer commands, const VkDependencyInfo* info)
 		{
-			Barrier2(s_Original.vkCmdPipelineBarrier2, commands, info);
+			Barrier2(s_Original.vkCmdPipelineBarrier2, "vkCmdPipelineBarrier2", commands, info);
 		}
 		VKAPI_ATTR void VKAPI_CALL PipelineBarrier2KHR(VkCommandBuffer commands, const VkDependencyInfo* info)
 		{
-			Barrier2(s_Original.vkCmdPipelineBarrier2KHR, commands, info);
+			Barrier2(s_Original.vkCmdPipelineBarrier2KHR, "vkCmdPipelineBarrier2KHR", commands, info);
 		}
 
 		VKAPI_ATTR void VKAPI_CALL PipelineBarrier(VkCommandBuffer commands, VkPipelineStageFlags sourceStages, VkPipelineStageFlags destinationStages, VkDependencyFlags flags,
 												   uint32_t memoryCount, const VkMemoryBarrier* memory, uint32_t bufferCount, const VkBufferMemoryBarrier* buffers, uint32_t imageCount, const VkImageMemoryBarrier* images)
 		{
-			if (images)
+			if (s_Record && images)
 			{
 				std::scoped_lock lock(s_Trace.Mutex);
 				for (uint32_t i = 0; i < imageCount; i++)
-					RecordBarrier(commands, images[i].image, images[i].oldLayout, images[i].newLayout, sourceStages, destinationStages, images[i].srcAccessMask, images[i].dstAccessMask, images[i].subresourceRange);
+					RecordBarrier("vkCmdPipelineBarrier", commands, images[i].image, images[i].oldLayout, images[i].newLayout, sourceStages, destinationStages, images[i].srcAccessMask, images[i].dstAccessMask, images[i].subresourceRange);
 			}
 			s_Original.vkCmdPipelineBarrier(commands, sourceStages, destinationStages, flags, memoryCount, memory, bufferCount, buffers, imageCount, images);
 		}
 
 		VKAPI_ATTR void VKAPI_CALL CopyImageToBuffer(VkCommandBuffer commands, VkImage image, VkImageLayout layout, VkBuffer buffer, uint32_t count, const VkBufferImageCopy* regions)
 		{
+			if (s_Record)
 			{
 				std::scoped_lock lock(s_Trace.Mutex);
 				auto it = s_Trace.Images.find(image);
@@ -310,6 +315,7 @@ namespace Paralax::VulkanDiagnostics {
 
 		VKAPI_ATTR void VKAPI_CALL ClearColorImage(VkCommandBuffer commands, VkImage image, VkImageLayout layout, const VkClearColorValue* color, uint32_t count, const VkImageSubresourceRange* ranges)
 		{
+			if (s_Record)
 			{
 				std::scoped_lock lock(s_Trace.Mutex);
 				if (IsBRDF(image))
@@ -323,7 +329,9 @@ namespace Paralax::VulkanDiagnostics {
 	bool EnableBRDFTrace()
 	{
 		const char* setting = std::getenv("PX_TRACE_BRDF_BARRIERS");
-		if (!setting || std::strcmp(setting, "1") != 0)
+		const bool record = setting && std::strcmp(setting, "1") == 0;
+		const bool passthrough = setting && std::strcmp(setting, "passthrough") == 0;
+		if (!record && !passthrough)
 			return true;
 
 		auto& dispatcher = VULKAN_HPP_DEFAULT_DISPATCHER;
@@ -335,6 +343,8 @@ namespace Paralax::VulkanDiagnostics {
 			return false;
 		}
 		s_Original = dispatcher;
+		s_Record = record;
+		if (s_Record)
 		{
 			std::scoped_lock lock(s_Trace.Mutex);
 			s_Trace.Sequence = 0;
@@ -362,7 +372,8 @@ namespace Paralax::VulkanDiagnostics {
 		hook(dispatcher.vkCmdPipelineBarrier2KHR, PipelineBarrier2KHR);
 		hook(dispatcher.vkCmdCopyImageToBuffer, CopyImageToBuffer);
 		hook(dispatcher.vkCmdClearColorImage, ClearColorImage);
-		PX_CORE_WARN("[BRDF Vulkan trace] enabled; memory window ends at the second LUT readback; Vulkan calls are forwarded unchanged");
+		if (s_Record)
+			PX_CORE_WARN("[BRDF Vulkan trace] enabled; memory window ends at the second LUT readback; Vulkan calls are forwarded unchanged");
 		return true;
 	}
 

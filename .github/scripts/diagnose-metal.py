@@ -95,7 +95,8 @@ def main():
     environment = dict(os.environ, PX_REQUIRE_GPU="1", MVK_CONFIG_LOG_LEVEL="3", VK_LOADER_DEBUG="layer", PX_TRACE_BRDF_BARRIERS="1")
     environment.pop("MVK_CONFIG_FAST_MATH_ENABLED", None)
     failed = False
-    for phase in ["AfterCacheClear", "WarmRepeat"]:
+    for phase in ["AfterCacheClear", "WarmRepeat", "SilentPassThrough"]:
+        environment["PX_TRACE_BRDF_BARRIERS"] = "passthrough" if phase == "SilentPassThrough" else "1"
         destination = run / phase
         destination.mkdir()
         # Each phase must contain its own images, including when a test aborts before saving one.
