@@ -160,6 +160,15 @@ namespace Paralax {
 																		   MakeField<&AudioListenerComponent::Active>("Active"),
 																	   }));
 
+			components.push_back(MakeComponent<TextComponent>("Text", "Text drawn on screen (a HUD) or in the world, unaffected by exposure.",
+															  {
+																  MakeField<&TextComponent::Text>("Text", FieldOptions().MaxLength(4096).Describe("UTF-8; newlines start new lines.")),
+																  MakeField<&TextComponent::Size>("Size", FieldOptions().Range(0.0f, 10000.0f).Describe("Line height: pixels at a 1080-pixel-high viewport (screen space) or metres (world space).")),
+																  MakeField<&TextComponent::Color>("Color", color),
+																  MakeField<&TextComponent::Alignment>("Alignment", FieldOptions().Enum({"Left", "Center", "Right"}).Describe("Which side of the text the entity's position anchors.")),
+																  MakeField<&TextComponent::ScreenSpace>("ScreenSpace", FieldOptions().Describe("On screen at normalised X/Y (0..1 from the top-left), or in the world at the Transform.")),
+															  }));
+
 			components.push_back(MakeComponent<AnimationComponent>("Animation", "Plays an animation clip on the entity and the entities below it while the scene is running.",
 																   {
 																	   MakeField<&AnimationComponent::Clip>("Clip", FieldOptions().Describe("Animation clip asset (from a glTF model).")),

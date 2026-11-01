@@ -221,6 +221,8 @@ namespace Paralax {
 				case FieldType::String:
 					if (!value.is_string())
 						return fail("a string");
+					if (field.MaxLength > 0 && value.get_ref<const std::string&>().size() > field.MaxLength)
+						return fail(fmt::format("at most {} bytes", field.MaxLength).c_str());
 					*static_cast<std::string*>(pointer) = value.get<std::string>();
 					return true;
 

@@ -83,6 +83,7 @@ def play(editor: EditorSession) -> list[str]:
     tap(editor, "Space")
     no_errors(editor)
     check(lua(editor, "TetrisGame.lines, TetrisGame.score") == "2\t300", "two rows cleared for 300 points")
+    check(lua(editor, "Scene.FindEntityByName('Hud'):GetComponent('Text').Text") == "Score 300\nLevel 1\nLines 2", "the HUD shows the score")
     check(lua(editor, "TetrisGame:BlockCount()") == "2", "the I piece's other two blocks remain")
     check(lua(editor, "TetrisGame.board[19][4] ~= nil and TetrisGame.board[18][4] ~= nil") == "true",
           "the remaining blocks fall to the bottom")
@@ -93,9 +94,11 @@ def play(editor: EditorSession) -> list[str]:
     lua(editor, "TetrisGame:SetPiece('O', 0, 4, 0)")
     tap(editor, "Space")
     check(lua(editor, "TetrisGame.over") == "true", "no room for the next piece ends the game")
+    check(lua(editor, "Scene.FindEntityByName('Message'):GetComponent('Text').Text") == "GAME OVER\nBest 300", "the message shows game over")
     editor.call("play.step", frames=130)  # Two seconds, then Scene.Reload.
     no_errors(editor)
     check(lua(editor, "TetrisGame.over, TetrisGame.score, TetrisGame:BlockCount()") == "false\t0\t0", "a fresh game after the restart")
+    check(lua(editor, "Scene.FindEntityByName('Message'):GetComponent('Text').Text") == "", "the message is cleared by the restart")
     check(lua(editor, "Game.Get('BestScore'), Game.Get('GamesPlayed')") == "300\t1", "the best score survives the restart")
     editor.call("play.stop")
     return pieces

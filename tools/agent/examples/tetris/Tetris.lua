@@ -62,8 +62,16 @@ function Tetris:OnCreate()
 	self.score, self.lines, self.level = 0, 0, 1
 	self.fall, self.over, self.overTime = 0, false, 0
 	self.bag = {}
+	self.hud = Scene.FindEntityByName("Hud"):GetComponent("Text")
+	self.message = Scene.FindEntityByName("Message"):GetComponent("Text")
+	self.message.Text = ""
+	self:ShowScore()
 	self.next = self:Draw()
 	self:Spawn()
+end
+
+function Tetris:ShowScore()
+	self.hud.Text = "Score " .. self.score .. "\nLevel " .. self.level .. "\nLines " .. self.lines
 end
 
 -- The next piece from a shuffled bag of all seven, so no piece is ever long in coming. math.random is seeded, so the
@@ -104,6 +112,7 @@ function Tetris:Spawn(name)
 		local best = math.max(Game.Get("BestScore", 0), self.score)
 		Game.Set("BestScore", best)
 		Game.Set("GamesPlayed", Game.Get("GamesPlayed", 0) + 1)
+		self.message.Text = "GAME OVER\nBest " .. best
 		Log.Info("Tetris: game over with " .. self.score .. " points (best " .. best .. ")")
 	end
 	self:Place()
@@ -183,6 +192,7 @@ function Tetris:Lock()
 		self.score = self.score + LineScores[cleared] * self.level
 		self.lines = self.lines + cleared
 		self.level = 1 + self.lines // 10
+		self:ShowScore()
 		Log.Info("Tetris: " .. cleared .. " row(s), score " .. self.score .. ", level " .. self.level)
 	end
 	self:Spawn()

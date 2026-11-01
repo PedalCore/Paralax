@@ -43,7 +43,9 @@ windowed one.
    `components` object. Components and their fields are listed by `component.types`, and documented for scripts in
    [Scripting.md](Scripting.md). Asset handles are strings (built-ins: `"1"` cube, `"2"` sphere, `"3"` plane,
    `"4"` cylinder, `"5"` capsule; see `asset.list`). Make materials with `material.create`, prefabs with
-   `prefab.create`, and import files placed under `Assets/` with `asset.import`.
+   `prefab.create`, and import files placed under `Assets/` with `asset.import`. Show a score or a message with a
+   `Text` component (screen space by default: position it with the Transform's X/Y as fractions of the viewport),
+   and change it from a script (`entity:GetComponent("Text").Text = "Score 3"`).
 
    **Models from Blender (or any glTF tool).** Export glTF 2.0 (`.glb`, or `.gltf` with its `.bin` and textures
    beside it) into `Assets/`. `asset.import` makes it one mesh: put it on an entity's `Mesh` to show the whole file.

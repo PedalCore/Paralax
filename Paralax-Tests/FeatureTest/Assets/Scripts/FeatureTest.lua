@@ -69,6 +69,9 @@ local function TestComponents(self)
 	assert(probe:AddComponent("Rigidbody", { Type = "Kinematic", Mass = 3 }).Mass == 3)
 	assert(probe:AddComponent("AudioSource", { Volume = 0.5, Loop = true }).Loop == true)
 	assert(probe:AddComponent("AudioListener", { Active = false }).Active == false)
+	local label = probe:AddComponent("Text", { Text = "Score 0", Alignment = "Center", ScreenSpace = false })
+	assert(label.Text == "Score 0" and label.Alignment == "Center" and label.Size == 48 and label.ScreenSpace == false)
+	assert(not pcall(function() label.Text = string.rep("x", 5000) end) and label.Text == "Score 0") -- Capped at 4096 bytes.
 	local animation = probe:AddComponent("Animation", { Loop = false, Speed = 2 })
 	assert(animation.Clip == "0" and animation.Playing == true and animation.Loop == false and animation.Speed == 2 and animation.Time == 0)
 	assert(probe:RemoveComponent("PointLight") and not probe:HasComponent("PointLight") and not probe:RemoveComponent("PointLight"))
@@ -78,7 +81,7 @@ local function TestComponents(self)
 	assert(not pcall(function() probe:GetComponent("NoSuchComponent") end))
 	-- Every component type in the engine appears in the authored scene.
 	for _, name in ipairs({ "Tag", "Transform", "Camera", "DirectionalLight", "PointLight", "SpotLight", "SkyLight", "Mesh", "Rigidbody",
-		"Collider", "AudioSource", "AudioListener", "Animation", "GIVolume", "Script", "PrefabInstance" }) do
+		"Collider", "AudioSource", "AudioListener", "Animation", "GIVolume", "Text", "Script", "PrefabInstance" }) do
 		local found = false
 		for _, entity in ipairs(Scene.FindEntitiesByTag("Feature")) do
 			found = found or entity:HasComponent(name)
@@ -211,6 +214,8 @@ function FeatureTest:OnUpdate(dt)
 		assert(not pcall(function() return self.destroyed[1].name end))
 		assert(Spawned == Time.frame, "an entity spawned with a script starts on the next update")
 	end
+	-- The HUD shows the frame, as a game would show its score.
+	Scene.FindEntityByName("Hud"):GetComponent("Text").Text = "Feature test\nframe " .. Time.frame
 	if Time.frame >= self.finishFrame then
 		-- Physics callbacks (Ball.lua): the ball passed through the trigger zone and landed on the ground.
 		assert(BallTriggered and BallPassedTrigger, "the ball should have passed through the trigger zone")

@@ -51,6 +51,7 @@ namespace Paralax {
 		float Max = 0.0f;
 		std::vector<std::string> EnumNames; // Enum fields: index == underlying value.
 		std::string Description;
+		size_t MaxLength = 0; // String fields: the longest value accepted, in bytes (0: no limit).
 
 		// Returns a pointer to this field inside a component instance.
 		void* (*Access)(void* component) = nullptr;
@@ -126,6 +127,7 @@ namespace Paralax {
 			float Max = 0.0f;
 			std::vector<std::string> EnumNames;
 			std::string Description;
+			size_t MaxLengthBytes = 0;
 
 			FieldOptions& Color()
 			{
@@ -148,6 +150,12 @@ namespace Paralax {
 				EnumNames = std::move(names);
 				return *this;
 			}
+			// The longest string a field accepts, in bytes. Scene files, agents and scripts all go through it.
+			FieldOptions& MaxLength(size_t bytes)
+			{
+				MaxLengthBytes = bytes;
+				return *this;
+			}
 			FieldOptions& Describe(std::string description)
 			{
 				Description = std::move(description);
@@ -167,6 +175,7 @@ namespace Paralax {
 			field.Max = options.Max;
 			field.EnumNames = std::move(options.EnumNames);
 			field.Description = std::move(options.Description);
+			field.MaxLength = options.MaxLengthBytes;
 			field.Access = &AccessMember<Member>;
 			return field;
 		}
@@ -183,6 +192,7 @@ namespace Paralax {
 			field.Max = options.Max;
 			field.EnumNames = std::move(options.EnumNames);
 			field.Description = std::move(options.Description);
+			field.MaxLength = options.MaxLengthBytes;
 			field.Access = &AccessNestedMember<Outer, Inner>;
 			return field;
 		}

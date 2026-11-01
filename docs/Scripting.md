@@ -191,6 +191,28 @@ same update, and animated kinematic bodies push what they touch. Playback follow
 deterministic. The clip sets local Translation, Rotation and Scale; a target that is missing is skipped (and found
 when it appears).
 
+## Text
+
+A **Text** component draws text, in the engine's font, over the finished image, so exposure never dims it. Its
+fields:
+- `Text`: UTF-8, up to 4096 bytes; newlines start new lines. ASCII and Latin-1 characters have glyphs, anything else
+  shows as a box.
+- `ScreenSpace` (default true): a HUD. The entity's X and Y are the anchor in normalised viewport coordinates,
+  (0, 0) top-left to (1, 1) bottom-right, and `Size` is the line height in pixels at a 1080-pixel-high viewport,
+  scaled with the real one, so the layout holds at any resolution. Off: the text lies in the entity's local XY plane
+  facing +Z, `Size` is the line height in metres, and it is hidden by things in front of it like any object.
+- `Alignment`: `"Left"`, `"Center"` or `"Right"`, the side of the text the anchor holds.
+- `Color`: linear RGBA.
+
+```lua
+function Hud:OnCreate()
+	self.score = Scene.FindEntityByName("Score"):GetComponent("Text")
+end
+function Hud:OnUpdate(dt)
+	self.score.Text = "Score " .. Game.Get("Score", 0) .. "\nLives " .. self.lives
+end
+```
+
 ## Audio
 
 Add an **AudioSource** to play a clip (a `.wav`, `.flac` or `.mp3` asset) from an entity:

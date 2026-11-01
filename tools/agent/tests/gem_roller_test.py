@@ -98,6 +98,7 @@ def play(editor: EditorSession) -> None:
     hold(editor, "Up", 45)
     check(lua(editor, "RollerGame.gemsLeft, Scene.FindEntityByName('Gem1') == nil") == "4\ttrue",
           "rolling into a gem should collect it")
+    check(lua(editor, "Scene.FindEntityByName('Hud'):GetComponent('Text').Text:sub(1, 8)") == "Gems 1/5", "the HUD counts the gem")
 
     # The goal does nothing while gems remain.
     teleport(editor, [GOAL[0], 0.5, GOAL[2] + 0.5])
@@ -137,6 +138,7 @@ def play(editor: EditorSession) -> None:
     teleport(editor, [GOAL[0], 0.5, GOAL[2] + 0.5])
     editor.call("play.step", frames=10)
     check(lua(editor, "RollerGame.won") == "true", "reaching the goal with every gem wins")
+    check(lua(editor, "Scene.FindEntityByName('Message'):GetComponent('Text').Text:sub(1, 8)") == "FINISHED", "the message announces the win")
     best = float(lua(editor, "Game.Get('BestTime')"))
     check(best > 0, "the time is recorded")
     editor.call("play.step", frames=190)  # Three seconds, then Scene.Reload.

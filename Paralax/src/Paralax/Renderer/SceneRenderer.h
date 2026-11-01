@@ -6,6 +6,7 @@
 #include "Paralax/Math/AABB.h"
 #include "Paralax/Renderer/EnvironmentLighting.h"
 #include "Paralax/Renderer/GPUResourceCache.h"
+#include "Paralax/Renderer/TextRenderer.h"
 #include "Paralax/Renderer/SceneRendererTypes.h"
 
 #include <glm/glm.hpp>
@@ -87,6 +88,7 @@ namespace Paralax {
 		uint32_t DrawCalls = 0;
 		uint32_t ShadowDrawCalls = 0;
 		uint32_t CulledSubmeshes = 0;
+		uint32_t TextGlyphs = 0;
 		uint64_t Triangles = 0;
 		uint32_t Lights = 0;
 	};
@@ -165,6 +167,7 @@ namespace Paralax {
 		SceneRenderStats m_Stats;
 		GPUResourceCache m_Resources;
 		EnvironmentLighting m_Environment;
+		TextRenderer m_Text;
 		EnvironmentMaps m_EnvironmentMaps;
 		bool m_Initialized = false;
 		uint64_t m_FrameIndex = 0;

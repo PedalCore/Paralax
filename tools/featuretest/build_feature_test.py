@@ -150,6 +150,11 @@ def build(editor: EditorSession) -> None:
     editor.call("component.set", id=swing_root, components={"Tag": {"Tag": "Feature"}})
     for child in editor.call("entity.get", id=swing_root)["children"]:
         editor.call("component.set", id=child, components={"Tag": {"Tag": "Feature"}})
+    # Text: a HUD line in screen space and a label in the world above the spinner.
+    entity(editor, "Hud", {"Text": {"Text": "Feature test", "Size": 40, "Color": [1, 1, 1, 1]},
+                           "Transform": {"Translation": [0.02, 0.02, 0]}})
+    entity(editor, "Label", {"Text": {"Text": "Spinner", "Size": 0.3, "Alignment": "Center", "ScreenSpace": False, "Color": [1, 0.9, 0.3, 1]},
+                             "Transform": {"Translation": [0, 2.6, 0]}})
     entity(editor, "FeatureTest", {"Script": {"Script": scripts["FeatureTest"]}})
 
     editor.call("scene.save", path="Scenes/FeatureTest.pxscene")
