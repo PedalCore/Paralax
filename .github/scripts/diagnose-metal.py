@@ -56,6 +56,9 @@ def main():
         for name in FAILURES:
             if (output / name).is_dir():
                 shutil.copytree(output / name, destination / name)
+        costs = build / "Testing" / "Temporary" / "CTestCostData.txt"
+        if costs.is_file():
+            shutil.copy2(costs, destination / "CTestCostData.txt")
         log = build / "Testing" / "Temporary" / "LastTest.log"
         if log.is_file():
             shutil.copy2(log, destination / "LastTest.log")
@@ -102,6 +105,8 @@ def main():
             if (output / name).exists():
                 shutil.rmtree(output / name)
         (build / "Testing" / "Temporary" / "LastTest.log").unlink(missing_ok=True)
+        # Learned costs prioritize slow/failed tests and otherwise change the baseline's scheduling order.
+        (build / "Testing" / "Temporary" / "CTestCostData.txt").unlink(missing_ok=True)
         command = ["ctest", "--test-dir", str(build), "--build-config", "Debug", "--parallel", "4",
                    "--timeout", "300", "--no-tests=error", "--verbose", "--output-junit", str(destination / "Results.xml")]
         with (destination / "Test.log").open("w") as log:
