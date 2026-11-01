@@ -14,6 +14,8 @@
 
 #include <array>
 #include <cmath>
+#include <chrono>
+#include <fstream>
 #include <cstring>
 #include <limits>
 
@@ -94,14 +96,76 @@ namespace {
 		return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
 	}
 
+	void CheckLightingTexture(nvrhi::IDevice* device, nvrhi::ITexture* texture, uint32_t channels, const char* name, const std::filesystem::path& directory, std::ostream& report)
+	{
+		REQUIRE(texture);
+		const auto& source = texture->getDesc();
+		for (uint32_t mip = 0; mip < source.mipLevels; mip++)
+			for (uint32_t face = 0; face < source.arraySize; face++)
+			{
+				CAPTURE(name);
+				CAPTURE(mip);
+				CAPTURE(face);
+				nvrhi::TextureDesc desc;
+				desc.width = std::max(1u, source.width >> mip);
+				desc.height = std::max(1u, source.height >> mip);
+				desc.format = source.format;
+				desc.initialState = nvrhi::ResourceStates::CopyDest;
+				desc.keepInitialState = true;
+				auto staging = device->createStagingTexture(desc, nvrhi::CpuAccessMode::Read);
+				REQUIRE(staging);
+				auto commands = device->createCommandList();
+				REQUIRE(commands);
+				commands->open();
+				commands->copyTexture(staging, nvrhi::TextureSlice(), texture, nvrhi::TextureSlice().setMipLevel(mip).setArraySlice(face));
+				commands->close();
+				device->executeCommandList(commands);
+				device->waitForIdle();
+				size_t pitch = 0;
+				const auto* mapped = static_cast<const uint8_t*>(device->mapStagingTexture(staging, nvrhi::TextureSlice(), nvrhi::CpuAccessMode::Read, &pitch));
+				REQUIRE(mapped);
+				std::ofstream raw(directory / (std::string(name) + "-mip-" + std::to_string(mip) + "-face-" + std::to_string(face) + ".bin"), std::ios::binary);
+				for (uint32_t row = 0; row < desc.height; row++)
+					raw.write(reinterpret_cast<const char*>(mapped + row * pitch), static_cast<std::streamsize>(desc.width * channels * sizeof(uint16_t)));
+				raw.close();
+				const bool rawSaved = raw.good();
+				float minimumEnergy = std::numeric_limits<float>::max();
+				float maximumEnergy = 0.0f;
+				double sum = 0.0;
+				size_t invalid = 0;
+				for (uint32_t y = 0; y < desc.height; y++)
+					for (uint32_t x = 0; x < desc.width; x++)
+					{
+						float energy = 0.0f;
+						for (uint32_t channel = 0; channel < std::min(channels, 3u); channel++)
+						{
+							uint16_t bits;
+							std::memcpy(&bits, mapped + y * pitch + (x * channels + channel) * sizeof(bits), sizeof(bits));
+							const float value = glm::unpackHalf1x16(bits);
+							invalid += !std::isfinite(value) || value < 0.0f ? 1 : 0;
+							energy += value;
+						}
+						minimumEnergy = std::min(minimumEnergy, energy);
+						maximumEnergy = std::max(maximumEnergy, energy);
+						sum += static_cast<double>(energy);
+					}
+				device->unmapStagingTexture(staging);
+				report << name << " mip=" << mip << " face=" << face << " min=" << minimumEnergy << " max=" << maximumEnergy
+					   << " width=" << desc.width << " height=" << desc.height << " channels=" << channels << " rawSaved=" << rawSaved
+					   << " mean=" << sum / (static_cast<double>(desc.width) * desc.height) << " invalid=" << invalid << '\n';
+				report.flush();
+			}
+	}
+
 	void CheckMetalLighting(GraphicsDevice& graphics, SceneRenderer& renderer, Scene& scene, const CameraView& camera,
-							const RenderTarget& output, const Image& first, const std::string& name)
+							const RenderTarget& output, const Image& first, const std::string& name, bool checkAppearance = true)
 	{
 		auto* device = graphics.GetDevice();
 		const auto metal = first.GetPixel(195, 95);
 		INFO("metal RGB: ", int(metal.r), ", ", int(metal.g), ", ", int(metal.b));
 		const bool lit = Luminance(metal) > 25.0f && metal.r > metal.b + 10 && metal.g > metal.b + 10;
-		CHECK(lit);
+		if (checkAppearance)
+			CHECK(lit);
 
 		// Tonemapping can hide NaNs as black: inspect the linear half-float render target as well.
 		nvrhi::TextureDesc desc = renderer.GetHDRTarget()->getDesc();
@@ -152,10 +216,43 @@ namespace {
 			renderer.GetSettings().DebugView = RenderDebugView::None;
 			renderer.GetSettings().DefaultEnvironmentIntensity = 0.0f;
 			renderer.GetSettings().Shadows = false;
+			SkyLightComponent* sky = nullptr;
+			for (auto handle : scene.GetAllEntitiesWith<SkyLightComponent>())
+			{
+				sky = &Entity(handle, &scene).GetComponent<SkyLightComponent>();
+				break;
+			}
+			const float skyIntensity = sky ? sky->Intensity : 0.0f;
+			if (sky)
+				sky->Intensity = 0.0f;
 			renderer.Render(scene, camera, output.Framebuffer);
 			REQUIRE(ReadbackTexture(device, output.Texture).SavePNG(directory / "DirectOnly.png"));
+			if (sky)
+				sky->Intensity = skyIntensity;
 			renderer.GetSettings() = originalSettings;
 		}
+	}
+
+	void CaptureLightingFailure(GraphicsDevice& graphics, SceneRenderer& renderer, Scene& scene, const CameraView& camera,
+								const RenderTarget& output, const Image& image, const std::string& name, const char* testCase)
+	{
+		const auto directory = Testing::GetTestOutputDirectory() / name;
+		std::error_code error;
+		std::filesystem::create_directories(directory, error);
+		REQUIRE_FALSE(error);
+		std::ofstream report(directory / "LightingTextures.txt");
+		REQUIRE(report.is_open());
+		report << "TestCase=" << testCase << '\n';
+		report << "CapturedEpochMilliseconds=" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << '\n';
+		report << "adapter=" << graphics.GetInfo().AdapterName << " driver=" << graphics.GetInfo().DriverName << '\n';
+		report << "Raw data: tightly packed native half-float components, dimensions and channels below\n";
+		const auto& maps = renderer.GetEnvironmentMaps();
+		CheckLightingTexture(graphics.GetDevice(), renderer.GetBRDFLut(), 2, "BRDFLut", directory, report);
+		CheckLightingTexture(graphics.GetDevice(), maps.Specular, 4, "Specular", directory, report);
+		CheckLightingTexture(graphics.GetDevice(), maps.Diffuse, 4, "Diffuse", directory, report);
+		CheckLightingTexture(graphics.GetDevice(), maps.Radiance, 4, "Radiance", directory, report);
+		// The caller already checked appearance; HDR environments need not have the procedural sky's gold hue.
+		CheckMetalLighting(graphics, renderer, scene, camera, output, image, name, false);
 	}
 
 }
@@ -279,6 +376,9 @@ TEST_CASE("SceneRenderer: fixed look matches the reviewed reference image")
 				blackPixels += Luminance(pixel) < 1.0f ? 1 : 0;
 			}
 		CHECK(blackPixels < 10);
+		if (Luminance(metal) <= 25.0f || metal.r <= metal.b + 10 || metal.g <= metal.b + 10)
+			CaptureLightingFailure(graphics, renderer, scene, camera, output, actual, "ReferenceLightingFailure",
+								   "SceneRenderer: fixed look matches the reviewed reference image");
 
 		const auto& info = graphics.GetInfo();
 		const bool referenceDevice = info.AdapterName.find("llvmpipe") != std::string::npos ||
@@ -511,6 +611,9 @@ TEST_CASE("SceneRenderer: built-in HDR rotation and intensity control image base
 			CHECK(Luminance(original.GetPixel(195, 95)) > 20.0f);
 			CHECK(Image::MaxChannelDifference(original, capture()) == 0);
 			REQUIRE(original.SavePNG(Testing::GetTestOutputDirectory() / ("R2-Environment-" + std::to_string(handle) + ".png")));
+			if (Luminance(original.GetPixel(195, 95)) <= 20.0f)
+				CaptureLightingFailure(graphics, renderer, scene, camera, output, original, "HDRLightingFailure-" + std::to_string(handle),
+									   "SceneRenderer: built-in HDR rotation and intensity control image based surface lighting");
 			environment.RotationDegrees = 180.0f;
 			const auto rotated = capture();
 			CHECK(Image::MaxChannelDifference(original, rotated) > 10);

@@ -115,7 +115,7 @@ jobs:
         shell: bash
         run: .github/scripts/run-step.sh "Unit tests" ctest --test-dir build --build-config ${{ matrix.config }} --parallel 4 --timeout 300 --no-tests=error
 
-      - name: Diagnose macOS specular lighting under GPU contention
+      - name: Compare macOS lighting after clearing the runner Metal cache
         if: always() && runner.os == 'macOS' && matrix.config == 'Debug'
         shell: bash
         run: python3 .github/scripts/diagnose-metal.py build

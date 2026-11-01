@@ -18,6 +18,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <utility>
 
 namespace Paralax {
 
@@ -72,6 +73,7 @@ namespace Paralax {
 			PFN_vkDestroyInstance DestroyInstance = nullptr;
 			PFN_vkEnumeratePhysicalDevices EnumeratePhysicalDevices = nullptr;
 			PFN_vkGetPhysicalDeviceProperties2 GetPhysicalDeviceProperties2 = nullptr;
+			PFN_vkGetPhysicalDeviceFormatProperties GetPhysicalDeviceFormatProperties = nullptr;
 			PFN_vkGetPhysicalDeviceFeatures2 GetPhysicalDeviceFeatures2 = nullptr;
 			PFN_vkGetPhysicalDeviceQueueFamilyProperties GetPhysicalDeviceQueueFamilyProperties = nullptr;
 			PFN_vkEnumerateDeviceExtensionProperties EnumerateDeviceExtensionProperties = nullptr;
@@ -476,6 +478,7 @@ namespace Paralax {
 		}
 		LoadInstanceFunction(m_Functions, m_Instance, "vkEnumeratePhysicalDevices", m_Functions.EnumeratePhysicalDevices);
 		LoadInstanceFunction(m_Functions, m_Instance, "vkGetPhysicalDeviceProperties2", m_Functions.GetPhysicalDeviceProperties2);
+		LoadInstanceFunction(m_Functions, m_Instance, "vkGetPhysicalDeviceFormatProperties", m_Functions.GetPhysicalDeviceFormatProperties);
 		LoadInstanceFunction(m_Functions, m_Instance, "vkGetPhysicalDeviceFeatures2", m_Functions.GetPhysicalDeviceFeatures2);
 		LoadInstanceFunction(m_Functions, m_Instance, "vkGetPhysicalDeviceQueueFamilyProperties", m_Functions.GetPhysicalDeviceQueueFamilyProperties);
 		LoadInstanceFunction(m_Functions, m_Instance, "vkEnumerateDeviceExtensionProperties", m_Functions.EnumerateDeviceExtensionProperties);
@@ -484,7 +487,7 @@ namespace Paralax {
 		LoadInstanceFunction(m_Functions, m_Instance, "vkCreateDebugUtilsMessengerEXT", m_Functions.CreateDebugUtilsMessengerEXT);
 		LoadInstanceFunction(m_Functions, m_Instance, "vkDestroyDebugUtilsMessengerEXT", m_Functions.DestroyDebugUtilsMessengerEXT);
 
-		if (!m_Functions.DestroyInstance || !m_Functions.EnumeratePhysicalDevices || !m_Functions.GetPhysicalDeviceProperties2 || !m_Functions.GetPhysicalDeviceFeatures2 || !m_Functions.GetPhysicalDeviceQueueFamilyProperties || !m_Functions.EnumerateDeviceExtensionProperties || !m_Functions.CreateDevice || !m_Functions.GetDeviceProcAddr)
+		if (!m_Functions.DestroyInstance || !m_Functions.EnumeratePhysicalDevices || !m_Functions.GetPhysicalDeviceProperties2 || !m_Functions.GetPhysicalDeviceFormatProperties || !m_Functions.GetPhysicalDeviceFeatures2 || !m_Functions.GetPhysicalDeviceQueueFamilyProperties || !m_Functions.EnumerateDeviceExtensionProperties || !m_Functions.CreateDevice || !m_Functions.GetDeviceProcAddr)
 		{
 			PX_CORE_ERROR("Failed to load Vulkan instance functions");
 			return false;
@@ -631,6 +634,25 @@ namespace Paralax {
 		properties.pNext = &driverProperties;
 		m_Functions.GetPhysicalDeviceProperties2(m_PhysicalDevice, &properties);
 		m_Info.DriverName = fmt::format("{} {}", driverProperties.driverName, driverProperties.driverInfo);
+		const auto& props = properties.properties;
+		PX_CORE_INFO("Vulkan physical device: '{}' vendor=0x{:x} device=0x{:x} API={}.{}.{} driverVersion=0x{:x} driver='{}'",
+					 props.deviceName, props.vendorID, props.deviceID, VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion),
+					 VK_API_VERSION_PATCH(props.apiVersion), props.driverVersion, m_Info.DriverName);
+		PX_CORE_INFO("Vulkan enabled image features: cubeArray={} storageWriteWithoutFormat={} storageReadWithoutFormat={} storageExtendedFormats={}",
+					 enabled.Features2.features.imageCubeArray != 0, enabled.Features2.features.shaderStorageImageWriteWithoutFormat != 0,
+					 enabled.Features2.features.shaderStorageImageReadWithoutFormat != 0, enabled.Features2.features.shaderStorageImageExtendedFormats != 0);
+		// Preserve the driver's advertised format support alongside failures that only reproduce on certain GPUs.
+		for (const auto& [format, name] : {std::pair{VK_FORMAT_R16G16_SFLOAT, "R16G16_SFLOAT"},
+										   std::pair{VK_FORMAT_R16G16B16A16_SFLOAT, "R16G16B16A16_SFLOAT"},
+										   std::pair{VK_FORMAT_R32G32B32A32_SFLOAT, "R32G32B32A32_SFLOAT"}})
+		{
+			VkFormatProperties formatProperties{};
+			m_Functions.GetPhysicalDeviceFormatProperties(m_PhysicalDevice, format, &formatProperties);
+			const VkFormatFeatureFlags features = formatProperties.optimalTilingFeatures;
+			PX_CORE_INFO("Vulkan format {}: optimalTilingFeatures=0x{:x} sampled={} storage={} linearFilter={}", name, features,
+						 (features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0, (features & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0,
+						 (features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0);
+		}
 
 		const float priority = 1.0f;
 		VkDeviceQueueCreateInfo queueInfo = MakeVkStruct<VkDeviceQueueCreateInfo>(VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO);

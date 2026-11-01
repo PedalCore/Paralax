@@ -94,6 +94,10 @@ TEST_CASE("GraphicsDevice: a preferred adapter that does not exist falls back to
 	Scope<GraphicsDevice> device = GraphicsDevice::Create(specification);
 	REQUIRE(device);
 	CHECK(capture.Contains(spdlog::level::warn, "not found"));
+	CHECK(capture.Contains(spdlog::level::info, "Vulkan physical device: '" + device->GetInfo().AdapterName + "'"));
+	CHECK(capture.Contains(spdlog::level::info, "driverVersion=0x"));
+	for (const char* format : {"R16G16_SFLOAT", "R16G16B16A16_SFLOAT", "R32G32B32A32_SFLOAT"})
+		CHECK(capture.Contains(spdlog::level::info, std::string("Vulkan format ") + format + ": optimalTilingFeatures=0x"));
 }
 
 TEST_CASE("GraphicsDevice: missing required instance extensions fail creation with an error")
