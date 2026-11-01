@@ -101,7 +101,7 @@ namespace Paralax::Editor {
 			{
 				glm::vec2& target = *static_cast<glm::vec2*>(value);
 				glm::vec2 edited = target;
-				if (ImGui::DragFloat2("##value", glm::value_ptr(edited), 0.02f))
+				if (ImGui::DragFloat2("##value", glm::value_ptr(edited), 0.02f, hasRange ? field.Min : 0.0f, hasRange ? field.Max : 0.0f, "%.3f", hasRange ? ImGuiSliderFlags_AlwaysClamp : 0))
 					write(target, edited, key);
 				break;
 			}
@@ -111,7 +111,8 @@ namespace Paralax::Editor {
 				glm::vec3& target = *static_cast<glm::vec3*>(value);
 				glm::vec3 edited = target;
 				const bool edit = (field.Flags & FieldFlagColor) ? ImGui::ColorEdit3("##value", glm::value_ptr(edited), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR)
-																 : ImGui::DragFloat3("##value", glm::value_ptr(edited), 0.02f);
+																 : ImGui::DragFloat3("##value", glm::value_ptr(edited), 0.02f, hasRange ? field.Min : 0.0f, hasRange ? field.Max : 0.0f, "%.3f",
+																					 hasRange ? ImGuiSliderFlags_AlwaysClamp : 0);
 				if (edit)
 					write(target, edited, key);
 				break;
@@ -122,7 +123,8 @@ namespace Paralax::Editor {
 				glm::vec4& target = *static_cast<glm::vec4*>(value);
 				glm::vec4 edited = target;
 				const bool edit = (field.Flags & FieldFlagColor) ? ImGui::ColorEdit4("##value", glm::value_ptr(edited), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_AlphaBar)
-																 : ImGui::DragFloat4("##value", glm::value_ptr(edited), 0.02f);
+																 : ImGui::DragFloat4("##value", glm::value_ptr(edited), 0.02f, hasRange ? field.Min : 0.0f, hasRange ? field.Max : 0.0f, "%.3f",
+																					 hasRange ? ImGuiSliderFlags_AlwaysClamp : 0);
 				if (edit)
 					write(target, edited, key);
 				break;

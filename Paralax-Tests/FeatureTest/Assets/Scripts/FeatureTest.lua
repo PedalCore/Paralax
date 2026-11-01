@@ -3,7 +3,7 @@
 -- Paralax-Tests/src/Scripting/FeatureTestCoverageTests.cpp verifies every API name appears in this file.
 local Util = require("Scripts/Util")
 
-local FeatureTest = { finishFrame = 30 }
+local FeatureTest = { finishFrame = 45 }
 
 local function near(a, b) return math.abs(a - b) < 1e-4 end
 local function nearVec(a, b) return (a - b):Length() < 1e-4 end
@@ -62,13 +62,16 @@ local function TestComponents(self)
 	mesh.Materials = { "16" }
 	assert(mesh.Mesh == "2" and mesh.Materials[1] == "16" and mesh.CastShadows == true)
 	assert(probe:AddComponent("Script").Script == "0")
+	assert(probe:AddComponent("Collider", { Shape = "Sphere", Size = vec3(2) }).Shape == "Sphere")
+	assert(probe:AddComponent("Rigidbody", { Type = "Kinematic", Mass = 3 }).Mass == 3)
 	assert(probe:RemoveComponent("PointLight") and not probe:HasComponent("PointLight") and not probe:RemoveComponent("PointLight"))
 	-- Invalid values raise errors and change nothing.
 	assert(not pcall(function() transform.Translation = "up" end))
 	assert(not pcall(function() probe:AddComponent("PointLight", { Intensity = -1 }) end) and not probe:HasComponent("PointLight"))
 	assert(not pcall(function() probe:GetComponent("NoSuchComponent") end))
 	-- Every component type in the engine appears in the authored scene.
-	for _, name in ipairs({ "Tag", "Transform", "Camera", "DirectionalLight", "PointLight", "SpotLight", "SkyLight", "Mesh", "Script", "PrefabInstance" }) do
+	for _, name in ipairs({ "Tag", "Transform", "Camera", "DirectionalLight", "PointLight", "SpotLight", "SkyLight", "Mesh", "Rigidbody",
+		"Collider", "Script", "PrefabInstance" }) do
 		local found = false
 		for _, entity in ipairs(Scene.FindEntitiesByTag("Feature")) do
 			found = found or entity:HasComponent(name)
@@ -112,6 +115,20 @@ local function TestScene(self)
 	spawned.tag = "Spawned"
 end
 
+local function TestPhysics()
+	assert(near(Physics.GetGravity().y, -9.81))
+	Physics.SetGravity(vec3(0, -9.81, 0))
+	local ball = Scene.FindEntityByName("PhysicsBall")
+	assert(Physics.AddForce(ball, vec3(0, 0, 0)) and Physics.AddImpulse(ball, vec3(0, 0, 0)))
+	assert(Physics.SetLinearVelocity(ball, vec3(0, -1, 0)) and near(Physics.GetLinearVelocity(ball).y, -1))
+	assert(Physics.SetAngularVelocity(ball, vec3(0, 1, 0)) and near(Physics.GetAngularVelocity(ball).y, 1))
+	-- The ground is static: forces do not apply to it.
+	assert(not Physics.AddImpulse(Scene.FindEntityByName("Ground"), vec3(1, 0, 0)))
+	local hit = Physics.Raycast(vec3(4, 5, 4), vec3(0, -1, 0), 20)
+	assert(hit and hit.entity.name == "Ground" and near(hit.distance, 5) and hit.normal.y > 0.99 and near(hit.point.y, 0), "raycast should hit the ground")
+	assert(Physics.Raycast(vec3(0, 50, 0), vec3(0, 1, 0), 10) == nil)
+end
+
 local function TestInputAndLog()
 	-- Headless runs have no input; the API must still answer consistently.
 	assert(Input.IsKeyDown(Key.W) == false and Input.WasKeyPressed(Key.Space) == false and Input.WasKeyReleased(Key.Escape) == false)
@@ -138,6 +155,7 @@ function FeatureTest:OnCreate()
 	TestMath()
 	TestComponents(self)
 	TestScene(self)
+	TestPhysics()
 	TestInputAndLog()
 end
 
@@ -153,6 +171,10 @@ function FeatureTest:OnUpdate(dt)
 		assert(Spawned == Time.frame, "an entity spawned with a script starts on the next update")
 	end
 	if Time.frame >= self.finishFrame then
+		-- Physics callbacks (Ball.lua): the ball passed through the trigger zone and landed on the ground.
+		assert(BallTriggered and BallPassedTrigger, "the ball should have passed through the trigger zone")
+		assert(BallLanded, "the ball should have landed on the ground")
+		assert(Scene.FindEntityByName("PhysicsBall"):GetWorldPosition().y < 1, "gravity should have pulled the ball down")
 		self.done = true
 		Log.Info("FeatureTest: all checks passed at frame " .. Time.frame)
 	end

@@ -93,6 +93,36 @@ Field values are **copies**. `t.Translation.x = 1` changes only the copy, so ass
 | `Scene.Destroy(entity)` | Same as `entity:Destroy()`. |
 | `Scene.GetEntityCount()` | Number of entities. |
 
+## Physics
+
+Add a **Collider** (shape: `Box`, `Sphere`, `Capsule` or `Cylinder`, sized by `Size` and the Transform's scale) to make
+an entity solid. Add a **Rigidbody** as well to simulate it:
+- `Dynamic` bodies fall, collide and are moved by forces.
+- `Kinematic` bodies follow their Transform, and push dynamic ones.
+- `Static` bodies (and colliders without a Rigidbody) never move.
+
+A collider with `IsTrigger = true` detects overlaps without colliding. The simulation runs in fixed 1/60 s steps and is
+deterministic. Setting a body's Transform from a script teleports it (kinematic bodies move there smoothly).
+
+Colliders belong to their own entity: a collider on a child entity is a separate body, not part of its parent's
+Rigidbody, so put a moving object's collider on the entity with the Rigidbody. An entity whose world scale is zero
+(for example, under a parent scaled to 0) has no body until its scale is restored. Changing a Collider or Rigidbody
+field while playing rebuilds the body; a dynamic body keeps its velocity.
+
+| Function | Description |
+|---|---|
+| `Physics.AddForce(entity, vec3)` | Pushes a dynamic body with a force (N) for the current frame; call it every frame for a steady push. The result does not depend on the frame rate. Returns false if the entity has no dynamic body. |
+| `Physics.AddImpulse(entity, vec3)` | Changes a dynamic body's momentum at once (impulse in N·s). Returns false if the entity has no dynamic body. |
+| `Physics.SetLinearVelocity(entity, vec3)` / `Physics.GetLinearVelocity(entity)` | Velocity in m/s. `Set` works on dynamic bodies only (it returns false otherwise; move kinematic bodies with their Transform). `Get` works on any body and returns `nil` without one. |
+| `Physics.SetAngularVelocity(entity, vec3)` / `Physics.GetAngularVelocity(entity)` | Angular velocity in rad/s, with the same rules. |
+| `Physics.Raycast(origin, direction, maxDistance)` | The nearest solid (non-trigger) collider along the ray, as `{ entity, point, normal, distance }`, or `nil`. |
+| `Physics.GetGravity()` / `Physics.SetGravity(vec3)` | Gravity in m/s² (default `vec3(0, -9.81, 0)`). |
+
+Scripts on either entity of a contact receive callbacks before their next `OnUpdate`:
+`OnCollisionEnter(self, other)` and `OnCollisionExit(self, other)` for solid contacts, and `OnTriggerEnter(self, other)`
+and `OnTriggerExit(self, other)` when a trigger is involved. Bodies at rest stay in contact; no exit is reported when
+they fall asleep. `other` may already be destroyed in an exit (check `other:IsValid()`).
+
 ## Input, time and logging
 
 - `Input.IsKeyDown(Key.W)`, `Input.WasKeyPressed(key)`, `Input.WasKeyReleased(key)`. "Pressed" and "Released" mean

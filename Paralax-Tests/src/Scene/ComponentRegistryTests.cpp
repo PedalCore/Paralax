@@ -143,3 +143,23 @@ TEST_CASE("ComponentRegistry: engine-managed components cannot be removed throug
 	for (const ComponentInfo& info : ComponentRegistry::GetAll())
 		CHECK(info.Copy != nullptr);
 }
+
+TEST_CASE("ComponentRegistry: a range on a vector field applies to every component")
+{
+	ColliderComponent collider;
+	const ComponentInfo& info = *ComponentRegistry::Find("Collider");
+	const FieldInfo& size = *info.FindField("Size");
+	std::string error;
+
+	CHECK_FALSE(ComponentRegistry::SetField(size, &collider, json::array({1, -1, 1}), error));
+	CHECK(error.find("each in") != std::string::npos);
+	CHECK_FALSE(ComponentRegistry::SetField(size, &collider, json::array({1, 0, 1}), error));   // Below the minimum.
+	CHECK_FALSE(ComponentRegistry::SetField(size, &collider, json::array({1, 1, 1e9}), error)); // Above the maximum.
+	CHECK(collider.Size == glm::vec3(1.0f));
+	CHECK(ComponentRegistry::SetField(size, &collider, json::array({2, 0.5, 3}), error));
+	CHECK(collider.Size == glm::vec3(2.0f, 0.5f, 3.0f));
+
+	// Without a range (Min == Max) any finite components are accepted.
+	CHECK(ComponentRegistry::SetField(*info.FindField("Offset"), &collider, json::array({-5, 0, 1e6}), error));
+	CHECK(collider.Offset == glm::vec3(-5.0f, 0.0f, 1e6f));
+}

@@ -1,5 +1,6 @@
 #include <Paralax.h>
 #include <Paralax/Core/EntryPoint.h>
+#include <Paralax/Physics/PhysicsSystem.h>
 #include <Paralax/Project/Project.h>
 #include <Paralax/Renderer/SceneRenderer.h>
 #include <Paralax/Scene/Entity.h>
@@ -31,7 +32,9 @@ namespace Paralax {
 			void OnAttach() override
 			{
 				Application& app = Application::Get();
+				// Scripts first: forces they apply in OnUpdate act in the same update's physics step.
 				m_Scripts = static_cast<ScriptSystem*>(m_Scene->AddSystem(CreateScope<ScriptSystem>(m_Project->GetAssetManager())));
+				m_Scene->AddSystem(CreateScope<PhysicsSystem>());
 				if (app.HasGraphics())
 				{
 					m_Renderer = CreateScope<SceneRenderer>(app.GetGraphicsDevice(), m_Project->GetAssetManager());

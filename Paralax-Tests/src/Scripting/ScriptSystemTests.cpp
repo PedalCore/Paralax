@@ -5,6 +5,7 @@
 #include <Paralax/Asset/AssetManager.h>
 #include <Paralax/Core/Input.h>
 #include <Paralax/Events/KeyEvent.h>
+#include <Paralax/Physics/PhysicsSystem.h>
 #include <Paralax/Scene/Components.h>
 #include <Paralax/Scene/Entity.h>
 #include <Paralax/Scene/Prefab.h>
@@ -793,4 +794,110 @@ TEST_CASE("ScriptAsset: missing and oversized files are rejected")
 	REQUIRE(ok);
 	CHECK(ok->Source == "return {}");
 	CHECK(ok->Name == "Ok.lua");
+}
+
+// --- Physics from scripts -----------------------------------------------------------------------------------
+
+namespace {
+
+	struct PhysicsScriptFixture : ScriptFixture
+	{
+		PhysicsScriptFixture() { World.AddSystem(CreateScope<PhysicsSystem>()); }
+
+		Entity Ground()
+		{
+			Entity ground = World.CreateEntity("Ground");
+			ground.AddComponent<ColliderComponent>().Size = glm::vec3(20.0f, 1.0f, 20.0f);
+			ground.GetComponent<TransformComponent>().Translation = glm::vec3(0.0f, -0.5f, 0.0f);
+			return ground;
+		}
+	};
+
+}
+
+TEST_CASE("ScriptSystem: scripts drive bodies through the Physics API")
+{
+	PhysicsScriptFixture fixture;
+	fixture.Ground();
+	Entity ball = fixture.CreateScripted(R"(
+		local S = {}
+		function S:OnCreate()
+			Physics.SetGravity(vec3(0, 0, 0))
+			Gravity = Physics.GetGravity()
+			Pushed = Physics.AddImpulse(self.entity, vec3(2, 0, 0))
+			Forced = Physics.AddForce(self.entity, vec3(0, 0, 0))
+			Spun = Physics.SetAngularVelocity(self.entity, vec3(0, 1, 0))
+			Physics.SetLinearVelocity(self.entity, vec3(0, 0, 0))
+			Physics.AddImpulse(self.entity, vec3(2, 0, 0))
+		end
+		function S:OnUpdate()
+			Velocity = Physics.GetLinearVelocity(self.entity)
+			Angular = Physics.GetAngularVelocity(self.entity)
+			GroundIsStatic = not Physics.AddImpulse(Scene.FindEntityByName("Ground"), vec3(1, 0, 0))
+			NoBody = Physics.GetLinearVelocity(Scene.CreateEntity("Bodiless")) == nil
+			Hit = Physics.Raycast(vec3(0, 10, 0), vec3(0, -1, 0), 100)
+			Miss = Physics.Raycast(vec3(0, 10, 0), vec3(0, 1, 0), 100)
+		end
+		return S
+	)",
+										 "Ball");
+	ball.GetComponent<TransformComponent>().Translation = glm::vec3(0.0f, 3.0f, 0.0f);
+	ball.AddComponent<ColliderComponent>().Shape = ColliderShape::Sphere;
+	ball.AddComponent<RigidbodyComponent>();
+	fixture.Start();
+	fixture.Update(2);
+	REQUIRE(fixture.System->GetErrors().empty());
+	CHECK(fixture.Eval("Gravity == vec3(0, 0, 0), Pushed, Forced, Spun") == "true\ttrue\ttrue\ttrue");
+	CHECK(fixture.Eval("math.abs(Velocity.x - 2) < 0.05 and math.abs(Velocity.y) < 1e-4") == "true");
+	CHECK(fixture.Eval("GroundIsStatic, NoBody, Miss == nil") == "true\ttrue\ttrue");
+	CHECK(fixture.Eval("Hit.entity.name, math.abs(Hit.distance - 6.5) < 0.01, Hit.normal.y > 0.99") == "Ball\ttrue\ttrue");
+	fixture.Update(30);
+	CHECK(ball.GetComponent<TransformComponent>().Translation.x > 0.5f); // The impulse moved it.
+
+	std::string error;
+	CHECK_FALSE(fixture.System->Evaluate("Physics.SetGravity(vec3(0, 0/0, 0))", error));
+	CHECK_FALSE(fixture.System->Evaluate("Physics.AddForce(Scene.GetEntity('1'), vec3(1))", error)); // Not an entity.
+}
+
+TEST_CASE("ScriptSystem: collisions and triggers call both entities' scripts")
+{
+	PhysicsScriptFixture fixture;
+	const std::string listener = R"(
+		local S = {}
+		function S:OnCollisionEnter(other) Log_(self, "enter", other) end
+		function S:OnCollisionExit(other) Log_(self, "exit", other) end
+		function S:OnTriggerEnter(other) Log_(self, "trigger", other) end
+		function S:OnTriggerExit(other) Log_(self, "untrigger", other) end
+		return S
+	)";
+	Entity ground = fixture.Ground();
+	ground.AddComponent<ScriptComponent>().Script = fixture.AddScript(listener, "Ground.lua");
+	Entity box = fixture.CreateScripted(listener, "Box");
+	box.GetComponent<TransformComponent>().Translation = glm::vec3(0.0f, 4.0f, 0.0f);
+	box.AddComponent<ColliderComponent>();
+	box.AddComponent<RigidbodyComponent>();
+	Entity zone = fixture.World.CreateEntity("Zone");
+	zone.AddComponent<ColliderComponent>().IsTrigger = true;
+	zone.GetComponent<TransformComponent>().Translation = glm::vec3(0.0f, 2.5f, 0.0f);
+	fixture.Start();
+	fixture.Eval("Events = {} function Log_(self, what, other) Events[#Events + 1] = self.entity.name .. ':' .. what .. ':' .. other.name end");
+	fixture.Update(150);
+	REQUIRE(fixture.System->GetErrors().empty());
+	const std::string events = fixture.Eval("table.concat(Events, ',')");
+	CAPTURE(events);
+	CHECK(events.find("Box:trigger:Zone") != std::string::npos);
+	CHECK(events.find("Box:untrigger:Zone") != std::string::npos);
+	CHECK(events.find("Box:enter:Ground") != std::string::npos);
+	CHECK(events.find("Ground:enter:Box") != std::string::npos);
+	// The trigger is passed before the ground is hit.
+	CHECK(events.find("Box:trigger:Zone") < events.find("Box:enter:Ground"));
+}
+
+TEST_CASE("ScriptSystem: the Physics API reports when the scene has no physics")
+{
+	ScriptFixture fixture;
+	fixture.Start();
+	std::string error;
+	CHECK_FALSE(fixture.System->Evaluate("Physics.GetGravity()", error));
+	CHECK(error.find("physics is not running") != std::string::npos);
 }

@@ -85,6 +85,11 @@ cmake --preset debug && cmake --build build/debug && ctest --preset debug -j8
   - Inside bindings, report errors with `ScriptError(...)`. It raises a Lua error, and the system catches it at the call boundary.
 - **Every new scripting API function** must be added to `docs/Scripting.md`, to the tests in `Paralax-Tests/src/Scripting/`, and to the feature test scene.
 - **Sandbox:** scripts never get file, OS, `debug`, `load` or bytecode access. Randomness comes from the seeded `math.random`, and time from `Time`, never the wall clock.
+- **Physics:**
+  - Jolt (cross-platform deterministic build) lives only in `Physics/PhysicsSystem.cpp`, behind a pimpl. Bodies come from Collider and Rigidbody components; the system syncs them to the scene each update.
+  - Never step Jolt or touch bodies elsewhere: scripts use the `Physics` table, and the engine uses `PhysicsSystem`'s methods.
+  - Contact events are derived from per-step contact sets, which keeps them deterministic and stable across sleep.
+  - Physics tests run real simulations in fixed steps and check results against analytic expectations within tolerances.
 - **Prefabs** (`.pxprefab`) are scene documents with type "Prefab" and exactly one root. Instantiate them through `PrefabAsset::Instantiate`, never by copying JSON by hand.
 
 ## Editor and agent control

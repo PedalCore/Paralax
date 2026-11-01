@@ -97,6 +97,50 @@ namespace Paralax {
 		bool CastShadows = true;
 	};
 
+	enum class RigidbodyType
+	{
+		Static = 0,    // Never moves (walls, ground). Entities with only a Collider are static too.
+		Kinematic = 1, // Moved by its Transform (scripts, animation); pushes dynamic bodies, unaffected by forces.
+		Dynamic = 2    // Simulated: gravity, forces and collisions move it, and the simulation writes its Transform.
+	};
+
+	// Makes the entity a rigid body in the physics simulation (needs a ColliderComponent for its shape).
+	struct RigidbodyComponent
+	{
+		RigidbodyType Type = RigidbodyType::Dynamic;
+		float Mass = 1.0f; // kg; dynamic bodies only.
+		float LinearDamping = 0.05f;
+		float AngularDamping = 0.05f;
+		float GravityScale = 1.0f;
+		// Keeps the body upright (rotation is not simulated), e.g. for characters.
+		bool LockRotation = false;
+		// Continuous collision detection, for small fast bodies that would otherwise pass through thin walls.
+		bool ContinuousCollision = false;
+	};
+
+	enum class ColliderShape
+	{
+		Box = 0,
+		Sphere = 1,
+		Capsule = 2, // Upright (along Y).
+		Cylinder = 3 // Upright (along Y).
+	};
+
+	// The physical shape of an entity. Size is the shape's bounding box in local units (before the Transform's scale,
+	// which applies too): a box uses it directly; a sphere's diameter is its largest component; capsules and cylinders
+	// take their diameter from X and Z and their total height from Y. The defaults match the built-in unit meshes
+	// (the built-in capsule is 1 x 2 x 1).
+	struct ColliderComponent
+	{
+		ColliderShape Shape = ColliderShape::Box;
+		glm::vec3 Size{1.0f};
+		glm::vec3 Offset{0.0f}; // Shape centre relative to the entity, in local units.
+		float Friction = 0.5f;
+		float Restitution = 0.0f; // Bounciness, 0..1.
+		// Triggers detect overlaps (OnTriggerEnter/Exit) without colliding.
+		bool IsTrigger = false;
+	};
+
 	// Runs a Lua script on the entity while the scene is running (see ScriptSystem).
 	struct ScriptComponent
 	{

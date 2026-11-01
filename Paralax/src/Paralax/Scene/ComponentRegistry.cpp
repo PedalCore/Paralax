@@ -113,6 +113,27 @@ namespace Paralax {
 																  MakeField<&MeshComponent::CastShadows>("CastShadows"),
 															  }));
 
+			components.push_back(MakeComponent<RigidbodyComponent>("Rigidbody", "Simulates the entity as a rigid body (needs a Collider).",
+																   {
+																	   MakeField<&RigidbodyComponent::Type>("Type", FieldOptions().Enum({"Static", "Kinematic", "Dynamic"})),
+																	   MakeField<&RigidbodyComponent::Mass>("Mass", FieldOptions().Range(0.001f, 1000000.0f).Describe("Mass in kg (dynamic bodies).")),
+																	   MakeField<&RigidbodyComponent::LinearDamping>("LinearDamping", FieldOptions().Range(0.0f, 100.0f)),
+																	   MakeField<&RigidbodyComponent::AngularDamping>("AngularDamping", FieldOptions().Range(0.0f, 100.0f)),
+																	   MakeField<&RigidbodyComponent::GravityScale>("GravityScale", FieldOptions().Range(-100.0f, 100.0f)),
+																	   MakeField<&RigidbodyComponent::LockRotation>("LockRotation", FieldOptions().Describe("Keep the body upright (e.g. characters).")),
+																	   MakeField<&RigidbodyComponent::ContinuousCollision>("ContinuousCollision", FieldOptions().Describe("For small, fast bodies.")),
+																   }));
+
+			components.push_back(MakeComponent<ColliderComponent>("Collider", "The entity's physical shape (static unless it has a Rigidbody).",
+																  {
+																	  MakeField<&ColliderComponent::Shape>("Shape", FieldOptions().Enum({"Box", "Sphere", "Capsule", "Cylinder"})),
+																	  MakeField<&ColliderComponent::Size>("Size", FieldOptions().Range(0.001f, 100000.0f).Describe("Bounding box in local units (scaled by the Transform).")),
+																	  MakeField<&ColliderComponent::Offset>("Offset", FieldOptions().Describe("Shape centre relative to the entity.")),
+																	  MakeField<&ColliderComponent::Friction>("Friction", FieldOptions().Range(0.0f, 10.0f)),
+																	  MakeField<&ColliderComponent::Restitution>("Restitution", FieldOptions().Range(0.0f, 1.0f).Describe("Bounciness.")),
+																	  MakeField<&ColliderComponent::IsTrigger>("IsTrigger", FieldOptions().Describe("Detect overlaps without colliding.")),
+																  }));
+
 			components.push_back(MakeComponent<ScriptComponent>("Script", "Runs a Lua script (OnCreate, OnUpdate, OnDestroy) while the scene is running.",
 																{
 																	MakeField<&ScriptComponent::Script>("Script", FieldOptions().Describe("Script asset (.lua) returning a table with the callbacks.")),

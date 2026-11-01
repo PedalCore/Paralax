@@ -37,14 +37,17 @@ namespace Paralax {
 	//   OnCreate(self)        before the instance's first update (entities created while running start next update)
 	//   OnUpdate(self, dt)    every update, with dt in seconds
 	//   OnDestroy(self)       when the entity (or its ScriptComponent) is removed, or when the scene stops running
+	//   OnCollisionEnter/Exit(self, other), OnTriggerEnter/Exit(self, other)
+	//                         contacts from the scene's PhysicsSystem, delivered before OnUpdate of the next update
 	// A callback that raises an error disables its instance (the error, with a traceback, is logged and recorded).
 	//
 	// Scripts run in a sandbox: no io, os, debug, load or bytecode, no finalizers or access to engine metatables, a
 	// deterministic math.random, an instruction budget per callback (which pcall cannot swallow), bounded pattern
 	// matching, a memory limit, and a cap on entities created per callback. `require("Scripts/Util")` loads another
 	// script from the project's assets.
-	// The API (Entity, Scene, Input, Time, Log and the vec2/vec3/vec4/quat math types) is documented in
-	// docs/Scripting.md.
+	// The API (Entity, Scene, Physics, Input, Time, Log and the vec2/vec3/vec4/quat math types) is documented in
+	// docs/Scripting.md. Add a PhysicsSystem after the ScriptSystem so forces applied in OnUpdate act in the same
+	// update's simulation step.
 	//
 	// Main-thread-only. Errors in scripts, and Lua errors in the engine's own calls into Lua (e.g. out of memory), are
 	// reported and recorded; they never propagate to C++ callers.

@@ -4,6 +4,7 @@
 #include "Paralax/Asset/AssetManager.h"
 #include "Paralax/Core/Input.h"
 #include "Paralax/Math/Math.h"
+#include "Paralax/Physics/PhysicsSystem.h"
 #include "Paralax/Scene/ComponentRegistry.h"
 #include "Paralax/Scene/Components.h"
 #include "Paralax/Scene/Entity.h"
@@ -390,6 +391,8 @@ namespace Paralax {
 		AssetManager& Assets;
 		ScriptSystemSpecification Specification;
 		Scene* ActiveScene = nullptr;
+		// The running scene's physics, if it simulates any (for the Physics API and collision callbacks).
+		PhysicsSystem* Physics = nullptr;
 
 		LuaMemory Memory;
 		std::optional<sol::state> Lua;
@@ -707,6 +710,33 @@ namespace Paralax {
 			return protectedOk && succeeded;
 		}
 
+		// Delivers the contacts the physics step reported since the last update to both entities' scripts, in the
+		// physics system's (deterministic) order: OnCollisionEnter/Exit or OnTriggerEnter/Exit(self, other).
+		void DispatchContactEvents(Scene& scene)
+		{
+			if (!Physics)
+				return;
+			for (const ContactEvent& event : Physics->TakeContactEvents())
+			{
+				const char* callback = event.Type == ContactEventType::CollisionEnter  ? "OnCollisionEnter"
+									   : event.Type == ContactEventType::CollisionExit ? "OnCollisionExit"
+									   : event.Type == ContactEventType::TriggerEnter  ? "OnTriggerEnter"
+																					   : "OnTriggerExit";
+				for (const auto& [self, other] : {std::pair{event.A, event.B}, std::pair{event.B, event.A}})
+				{
+					auto it = Instances.find(self);
+					if (it == Instances.end() || it->second.Failed || !it->second.Created || !scene.TryGetEntityByUUID(self))
+						continue;
+					// The other entity may already be gone (exits after destruction): it is still passed, invalid.
+					if (!RunCallback(it->second, callback, ScriptEntity{other}))
+					{
+						if (auto again = Instances.find(self); again != Instances.end())
+							again->second.Failed = true;
+					}
+				}
+			}
+		}
+
 		// Creates instances for new script components, then runs OnCreate and OnUpdate, all in hierarchy order.
 		void Update(Scene& scene, float dt)
 		{
@@ -762,6 +792,8 @@ namespace Paralax {
 						again->second.Failed = true;
 				}
 			}
+
+			DispatchContactEvents(scene);
 
 			for (const auto& [id, script] : scripted)
 			{
@@ -858,6 +890,7 @@ namespace Paralax {
 			BindEntity(lua);
 			BindScene(lua);
 			BindInput(lua);
+			BindPhysics(lua);
 
 			TimeTable = lua.create_table_with("delta", 0.0, "elapsed", 0.0, "frame", 0);
 			lua["Time"] = TimeTable;
@@ -1143,6 +1176,47 @@ namespace Paralax {
 			});
 		}
 
+		PhysicsSystem& GetPhysics() const
+		{
+			if (!Physics)
+				ScriptError("physics is not running in this scene");
+			return *Physics;
+		}
+
+		void BindPhysics(sol::state& lua)
+		{
+			sol::table physics = lua.create_named_table("Physics");
+			// Body controls return false when the entity has no (dynamic) body; that is not an error.
+			physics.set_function("AddForce", [this](const ScriptEntity& entity, const glm::vec3& force) { return GetPhysics().AddForce(Resolve(entity).GetUUID(), force); });
+			physics.set_function("AddImpulse", [this](const ScriptEntity& entity, const glm::vec3& impulse) { return GetPhysics().AddImpulse(Resolve(entity).GetUUID(), impulse); });
+			physics.set_function("SetLinearVelocity",
+								 [this](const ScriptEntity& entity, const glm::vec3& velocity) { return GetPhysics().SetLinearVelocity(Resolve(entity).GetUUID(), velocity); });
+			physics.set_function("GetLinearVelocity", [this](const ScriptEntity& entity) -> sol::optional<glm::vec3> {
+				std::optional<glm::vec3> velocity = GetPhysics().GetLinearVelocity(Resolve(entity).GetUUID());
+				return velocity ? sol::optional<glm::vec3>(*velocity) : sol::nullopt;
+			});
+			physics.set_function("SetAngularVelocity",
+								 [this](const ScriptEntity& entity, const glm::vec3& velocity) { return GetPhysics().SetAngularVelocity(Resolve(entity).GetUUID(), velocity); });
+			physics.set_function("GetAngularVelocity", [this](const ScriptEntity& entity) -> sol::optional<glm::vec3> {
+				std::optional<glm::vec3> velocity = GetPhysics().GetAngularVelocity(Resolve(entity).GetUUID());
+				return velocity ? sol::optional<glm::vec3>(*velocity) : sol::nullopt;
+			});
+			physics.set_function("Raycast", [this](const glm::vec3& origin, const glm::vec3& direction, float maxDistance, sol::this_state state) -> sol::object {
+				std::optional<RaycastHit> hit = GetPhysics().Raycast(origin, direction, maxDistance);
+				if (!hit)
+					return sol::make_object(state, sol::lua_nil);
+				sol::table result = sol::state_view(state).create_table();
+				result.raw_set("entity", ScriptEntity{hit->Entity}, "point", hit->Point, "normal", hit->Normal, "distance", static_cast<double>(hit->Distance));
+				return result;
+			});
+			physics.set_function("GetGravity", [this] { return GetPhysics().GetGravity(); });
+			physics.set_function("SetGravity", [this](const glm::vec3& gravity) {
+				if (!std::isfinite(gravity.x) || !std::isfinite(gravity.y) || !std::isfinite(gravity.z))
+					ScriptError("Physics.SetGravity: gravity must be finite");
+				GetPhysics().SetGravity(gravity);
+			});
+		}
+
 		void BindInput(sol::state& lua)
 		{
 			sol::table keys = lua.create_named_table("Key");
@@ -1176,6 +1250,7 @@ namespace Paralax {
 		{
 			// Detach from the scene first: nothing that runs while the state closes may reach it.
 			ActiveScene = nullptr;
+			Physics = nullptr;
 			Instances.clear();
 			Classes.clear();
 			Modules.clear();
@@ -1205,6 +1280,7 @@ namespace Paralax {
 	{
 		m_Impl->Shutdown();
 		m_Impl->ActiveScene = &scene;
+		m_Impl->Physics = scene.GetSystem<PhysicsSystem>();
 		m_Impl->Rng.Seed(m_Impl->Specification.RandomSeed);
 		m_Impl->Elapsed = 0.0;
 		m_Impl->Frame = 0;
@@ -1337,7 +1413,7 @@ namespace Paralax {
 					lua_pop(L, 1);
 				}
 			};
-			for (const char* table : {"Scene", "Input", "Log", "Time"})
+			for (const char* table : {"Scene", "Input", "Log", "Time", "Physics"})
 			{
 				lua_getglobal(L, table);
 				if (lua_istable(L, -1))

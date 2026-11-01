@@ -2,6 +2,7 @@
 
 #include <Paralax/Scene/Entity.h>
 #include <Paralax/Scene/SceneSerializer.h>
+#include <Paralax/Physics/PhysicsSystem.h>
 #include <Paralax/Scripting/ScriptSystem.h>
 
 #include <algorithm>
@@ -195,7 +196,9 @@ namespace Paralax::Editor {
 		// An interactive edit belongs to the scene it started in; later writes must not join it across the switch.
 		CommitInteractiveEdit();
 		m_RuntimeScene = Scene::Copy(*m_EditorScene);
+		// Scripts first: forces they apply in OnUpdate act in the same update's physics step.
 		m_RuntimeScene->AddSystem(CreateScope<ScriptSystem>(GetAssets()));
+		m_RuntimeScene->AddSystem(CreateScope<PhysicsSystem>());
 		m_RuntimeScene->OnRuntimeStart();
 		m_Paused = paused;
 		return true;

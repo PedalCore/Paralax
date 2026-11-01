@@ -177,6 +177,54 @@ if(imgui_ADDED AND NOT TARGET imgui)
 	set_target_properties(imgui PROPERTIES FOLDER "Dependencies")
 endif()
 
+# --- Jolt Physics (rigid body physics) ----------------------------------------------------------
+# Cross-platform determinism is required: simulation must reproduce exactly on every platform (AGENTS.md rule 6).
+CPMAddPackage(
+	NAME JoltPhysics
+	GITHUB_REPOSITORY jrouwe/JoltPhysics
+	GIT_TAG v5.6.0
+	SOURCE_SUBDIR Build
+	OPTIONS
+		"CROSS_PLATFORM_DETERMINISTIC ON"
+		"DOUBLE_PRECISION OFF"
+		"TARGET_UNIT_TESTS OFF"
+		"TARGET_HELLO_WORLD OFF"
+		"TARGET_PERFORMANCE_TEST OFF"
+		"TARGET_SAMPLES OFF"
+		"TARGET_VIEWER OFF"
+		"ENABLE_ALL_WARNINGS OFF"
+		"INTERPROCEDURAL_OPTIMIZATION OFF"
+		"USE_STATIC_MSVC_RUNTIME_LIBRARY OFF"
+		"DEBUG_RENDERER_IN_DEBUG_AND_RELEASE OFF"
+		"PROFILER_IN_DEBUG_AND_RELEASE OFF"
+		"OVERRIDE_CXX_FLAGS OFF"
+		"ENABLE_INSTALL OFF"
+		"ENABLE_OBJECT_STREAM OFF"
+		# The engine is built with RTTI (and UBSan's vptr checks need Jolt's type information).
+		"CPP_RTTI_ENABLED ON"
+		"FLOATING_POINT_EXCEPTIONS_ENABLED OFF"
+		# Jolt's own graphics backends belong to its samples and viewer.
+		"JPH_USE_DX12 OFF"
+		"JPH_USE_VK OFF"
+		"JPH_USE_MTL OFF"
+		# A portable x86-64 baseline (SSE4.2) so shipped games run on older CPUs; ARM uses NEON regardless.
+		"USE_AVX OFF"
+		"USE_AVX2 OFF"
+		"USE_F16C OFF"
+		"USE_FMADD OFF"
+		"USE_LZCNT OFF"
+		"USE_TZCNT OFF")
+if(TARGET Jolt)
+	# Jolt's headers are third-party: keep our warnings-as-errors policy away from them.
+	get_target_property(PX_JOLT_INCLUDES Jolt INTERFACE_INCLUDE_DIRECTORIES)
+	set_target_properties(Jolt PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${PX_JOLT_INCLUDES}" FOLDER "Dependencies")
+	# Jolt hands work to its own worker threads through atomics. ThreadSanitizer only sees synchronisation in
+	# instrumented code, so in TSan builds Jolt is instrumented too; otherwise every hand-off is a false race.
+	if(PX_SANITIZERS MATCHES "thread")
+		target_compile_options(Jolt PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
+	endif()
+endif()
+
 # --- Lua (scripting language) --------------------------------------------------------------------
 # Lua's repository has no CMake build; the library is built here from its C sources. It is compiled as C++
 # so a Lua error raised inside a C++ binding unwinds with destructors run (luai_throw uses C++ exceptions),

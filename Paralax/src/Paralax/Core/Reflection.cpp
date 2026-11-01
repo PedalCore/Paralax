@@ -165,6 +165,12 @@ namespace Paralax {
 					float v[2];
 					if (!ParseFloats(value, v))
 						return fail("an array of 2 numbers");
+					// A range on a vector field applies to each component (e.g. a collider size must be positive).
+					for (float component : v)
+					{
+						if (!InRange(field, static_cast<double>(component)))
+							return fail(fmt::format("2 numbers, each in [{}, {}]", field.Min, field.Max).c_str());
+					}
 					*static_cast<glm::vec2*>(pointer) = {v[0], v[1]};
 					return true;
 				}
@@ -174,6 +180,12 @@ namespace Paralax {
 					float v[3];
 					if (!ParseFloats(value, v))
 						return fail("an array of 3 numbers");
+					// A range on a vector field applies to each component (e.g. a collider size must be positive).
+					for (float component : v)
+					{
+						if (!InRange(field, static_cast<double>(component)))
+							return fail(fmt::format("3 numbers, each in [{}, {}]", field.Min, field.Max).c_str());
+					}
 					*static_cast<glm::vec3*>(pointer) = {v[0], v[1], v[2]};
 					return true;
 				}
@@ -183,6 +195,12 @@ namespace Paralax {
 					float v[4];
 					if (!ParseFloats(value, v))
 						return fail("an array of 4 numbers");
+					// A range on a vector field applies to each component (e.g. a collider size must be positive).
+					for (float component : v)
+					{
+						if (!InRange(field, static_cast<double>(component)))
+							return fail(fmt::format("4 numbers, each in [{}, {}]", field.Min, field.Max).c_str());
+					}
 					*static_cast<glm::vec4*>(pointer) = {v[0], v[1], v[2], v[3]};
 					return true;
 				}

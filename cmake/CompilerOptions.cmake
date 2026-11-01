@@ -17,6 +17,9 @@ function(px_configure_target target)
 		endif()
 		target_compile_definitions(${target} PUBLIC _CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
 	else()
+		# Simulation must be reproducible across compilers and CPUs (as Jolt's deterministic build is): no fused
+		# multiply-add contraction, which some toolchains enable by default (MSVC's /fp:precise does not contract).
+		target_compile_options(${target} PRIVATE -ffp-contract=off)
 		target_compile_options(${target} PRIVATE
 			-Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Wcast-align
 			-Woverloaded-virtual -Wdouble-promotion -Wformat=2 -Wimplicit-fallthrough)

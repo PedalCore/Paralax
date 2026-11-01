@@ -60,7 +60,7 @@ endif()
 # and fails the run (exit code 4) on any script error.
 if(TARGET Paralax-Runtime)
 	add_test(NAME "FeatureTest: the runtime plays the feature scene headless without errors"
-		COMMAND $<TARGET_FILE:Paralax-Runtime> --project "${CMAKE_CURRENT_SOURCE_DIR}/FeatureTest" --headless --frames 40
+		COMMAND $<TARGET_FILE:Paralax-Runtime> --project "${CMAKE_CURRENT_SOURCE_DIR}/FeatureTest" --headless --frames 60
 			--fixed-timestep 0.0166667 --validation --fail-on-script-error --screenshot "${CMAKE_CURRENT_BINARY_DIR}/TestOutput/FeatureTest.png"
 		WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 	set_tests_properties("FeatureTest: the runtime plays the feature scene headless without errors" PROPERTIES

@@ -24,3 +24,11 @@
 #else
 	#define PX_DEBUGBREAK() ((void)0)
 #endif
+
+// Marks a function as printf-like (format string at formatIndex, variadic arguments from firstArgument; for a
+// va_list-forwarding function pass 0), so the compiler checks callers instead of warning inside the function.
+#if defined(__GNUC__) || defined(__clang__)
+	#define PX_PRINTF_FORMAT(formatIndex, firstArgument) __attribute__((format(printf, formatIndex, firstArgument)))
+#else
+	#define PX_PRINTF_FORMAT(formatIndex, firstArgument)
+#endif

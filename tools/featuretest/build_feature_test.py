@@ -48,7 +48,7 @@ def entity(editor: EditorSession, name: str, components: dict, parent: str | Non
 
 def build(editor: EditorSession) -> None:
     editor.call("scene.new", name="FeatureTest")
-    scripts = {name: editor.call("asset.import", path=f"Scripts/{name}.lua")["handle"] for name in ("FeatureTest", "Spinner", "Util")}
+    scripts = {name: editor.call("asset.import", path=f"Scripts/{name}.lua")["handle"] for name in ("FeatureTest", "Spinner", "Util", "Ball")}
     gold = editor.call("material.create", path="Materials/Gold.pxmat",
                        fields={"BaseColor": [1.0, 0.77, 0.34, 1.0], "Metallic": 1.0, "Roughness": 0.3})["handle"]
 
@@ -63,7 +63,14 @@ def build(editor: EditorSession) -> None:
                               "Transform": {"Translation": [0, 3.5, 9], "Rotation": [-0.17, 0, 0, 0.985]}})
     entity(editor, "Sun", {"DirectionalLight": {"Intensity": 3.0}, "Transform": {"Rotation": [-0.40, 0.30, 0.14, 0.85]}})
     entity(editor, "Sky", {"SkyLight": {"Intensity": 1.0}})
-    entity(editor, "Ground", {"Mesh": {"Mesh": PLANE, "Materials": [GROUND_MATERIAL]}})
+    # The built-in plane is 10 x 10; its collider is a thin box whose top is the plane's surface.
+    entity(editor, "Ground", {"Mesh": {"Mesh": PLANE, "Materials": [GROUND_MATERIAL]},
+                              "Collider": {"Shape": "Box", "Size": [10, 0.2, 10], "Offset": [0, -0.1, 0]}})
+    entity(editor, "PhysicsBall", {"Mesh": {"Mesh": SPHERE}, "Transform": {"Translation": [-2.2, 2.0, 2.5], "Scale": [0.6, 0.6, 0.6]},
+                                   "Collider": {"Shape": "Sphere", "Restitution": 0.3}, "Rigidbody": {"Mass": 2.0},
+                                   "Script": {"Script": scripts["Ball"]}})
+    entity(editor, "TriggerZone", {"Collider": {"Shape": "Box", "Size": [1.5, 0.3, 1.5], "IsTrigger": True},
+                                   "Transform": {"Translation": [-2.2, 1.1, 2.5]}})
     spinner = entity(editor, "Spinner", {"Mesh": {"Mesh": CUBE, "Materials": [gold]}, "Script": {"Script": scripts["Spinner"]},
                                          "Transform": {"Translation": [0, 0.75, 0]}})
     entity(editor, "Lamp", {"PointLight": {"Color": [1.0, 0.55, 0.25], "Intensity": 20, "Range": 6},
@@ -82,7 +89,7 @@ def build(editor: EditorSession) -> None:
 
     # Check the scene before handing it to the runtime: it plays without script errors in the editor too.
     editor.call("play.start", paused=True)
-    editor.call("play.step", frames=40)
+    editor.call("play.step", frames=60)
     errors = editor.call("script.errors")["errors"]
     editor.call("play.stop")
     if errors:
