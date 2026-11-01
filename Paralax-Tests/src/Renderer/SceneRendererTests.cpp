@@ -955,3 +955,76 @@ TEST_CASE("SceneRenderer: fresh and regenerated environments retain finite metal
 	}
 	CHECK(graphics.GetValidationErrorCount() == initialErrors);
 }
+
+TEST_CASE("SceneRenderer: static lighting is regenerated after render targets are allocated, with identical contents")
+{
+	if (!Paralax::Testing::RequireTestGraphicsDevice())
+		return;
+	GraphicsDevice& graphics = *Paralax::Testing::GetTestGraphicsDevice();
+	const uint32_t initialErrors = graphics.GetValidationErrorCount();
+	{
+		nvrhi::IDevice* device = graphics.GetDevice();
+		AssetManager assets;
+		Scene scene("StaticLighting");
+		BuildTestScene(scene, assets);
+		SceneRenderer renderer(graphics, assets);
+		REQUIRE(renderer.Initialize());
+
+		const auto readLut = [&] {
+			nvrhi::ITexture* lut = renderer.GetBRDFLut();
+			REQUIRE(lut);
+			nvrhi::TextureDesc desc = lut->getDesc();
+			desc.isUAV = false;
+			desc.debugName = "BRDFLutReadback";
+			auto staging = device->createStagingTexture(desc, nvrhi::CpuAccessMode::Read);
+			auto commands = device->createCommandList();
+			REQUIRE(staging);
+			REQUIRE(commands);
+			commands->open();
+			commands->copyTexture(staging, nvrhi::TextureSlice(), lut, nvrhi::TextureSlice());
+			commands->close();
+			device->executeCommandList(commands);
+			device->waitForIdle();
+			const size_t rowBytes = size_t(desc.width) * 2 * sizeof(uint16_t);
+			size_t pitch = 0;
+			const auto* mapped = static_cast<const uint8_t*>(device->mapStagingTexture(staging, nvrhi::TextureSlice(), nvrhi::CpuAccessMode::Read, &pitch));
+			REQUIRE(mapped);
+			REQUIRE(pitch >= rowBytes);
+			std::vector<uint16_t> pixels(size_t(desc.width) * desc.height * 2);
+			for (uint32_t row = 0; row < desc.height; row++)
+				std::memcpy(pixels.data() + size_t(row) * desc.width * 2, mapped + row * pitch, rowBytes);
+			device->unmapStagingTexture(staging);
+			return pixels;
+		};
+		const auto energy = [](const std::vector<uint16_t>& pixels) {
+			double sum = 0.0;
+			for (uint16_t value : pixels)
+				sum += static_cast<double>(glm::unpackHalf1x16(value));
+			return sum;
+		};
+
+		const CameraView camera = CameraView::LookAt({0.0f, 2.0f, 4.5f}, {0.0f, 0.4f, 0.0f}, glm::radians(50.0f), 16.0f / 9.0f);
+		RenderTarget small = CreateOutput(device, 320, 180);
+		REQUIRE(small.Framebuffer);
+		// The first frame allocates the internal targets and regenerates the LUT and environment maps after them.
+		renderer.Render(scene, camera, small.Framebuffer);
+		CHECK(renderer.GetStats().StaticLightingGenerations == 1);
+		const std::vector<uint16_t> first = readLut();
+		CHECK(energy(first) > 1.0);
+
+		// A frame that allocates nothing regenerates nothing.
+		renderer.Render(scene, camera, small.Framebuffer);
+		CHECK(renderer.GetStats().StaticLightingGenerations == 0);
+		CHECK(readLut() == first);
+
+		// A new output size reallocates the targets, and the regenerated LUT is bit-identical.
+		RenderTarget large = CreateOutput(device, 640, 360);
+		REQUIRE(large.Framebuffer);
+		renderer.Render(scene, camera, large.Framebuffer);
+		CHECK(renderer.GetStats().StaticLightingGenerations == 1);
+		CHECK(readLut() == first);
+		renderer.Render(scene, camera, large.Framebuffer);
+		CHECK(renderer.GetStats().StaticLightingGenerations == 0);
+	}
+	CHECK(graphics.GetValidationErrorCount() == initialErrors);
+}
