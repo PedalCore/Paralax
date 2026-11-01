@@ -35,6 +35,8 @@ namespace Paralax {
 		static constexpr uint64_t BuiltinCapsule = 5;
 		static constexpr uint64_t BuiltinDefaultMaterial = 16;
 		static constexpr uint64_t BuiltinGroundMaterial = 17;
+		static constexpr uint64_t BuiltinSkyEnvironment = 18;
+		static constexpr uint64_t BuiltinStudioEnvironment = 19;
 		static constexpr uint64_t FirstUserHandle = 1024; // Generated handles are never below this.
 
 		// Immutable, process-lifetime view; safe on any thread and never fails.

@@ -2,7 +2,10 @@
 
 #include "GPUTestContext.h"
 
+#include <Paralax/Asset/AssetManager.h>
+#include <Paralax/Asset/TextureAsset.h>
 #include <Paralax/Renderer/EnvironmentLighting.h>
+#include <Paralax/Renderer/GPUResourceCache.h>
 
 #include <glm/gtc/packing.hpp>
 
@@ -102,6 +105,64 @@ TEST_CASE("EnvironmentLighting: BRDF integration and every specular mip retain f
 				INFO("minimum specular value: ", minimum);
 				CHECK(invalidChannels == 0);
 			}
+	}
+	CHECK(graphics.GetValidationErrorCount() == initialErrors);
+}
+
+TEST_CASE("EnvironmentLighting: packaged HDR environments generate finite radiance diffuse and specular maps")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto initialErrors = graphics.GetValidationErrorCount();
+	{
+		auto* device = graphics.GetDevice();
+		AssetManager assets;
+		GPUResourceCache resources(device);
+		EnvironmentLighting lighting(device);
+		auto commands = device->createCommandList();
+		REQUIRE(commands);
+		commands->open();
+		REQUIRE(lighting.Initialize(commands));
+		commands->close();
+		device->executeCommandList(commands);
+		for (uint64_t handle : {AssetManager::BuiltinSkyEnvironment, AssetManager::BuiltinStudioEnvironment})
+		{
+			CAPTURE(handle);
+			auto source = assets.GetAsset<TextureAsset>(AssetHandle(handle));
+			REQUIRE(source);
+			EnvironmentMaps maps;
+			commands->open();
+			auto* uploaded = resources.GetTexture(*source, commands);
+			REQUIRE(uploaded);
+			lighting.GenerateFromEquirect(commands, maps, uploaded, 1.0f);
+			commands->close();
+			device->executeCommandList(commands);
+			for (const auto& texture : {maps.Radiance, maps.Diffuse, maps.Specular})
+			{
+				REQUIRE(texture);
+				CAPTURE(texture->getDesc().debugName);
+				for (uint32_t mip = 0; mip < texture->getDesc().mipLevels; mip++)
+				{
+					CAPTURE(mip);
+					double totalEnergy = 0;
+					size_t invalid = 0;
+					for (uint32_t face = 0; face < 6; face++)
+					{
+						const auto values = ReadHalfTexture(device, texture, mip, face, 4);
+						for (size_t i = 0; i < values.size(); i++)
+						{
+							const float value = values[i];
+							invalid += !std::isfinite(value) || value < 0.0f || value > 65.0f ? 1 : 0;
+							if (i % 4 != 3)
+								totalEnergy += static_cast<double>(value);
+						}
+					}
+					CHECK(invalid == 0);
+					CHECK(totalEnergy > 0.01);
+				}
+			}
+		}
 	}
 	CHECK(graphics.GetValidationErrorCount() == initialErrors);
 }

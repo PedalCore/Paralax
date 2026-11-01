@@ -6,6 +6,7 @@
 #include "Paralax/Asset/MeshAsset.h"
 #include "Paralax/Asset/MeshImporter.h"
 #include "Paralax/Asset/TextureAsset.h"
+#include "Paralax/Core/EngineResources.h"
 #include "Paralax/Scene/Prefab.h"
 #include "Paralax/Scene/SceneSerializer.h"
 #include "Paralax/Scripting/ScriptAsset.h"
@@ -62,6 +63,8 @@ namespace Paralax {
 			{BuiltinCapsule, AssetType::Mesh, "Capsule"},
 			{BuiltinDefaultMaterial, AssetType::Material, "Default"},
 			{BuiltinGroundMaterial, AssetType::Material, "Ground"},
+			{BuiltinSkyEnvironment, AssetType::EnvironmentMap, "Kloofendal Partly Cloudy"},
+			{BuiltinStudioEnvironment, AssetType::EnvironmentMap, "Studio Small 09"},
 		};
 		return builtins;
 	}
@@ -267,7 +270,10 @@ namespace Paralax {
 		if (IsBuiltin(handle))
 		{
 			Ref<Asset> builtin = CreateBuiltin(handle);
-			m_Loaded[handle] = builtin;
+			if (builtin)
+				m_Loaded[handle] = builtin;
+			else
+				m_Failed.insert(handle);
 			return builtin;
 		}
 
@@ -318,7 +324,7 @@ namespace Paralax {
 				break;
 			case AssetType::EnvironmentMap:
 			{
-				Ref<TextureAsset> texture = TextureAsset::LoadFromFile(path, false);
+				Ref<TextureAsset> texture = TextureAsset::LoadFromFile(path, false, true, AssetType::EnvironmentMap);
 				if (texture && texture->Format != TextureFormat::RGBA32F)
 					PX_CORE_WARN("Environment map '{}' is not HDR; lighting will be clamped", path.string());
 				asset = texture;
@@ -398,9 +404,23 @@ namespace Paralax {
 				asset = material;
 				break;
 			}
+			case BuiltinSkyEnvironment:
+			case BuiltinStudioEnvironment:
+			{
+				const auto directory = GetEngineResourceDirectory();
+				if (directory.empty())
+				{
+					PX_CORE_ERROR("Cannot locate engine resources for environment {}", static_cast<uint64_t>(handle));
+					return nullptr;
+				}
+				const char* name = static_cast<uint64_t>(handle) == BuiltinSkyEnvironment ? "kloofendal_48d_partly_cloudy_puresky_2k.hdr" : "studio_small_09_2k.hdr";
+				asset = TextureAsset::LoadFromFile(directory / "Environments" / name, false, true, AssetType::EnvironmentMap);
+				break;
+			}
 			default: return nullptr;
 		}
-		asset->Handle = handle;
+		if (asset)
+			asset->Handle = handle;
 		return asset;
 	}
 

@@ -41,3 +41,20 @@ if(PX_BUILD_TESTS)
 	enable_testing()
 	add_subdirectory(Paralax-Tests)
 endif()
+
+# All executables share this output directory, with a configuration subdirectory on MSVC/Xcode.
+# Run on every build so deleting Resources is repaired even when no executable needs relinking.
+set(PX_RESOURCE_OUTPUT "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+if(CMAKE_CONFIGURATION_TYPES)
+	string(APPEND PX_RESOURCE_OUTPUT "/$<CONFIG>")
+endif()
+add_custom_target(Paralax-Resources ALL
+	COMMAND "${CMAKE_COMMAND}" -E make_directory "${PX_RESOURCE_OUTPUT}/Resources/Environments"
+	COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${PX_ENVIRONMENTS} "${PX_RESOURCE_OUTPUT}/Resources/Environments"
+	DEPENDS ${PX_ENVIRONMENTS}
+	VERBATIM)
+foreach(executable Paralax-Runtime Paralax-Editor Paralax-Tests Paralax-WindowedTests)
+	if(TARGET ${executable})
+		add_dependencies(${executable} Paralax-Resources)
+	endif()
+endforeach()
