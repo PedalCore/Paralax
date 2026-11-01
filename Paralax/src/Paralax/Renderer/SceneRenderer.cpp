@@ -14,6 +14,7 @@
 #include <glm/gtx/component_wise.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <array>
 
 namespace Paralax {
@@ -159,7 +160,7 @@ namespace Paralax {
 		return InitializeInternal(width, height);
 	}
 
-	void SceneRenderer::PrepareTargetsForDiagnostics(uint32_t width, uint32_t height, const std::function<void(const char*)>& observer)
+	void SceneRenderer::PrepareTargetsForDiagnostics(uint32_t width, uint32_t height, const std::function<void(const char*, double)>& observer)
 	{
 		PX_CORE_VERIFY(m_Initialized, "Diagnostic target preparation requires an initialized renderer");
 		PX_CORE_VERIFY(width > 0 && height > 0, "Diagnostic targets require positive dimensions");
@@ -303,16 +304,25 @@ namespace Paralax {
 		return m_InputLayout && m_ViewLayout && m_MaterialLayout && m_ShadowViewLayout && m_TonemapLayout && m_ShadowViewBindings;
 	}
 
-	void SceneRenderer::EnsureTargets(uint32_t width, uint32_t height, const std::function<void(const char*)>& observer)
+	void SceneRenderer::EnsureTargets(uint32_t width, uint32_t height, const std::function<void(const char*, double)>& observer)
 	{
 		const bool sizeChanged = width != m_Width || height != m_Height;
 		const bool shadowChanged = m_ShadowMapSize != m_Settings.GetShadowMapSize();
 		if (!sizeChanged && !shadowChanged && m_HDRTarget && m_ShadowMap)
 			return;
 
+		// Diagnostics only: the time each step took, so a slow driver step (shader compilation) shows in the record.
+		auto stepStart = std::chrono::steady_clock::now();
+		auto note = [&](const char* step) {
+			if (!observer)
+				return;
+			const auto now = std::chrono::steady_clock::now();
+			observer(step, std::chrono::duration<double, std::milli>(now - stepStart).count());
+			stepStart = std::chrono::steady_clock::now();
+		};
+
 		m_GraphicsDevice.WaitForIdle();
-		if (observer)
-			observer("after target preparation idle wait");
+		note("after target preparation idle wait");
 
 		if (sizeChanged || !m_HDRTarget)
 		{
@@ -337,8 +347,7 @@ namespace Paralax {
 			depth.keepInitialState = true;
 			depth.setClearValue(nvrhi::Color(0.0f)); // Reversed Z: far plane = 0.
 			m_DepthTarget = m_Device->createTexture(depth);
-			if (observer)
-				observer("after scene textures before framebuffer");
+			note("after scene textures before framebuffer");
 
 			m_HDRFramebuffer = m_Device->createFramebuffer(nvrhi::FramebufferDesc().addColorAttachment(m_HDRTarget).setDepthAttachment(m_DepthTarget));
 			m_Width = width;
@@ -346,8 +355,7 @@ namespace Paralax {
 			m_TonemapBindings = nullptr;
 		}
 
-		if (observer)
-			observer("after scene textures and framebuffer");
+		note("after scene textures and framebuffer");
 
 		if (shadowChanged || !m_ShadowMap)
 		{
@@ -374,8 +382,7 @@ namespace Paralax {
 			}
 		}
 
-		if (observer)
-			observer("after shadow texture and framebuffers");
+		note("after shadow texture and framebuffers");
 
 		// Pipelines depend on framebuffer formats only, which never change; create them once.
 		if (!m_OpaquePipeline)
@@ -388,21 +395,25 @@ namespace Paralax {
 			forward.renderState.rasterState.setFrontCounterClockwise(true).setCullBack();
 			forward.renderState.depthStencilState.enableDepthTest().enableDepthWrite().setDepthFunc(nvrhi::ComparisonFunc::GreaterOrEqual);
 			m_OpaquePipeline = m_Device->createGraphicsPipeline(forward, m_HDRFramebuffer->getFramebufferInfo());
+			note("after pipeline opaque");
 
 			// Mirrored (negative-determinant) transforms reverse the winding.
 			nvrhi::GraphicsPipelineDesc mirrored = forward;
 			mirrored.renderState.rasterState.setFrontCounterClockwise(false);
 			m_OpaqueMirroredPipeline = m_Device->createGraphicsPipeline(mirrored, m_HDRFramebuffer->getFramebufferInfo());
+			note("after pipeline opaque mirrored");
 
 			nvrhi::GraphicsPipelineDesc doubleSided = forward;
 			doubleSided.renderState.rasterState.setCullNone();
 			m_OpaqueDoubleSidedPipeline = m_Device->createGraphicsPipeline(doubleSided, m_HDRFramebuffer->getFramebufferInfo());
+			note("after pipeline opaque double-sided");
 
 			nvrhi::GraphicsPipelineDesc blend = forward;
 			blend.renderState.rasterState.setCullNone();
 			blend.renderState.depthStencilState.disableDepthWrite();
 			blend.renderState.blendState.targets[0].enableBlend().setSrcBlend(nvrhi::BlendFactor::SrcAlpha).setDestBlend(nvrhi::BlendFactor::InvSrcAlpha);
 			m_BlendPipeline = m_Device->createGraphicsPipeline(blend, m_HDRFramebuffer->getFramebufferInfo());
+			note("after pipeline blend");
 
 			nvrhi::GraphicsPipelineDesc sky;
 			sky.VS = m_SkyVS;
@@ -411,6 +422,7 @@ namespace Paralax {
 			sky.renderState.rasterState.setCullNone();
 			sky.renderState.depthStencilState.enableDepthTest().disableDepthWrite().setDepthFunc(nvrhi::ComparisonFunc::GreaterOrEqual);
 			m_SkyPipeline = m_Device->createGraphicsPipeline(sky, m_HDRFramebuffer->getFramebufferInfo());
+			note("after pipeline sky");
 		}
 
 		if (!m_ShadowPipeline)
@@ -423,10 +435,12 @@ namespace Paralax {
 			shadow.renderState.rasterState.depthClipEnable = false; // Pancaking: casters behind the near plane still cast.
 			shadow.renderState.depthStencilState.enableDepthTest().enableDepthWrite().setDepthFunc(nvrhi::ComparisonFunc::LessOrEqual);
 			m_ShadowPipeline = m_Device->createGraphicsPipeline(shadow, m_ShadowFramebuffers[0]->getFramebufferInfo());
+			note("after pipeline shadow");
 
 			nvrhi::GraphicsPipelineDesc masked = shadow;
 			masked.PS = m_ShadowMaskPS;
 			m_ShadowMaskPipeline = m_Device->createGraphicsPipeline(masked, m_ShadowFramebuffers[0]->getFramebufferInfo());
+			note("after pipeline shadow mask");
 		}
 	}
 

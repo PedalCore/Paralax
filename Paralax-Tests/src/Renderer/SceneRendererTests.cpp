@@ -443,13 +443,19 @@ namespace {
 			REQUIRE(output.Framebuffer);
 			const auto afterOutputAllocation = readCurrent();
 			std::vector<uint16_t> afterTargetPreparation;
-			std::vector<std::pair<std::string, std::vector<uint16_t>>> preparationSnapshots;
+			struct PreparationSnapshot
+			{
+				std::string Name;
+				double Milliseconds; // The step's wall-clock duration (diagnostic).
+				std::vector<uint16_t> Pixels;
+			};
+			std::vector<PreparationSnapshot> preparationSnapshots;
 			if (preparation != TargetPreparation::DuringRender)
 			{
 				if (preparation == TargetPreparation::DuringPreparation)
 				{
-					renderer.PrepareTargetsForDiagnostics(320, 180, [&](const char* checkpoint) {
-						preparationSnapshots.emplace_back(checkpoint, readCurrent());
+					renderer.PrepareTargetsForDiagnostics(320, 180, [&](const char* checkpoint, double milliseconds) {
+						preparationSnapshots.push_back({checkpoint, milliseconds, readCurrent()});
 					});
 				}
 				else
@@ -470,19 +476,24 @@ namespace {
 			std::vector<Observation> observations = {{"initial dispatch snapshot", initial}, {"after initialization submission", afterInitialization}, {"after output allocation", afterOutputAllocation}};
 			if (preparation == TargetPreparation::DuringPreparation)
 			{
-				REQUIRE(preparationSnapshots.size() == 4);
-				CHECK(preparationSnapshots[0].first == "after target preparation idle wait");
-				CHECK(preparationSnapshots[1].first == "after scene textures before framebuffer");
-				CHECK(preparationSnapshots[2].first == "after scene textures and framebuffer");
-				CHECK(preparationSnapshots[3].first == "after shadow texture and framebuffers");
-				for (const auto& [name, pixels] : preparationSnapshots)
-					observations.push_back({name.c_str(), pixels});
+				const char* expectedSteps[] = {"after target preparation idle wait", "after scene textures before framebuffer", "after scene textures and framebuffer",
+											   "after shadow texture and framebuffers", "after pipeline opaque", "after pipeline opaque mirrored",
+											   "after pipeline opaque double-sided", "after pipeline blend", "after pipeline sky", "after pipeline shadow",
+											   "after pipeline shadow mask"};
+				REQUIRE(preparationSnapshots.size() == std::size(expectedSteps));
+				for (size_t i = 0; i < preparationSnapshots.size(); i++)
+				{
+					CHECK(preparationSnapshots[i].Name == expectedSteps[i]);
+					observations.push_back({preparationSnapshots[i].Name.c_str(), preparationSnapshots[i].Pixels});
+				}
 			}
 			if (preparation != TargetPreparation::DuringRender)
 				observations.push_back({"after target preparation before Render", afterTargetPreparation});
 			observations.push_back({"first frame after internal target allocation", atFirstFrame});
 			observations.push_back({"after rendering", afterRendering});
 			// Emit diagnostics after collecting every observation, so logging does not delay later GPU work.
+			for (const PreparationSnapshot& snapshot : preparationSnapshots)
+				MESSAGE("preparation step '", snapshot.Name, "' took ", snapshot.Milliseconds, " ms");
 			for (const auto& observation : observations)
 			{
 				INFO("checkpoint: ", std::string(observation.Name));

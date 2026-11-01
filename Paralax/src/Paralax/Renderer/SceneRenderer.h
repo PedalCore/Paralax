@@ -111,8 +111,11 @@ namespace Paralax {
 		// Verifies that the renderer is not initialized and that both dimensions are positive.
 		bool InitializeWithTargetsForDiagnostics(uint32_t width, uint32_t height);
 		// Temporary main-thread allocation checkpoint. Verifies initialization and positive dimensions.
-		// The optional observer is borrowed for this call; it must not mutate the renderer or throw.
-		void PrepareTargetsForDiagnostics(uint32_t width, uint32_t height, const std::function<void(const char*)>& observer = {});
+		// The optional observer is borrowed for this call; it must not mutate the renderer or throw. It is called after
+		// each step of target preparation with the step's name and the wall-clock milliseconds the step took (a
+		// diagnostic measurement, never used by the engine itself): slow steps point at driver work such as shader
+		// compilation.
+		void PrepareTargetsForDiagnostics(uint32_t width, uint32_t height, const std::function<void(const char*, double)>& observer = {});
 
 		// Renders the scene into output (a framebuffer with one 8-bit color attachment, e.g. a swapchain image).
 		// Internal targets are resized to the output's size as needed.
@@ -170,7 +173,7 @@ namespace Paralax {
 		};
 
 		bool CreatePipelines();
-		void EnsureTargets(uint32_t width, uint32_t height, const std::function<void(const char*)>& observer = {});
+		void EnsureTargets(uint32_t width, uint32_t height, const std::function<void(const char*, double)>& observer = {});
 		nvrhi::IGraphicsPipeline* GetTonemapPipeline(nvrhi::IFramebuffer* output);
 		MaterialEntry* GetMaterial(AssetHandle handle);
 		nvrhi::ITexture* ResolveTexture(AssetHandle handle, nvrhi::ITexture* fallback);
