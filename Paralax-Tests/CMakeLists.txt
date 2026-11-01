@@ -77,6 +77,14 @@ if(Python3_Interpreter_FOUND AND TARGET Paralax-Editor)
 		TIMEOUT 900
 		LABELS "smoke;gpu"
 		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp;PYTHONDONTWRITEBYTECODE=1")
+	# The physics counterpart: tools/agent/examples/gem_roller (bodies, triggers, a moving platform, fixed-rate control).
+	add_test(NAME "Smoke: an agent builds the Gem Roller physics game through commands and plays it"
+		COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/agent/tests/gem_roller_test.py"
+			$<TARGET_FILE:Paralax-Editor> "${CMAKE_CURRENT_BINARY_DIR}/TestOutput/GemRoller")
+	set_tests_properties("Smoke: an agent builds the Gem Roller physics game through commands and plays it" PROPERTIES
+		TIMEOUT 900
+		LABELS "smoke;gpu"
+		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp;PYTHONDONTWRITEBYTECODE=1")
 endif()
 
 # The feature test scene: the runtime plays it headless with validation. Its script asserts the whole scripting API

@@ -5,8 +5,11 @@ command with JSON parameters and a JSON result. The same commands back the edito
 JSON-RPC agent server and the MCP bridge. This page is the workflow; `help` lists every command with its parameters.
 `tools/agent/examples/tetris/` is a complete game built this way: `build_tetris.py` creates the project, materials,
 scene and script through commands, and `tools/agent/tests/tetris_test.py` plays it with injected keys (moves,
-rotations, drops, line clears, game over and restart). `tools/agent/tests/agent_game_test.py` is a smaller example
-that also iterates on a script and exports.
+rotations, drops, line clears, game over and restart). `tools/agent/examples/gem_roller/` is its physics
+counterpart: a rolling-ball game with rigid bodies, gem triggers, a kinematic moving platform, a raycast ground check
+and forces applied in `OnFixedUpdate`; `tools/agent/tests/gem_roller_test.py` rolls, jumps, falls off, rides the
+platform and wins, and checks that the ball moves identically at 60 and 30 frames per second.
+`tools/agent/tests/agent_game_test.py` is a smaller example that also iterates on a script and exports.
 
 ## Connecting
 
