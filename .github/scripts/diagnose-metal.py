@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 
 
 IMAGES = ["R1-Reference.png", "R2-Environment-18.png", "R2-Environment-19.png",
@@ -44,6 +45,7 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--isolated-only", action="store_true")
     mode.add_argument("--concurrency-only", action="store_true")
+    mode.add_argument("--contention-only", action="store_true")
     arguments = parser.parse_args()
     build = arguments.build.resolve()
     candidates = [build / "bin" / "Paralax-Tests", build / "bin" / arguments.config / "Paralax-Tests"]
@@ -92,7 +94,7 @@ def main():
             report.write_text(text + f"FirstObservedGPUTestOnRunner={first}\nOrderingEvidence=../../GPUOrder.txt (GPUTestContext markers)\n")
 
     capture(run / "Baseline")
-    if not arguments.isolated_only and not arguments.concurrency_only:
+    if not arguments.isolated_only and not arguments.concurrency_only and not arguments.contention_only:
         try:
             cache_report = clear_metal_cache()
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
@@ -122,6 +124,16 @@ def main():
         # Match instrumentation, binding mode and cache operations; reverse the second pair's order.
         phases = [(name, "0", "1", None, workers, True) for name, workers in
                   [("Parallel1", 4), ("Serial1", 1), ("Serial2", 1), ("Parallel2", 4)]]
+    if arguments.contention_only:
+        target = isolated[0][1]
+        cpu = "SceneSerializer: very deep hierarchies load and save without recursion or quadratic work"
+        reference = "SceneRenderer: fixed look matches the reviewed reference image"
+        gpu_partners = [reference, "SceneRenderer: renders a lit, shadowed PBR scene without validation errors",
+                        "SceneRenderer: wide shadow filters do not shadow an unobstructed plane"]
+        phases = [(name, "0", "1", tuple([target] + partners), 1 + len(partners), True)
+                  for name, partners in [("Alone1", []), ("CPU1", [cpu]), ("GPU1", [reference]),
+                                         ("GPU2", [reference]), ("GPU3", gpu_partners),
+                                         ("CPU2", [cpu]), ("Alone2", [])]]
     for phase, trace, argument_buffers, test_case, workers, clear_cache in phases:
         environment["PX_TRACE_BRDF_BARRIERS"] = trace
         environment["MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS"] = argument_buffers
@@ -148,7 +160,9 @@ def main():
         command = ["ctest", "--test-dir", str(build), "--build-config", arguments.config, "--parallel", str(workers),
                    "--timeout", "300", "--no-tests=error", "--verbose", "--output-junit", str(destination / "Results.xml")]
         if test_case is not None:
-            command.extend(["--tests-regex", f"^{re.escape(test_case)}$"])
+            names = test_case if isinstance(test_case, tuple) else (test_case,)
+            command.extend(["--tests-regex", "^(" + "|".join(re.escape(name) for name in names) + ")$"
+                            if isinstance(test_case, tuple) else f"^{re.escape(test_case)}$"])
         with (destination / "Test.log").open("w") as log:
             result = subprocess.run(command, env=environment, stdout=log, stderr=subprocess.STDOUT, check=False)
         status = result.returncode
@@ -162,6 +176,28 @@ def main():
             status = 1
         if status == 0 and test_case is None and not all((output / name).is_file() for name in IMAGES):
             status = 1
+        if arguments.contention_only:
+            # A passing CTest exit is insufficient: selectors must run exactly the intended processes.
+            try:
+                cases = ET.parse(destination / "Results.xml").getroot().findall(".//testcase")
+                observed = [case.get("name") for case in cases]
+                if sorted(observed) != sorted(test_case):
+                    raise ValueError(f"Expected {test_case!r}; observed {observed!r}")
+                outcomes = []
+                for case in cases:
+                    outcome = "PASS" if case.get("status") == "run" and not any(
+                        case.find(tag) is not None for tag in ("failure", "error", "skipped")) else "FAIL"
+                    role = "target" if case.get("name") == target else "partner"
+                    outcomes.append(f"{role}: {outcome}: {case.get('name')}")
+                    if outcome != "PASS":
+                        status = 1
+                (destination / "CaseOutcomes.txt").write_text("\n".join(outcomes) + "\n")
+            except (OSError, ET.ParseError, ValueError, TypeError) as error:
+                (destination / "CaseOutcomes.txt").write_text(f"Invalid test-selection evidence: {error}\n")
+                status = 1
+            if reference in test_case and not (output / "R1-Reference.png").is_file():
+                (destination / "MissingImage.txt").write_text("R1-Reference.png was not produced by the reference partner\n")
+                status = 1
         failed |= status != 0
         capture(destination)
         print(f"{phase}: exit {status}", flush=True)
