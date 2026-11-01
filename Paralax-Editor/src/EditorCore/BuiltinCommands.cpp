@@ -104,6 +104,8 @@ namespace Paralax::Editor {
 										   f["range"] = {field.Min, field.Max};
 									   if (!field.EnumNames.empty())
 										   f["values"] = field.EnumNames;
+									   if (field.MaxLength > 0)
+										   f["maxLength"] = field.MaxLength;
 									   if (field.Flags & FieldFlagAngle)
 										   f["units"] = "radians";
 									   fields.push_back(std::move(f));

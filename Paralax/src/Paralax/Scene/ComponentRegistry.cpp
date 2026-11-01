@@ -98,6 +98,15 @@ namespace Paralax {
 																	   MakeField<&SpotLightComponent::CastShadows>("CastShadows"),
 																   }));
 
+			components.push_back(MakeComponent<GIVolumeComponent>("GIVolume", "A world-aligned grid of light probes caching indirect lighting (global illumination); one per scene.",
+																  {
+																	  MakeField<&GIVolumeComponent::Enabled>("Enabled"),
+																	  MakeField<&GIVolumeComponent::ProbeSpacing>("ProbeSpacing", FieldOptions().Range(0.1f, 100.0f).Describe("Metres between probes.")),
+																	  MakeField<&GIVolumeComponent::ProbeCountX>("ProbeCountX", FieldOptions().Range(2.0f, 12.0f).Describe("Probes along world X, from the entity's position.")),
+																	  MakeField<&GIVolumeComponent::ProbeCountY>("ProbeCountY", FieldOptions().Range(2.0f, 12.0f).Describe("Probes along world Y.")),
+																	  MakeField<&GIVolumeComponent::ProbeCountZ>("ProbeCountZ", FieldOptions().Range(2.0f, 12.0f).Describe("Probes along world Z.")),
+																  }));
+
 			components.push_back(MakeComponent<SkyLightComponent>("SkyLight", "Image-based lighting and background from an HDR environment map.",
 																  {
 																	  MakeField<&SkyLightComponent::Environment>("Environment", FieldOptions().Describe("Environment (HDR) texture asset.")),
@@ -150,6 +159,24 @@ namespace Paralax {
 																	   {
 																		   MakeField<&AudioListenerComponent::Active>("Active"),
 																	   }));
+
+			components.push_back(MakeComponent<TextComponent>("Text", "Text drawn on screen (a HUD) or in the world, unaffected by exposure.",
+															  {
+																  MakeField<&TextComponent::Text>("Text", FieldOptions().MaxLength(4096).Describe("UTF-8; newlines start new lines.")),
+																  MakeField<&TextComponent::Size>("Size", FieldOptions().Range(0.0f, 10000.0f).Describe("Line height: pixels at a 1080-pixel-high viewport (screen space) or metres (world space).")),
+																  MakeField<&TextComponent::Color>("Color", color),
+																  MakeField<&TextComponent::Alignment>("Alignment", FieldOptions().Enum({"Left", "Center", "Right"}).Describe("Which side of the text the entity's position anchors.")),
+																  MakeField<&TextComponent::ScreenSpace>("ScreenSpace", FieldOptions().Describe("On screen at normalised X/Y (0..1 from the top-left), or in the world at the Transform.")),
+															  }));
+
+			components.push_back(MakeComponent<AnimationComponent>("Animation", "Plays an animation clip on the entity and the entities below it while the scene is running.",
+																   {
+																	   MakeField<&AnimationComponent::Clip>("Clip", FieldOptions().Describe("Animation clip asset (from a glTF model).")),
+																	   MakeField<&AnimationComponent::Playing>("Playing", FieldOptions().Describe("Cleared when a clip that does not loop ends.")),
+																	   MakeField<&AnimationComponent::Loop>("Loop"),
+																	   MakeField<&AnimationComponent::Speed>("Speed", FieldOptions().Range(-100.0f, 100.0f).Describe("Playback rate; negative plays backwards.")),
+																	   MakeField<&AnimationComponent::Time>("Time", FieldOptions().Range(0.0f, 1000000.0f).Describe("Seconds into the clip; set it to seek.")),
+																   }));
 
 			components.push_back(MakeComponent<ScriptComponent>("Script", "Runs a Lua script (OnCreate, OnUpdate, OnDestroy) while the scene is running.",
 																{

@@ -282,15 +282,23 @@ TEST_CASE("Fuzz: mutated images never crash the texture loader")
 	std::vector<uint8_t> hdr = Text("#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 4 +X 8\n");
 	for (int i = 0; i < 32; i++)
 		hdr.insert(hdr.end(), {static_cast<uint8_t>(64 + i), 96, 128, 130});
+	// A 16-bit greyscale PNG (height maps), decoded at full precision when loaded as linear data.
+	std::vector<uint16_t> heights(16 * 12);
+	for (size_t i = 0; i < heights.size(); i++)
+		heights[i] = static_cast<uint16_t>(i * 337);
+	const std::vector<uint8_t> png16 = Paralax::Testing::MakePng16(16, 12, heights);
+	const std::vector<uint8_t>* samples[] = {&png, &hdr, &png16};
 
 	Mutator mutator(0x1A6E5);
 	for (int iteration = 0; iteration < Iterations(3000); iteration++)
 	{
 		CAPTURE(iteration);
-		const std::vector<uint8_t> bytes = mutator.Bytes(iteration % 2 == 0 ? png : hdr);
+		const std::vector<uint8_t> bytes = mutator.Bytes(*samples[iteration % 3]);
 		if (bytes.empty())
 			continue;
-		CHECK_NOTHROW(TextureAsset::LoadFromMemory(bytes.data(), bytes.size(), iteration % 4 == 0));
+		// Colour or data, and data at full precision (height maps), in turn.
+		const int mode = (iteration / 3) % 3;
+		CHECK_NOTHROW(TextureAsset::LoadFromMemory(bytes.data(), bytes.size(), mode == 0, true, AssetType::Texture, mode == 2));
 	}
 }
 
@@ -332,7 +340,10 @@ TEST_CASE("Fuzz: mutated glTF files never crash the importer")
 	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("FuzzGltf");
 	const json plain = Paralax::Testing::MakeTriangleDocument(directory);
 	json withScene = plain;
-	Paralax::Testing::AddCamerasAndLights(withScene); // Nodes, cameras and lights for the scene import.
+	Paralax::Testing::AddCamerasAndLights(withScene); // Nodes, cameras, lights and animations for the scene import.
+	Paralax::Testing::AddAnimations(withScene);
+	// Parallax extras (the albedo image stands in for a height map), so the extras reader is fuzzed too.
+	withScene["materials"][0]["extras"] = {{"pom", true}, {"height_map", "albedo.png"}, {"height_depth_m", 0.02}, {"texture_repeat_m", 1.2}};
 	const std::vector<uint8_t> glb = Paralax::Testing::MakeTriangleGlb(directory);
 	Mutator mutator(0x6177F);
 	for (int iteration = 0; iteration < Iterations(800); iteration++)

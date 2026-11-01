@@ -9,7 +9,7 @@
 
 namespace Paralax {
 
-	Ref<PrefabAsset> BuildModelPrefab(const MeshImportResult& model, const std::string& rootName, std::string& outError)
+	Ref<PrefabAsset> BuildModelPrefab(const MeshImportResult& model, const std::string& rootName, std::string& outError, std::vector<std::string>* outWarnings)
 	{
 		outError.clear();
 		if (model.Nodes.empty())
@@ -91,6 +91,20 @@ namespace Paralax {
 				}
 			}
 			entities.push_back(entity);
+		}
+
+		// Each animation on the entity it is meant to be played by, playing and looping. An entity can hold one clip:
+		// further clips for it stay available as assets.
+		for (const ImportedAnimation& animation : model.Animations)
+		{
+			Entity host = animation.Host && *animation.Host < entities.size() ? entities[*animation.Host] : root;
+			if (host.HasComponent<AnimationComponent>())
+			{
+				if (outWarnings)
+					outWarnings->push_back(fmt::format("animation '{}' is not attached: '{}' already plays another; set it on an Animation component to play it", animation.Clip->Name, host.GetName()));
+				continue;
+			}
+			host.AddComponent<AnimationComponent>().Clip = animation.Clip->Handle;
 		}
 		return PrefabAsset::CreateFromEntity(scene, root);
 	}

@@ -140,6 +140,7 @@ namespace Paralax {
 		, m_Device(device.GetDevice())
 		, m_Resources(device.GetDevice())
 		, m_Environment(device.GetDevice())
+		, m_Text(device.GetDevice())
 	{
 	}
 
@@ -212,9 +213,10 @@ namespace Paralax {
 		const bool environmentReady = m_Environment.Initialize(m_CommandList);
 		if (environmentReady)
 			m_BRDFStateBeforeInitializationClose = m_CommandList->getTextureSubresourceState(m_Environment.GetBRDFLut(), 0, 0);
+		const bool textReady = m_Text.Initialize(m_CommandList);
 		m_CommandList->close();
 		m_Device->executeCommandList(m_CommandList);
-		if (!environmentReady)
+		if (!environmentReady || !textReady)
 			return false;
 		nvrhi::TextureDesc snapshotDesc = m_Environment.GetInitialBRDFLut()->getDesc();
 		snapshotDesc.debugName = "BRDFLutAtFirstFrame";
@@ -964,6 +966,9 @@ namespace Paralax {
 		tonemapConstants.Operator = static_cast<uint32_t>(m_Settings.Tonemapper);
 		m_CommandList->setPushConstants(&tonemapConstants, sizeof(tonemapConstants));
 		m_CommandList->draw(nvrhi::DrawArguments().setVertexCount(3));
+
+		// Text goes over the tone-mapped image, so exposure never changes it; world-space text still respects depth.
+		m_Stats.TextGlyphs = m_Text.Render(m_CommandList, scene, camera.Projection * camera.View, output, m_DepthTarget);
 
 		m_CommandList->close();
 		m_Device->executeCommandList(m_CommandList);

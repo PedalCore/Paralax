@@ -191,6 +191,35 @@ TEST_CASE("ScriptingCommands: model.create_prefab turns a glTF scene into entiti
 	CHECK_FALSE(std::filesystem::exists(fixture.Directory / "Assets" / "Prefabs" / "WhilePlaying.pxprefab"));
 }
 
+TEST_CASE("ScriptingCommands: model.create_prefab brings animations that play in play mode")
+{
+	ProjectFixture fixture("ModelPrefabAnimations");
+	const std::filesystem::path models = fixture.Directory / "Assets" / "Models";
+	std::filesystem::create_directories(models);
+	json document = Paralax::Testing::MakeTriangleDocument(models);
+	Paralax::Testing::AddCamerasAndLights(document);
+	Paralax::Testing::AddAnimations(document);
+	Paralax::Testing::WriteGltf(models, document, "Rig.gltf");
+
+	const json created = fixture.Run("model.create_prefab", {{"model", "Models/Rig.gltf"}});
+	CHECK(created["animations"] == 3);
+	CHECK(created["warnings"].empty());
+	fixture.Run("prefab.instantiate", {{"prefab", created["handle"]}});
+
+	// LampBob lifts the lamp from y 3 to 4 over the first second, relative to the sun it hangs from.
+	fixture.Run("play.start", {{"paused", true}});
+	fixture.Run("play.step", {{"frames", 60}, {"dt", 1.0 / 60.0}});
+	const std::string y = fixture.Run("script.eval", {{"code", "return Scene.FindEntityByName('Lamp'):GetComponent('Transform').Translation.y"}})["result"];
+	CHECK(std::stod(y) == doctest::Approx(4.0).epsilon(1e-3));
+	// Scripts and agents control playback through the component's fields.
+	fixture.Run("script.eval", {{"code", "local a = Scene.FindEntityByName('Lamp'):GetComponent('Animation') a.Playing = false a.Time = 0.5"}});
+	fixture.Run("play.step", {{"frames", 30}});
+	const std::string paused = fixture.Run("script.eval", {{"code", "return Scene.FindEntityByName('Lamp'):GetComponent('Transform').Translation.y"}})["result"];
+	CHECK(std::stod(paused) == doctest::Approx(3.5).epsilon(1e-3));
+	CHECK(fixture.Run("script.errors")["errors"].empty());
+	fixture.Run("play.stop");
+}
+
 TEST_CASE("ScriptingCommands: model.create_prefab registers per-node meshes for models imported before them")
 {
 	ProjectFixture fixture("ModelPrefabOldRegistry");

@@ -164,6 +164,55 @@ Scripts on either entity of a contact receive callbacks before their next `OnUpd
 and `OnTriggerExit(self, other)` when a trigger is involved. Bodies at rest stay in contact; no exit is reported when
 they fall asleep. `other` may already be destroyed in an exit (check `other:IsValid()`).
 
+## Animation
+
+An **Animation** component plays a clip: keyframed movement of the entity and the entities below it, from a glTF
+model (Blender actions come through `model.create_prefab`, already on the right entities). Its fields:
+- `Clip`: the animation clip asset.
+- `Playing`: whether it advances. A clip that does not loop clears it when it reaches its end (or its start, playing
+  backwards).
+- `Loop` (default true) and `Speed` (default 1; negative plays backwards).
+- `Time`: seconds into the clip. Set it to seek; while paused, the entities are posed at the new time (wrapped into
+  the clip if it loops, as playing would).
+
+A clip that does not loop plays from `Time` to its end (or, with a negative `Speed`, back to 0) and stops there. To
+play it again, set `Time` back and `Playing` to true; to play it backwards from the end, start with `Time` at the
+clip's length (any large value is clamped to it).
+
+```lua
+local anim = Scene.FindEntityByName("Door"):GetComponent("Animation")
+anim.Loop = false
+anim.Time = 0
+anim.Playing = true   -- Open once.
+```
+
+Clips run after every script's `OnUpdate` and before physics, so a script's changes to the component apply in the
+same update, and animated kinematic bodies push what they touch. Playback follows simulated time only, so it is
+deterministic. The clip sets local Translation, Rotation and Scale; a target that is missing is skipped (and found
+when it appears).
+
+## Text
+
+A **Text** component draws text, in the engine's font, over the finished image, so exposure never dims it. Its
+fields:
+- `Text`: UTF-8, up to 4096 bytes; newlines start new lines. ASCII and Latin-1 characters have glyphs, anything else
+  shows as a box.
+- `ScreenSpace` (default true): a HUD. The entity's X and Y are the anchor in normalised viewport coordinates,
+  (0, 0) top-left to (1, 1) bottom-right, and `Size` is the line height in pixels at a 1080-pixel-high viewport,
+  scaled with the real one, so the layout holds at any resolution. Off: the text lies in the entity's local XY plane
+  facing +Z, `Size` is the line height in metres, and it is hidden by things in front of it like any object.
+- `Alignment`: `"Left"`, `"Center"` or `"Right"`, the side of the text the anchor holds.
+- `Color`: linear RGBA.
+
+```lua
+function Hud:OnCreate()
+	self.score = Scene.FindEntityByName("Score"):GetComponent("Text")
+end
+function Hud:OnUpdate(dt)
+	self.score.Text = "Score " .. Game.Get("Score", 0) .. "\nLives " .. self.lives
+end
+```
+
 ## Audio
 
 Add an **AudioSource** to play a clip (a `.wav`, `.flac` or `.mp3` asset) from an entity:

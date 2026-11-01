@@ -121,6 +121,12 @@ def build(editor: EditorSession) -> None:
         "Rigidbody": {"Mass": 1.0, "LinearDamping": 0.3, "AngularDamping": 0.3},
         "Script": {"Script": scripts["Roller"]}})
 
+    editor.call("entity.create", name="Hud", components={
+        "Text": {"Text": "", "Size": 40, "Color": [1.0, 1.0, 1.0, 1.0]},
+        "Transform": {"Translation": [0.03, 0.03, 0.0]}})
+    editor.call("entity.create", name="Message", components={
+        "Text": {"Text": "", "Size": 90, "Alignment": "Center", "Color": [0.3, 1.0, 0.5, 1.0]},
+        "Transform": {"Translation": [0.5, 0.4, 0.0]}})
     editor.call("entity.create", name="Camera", components={
         "Camera": {"Primary": True, "FieldOfView": 0.9},
         "AudioListener": {},

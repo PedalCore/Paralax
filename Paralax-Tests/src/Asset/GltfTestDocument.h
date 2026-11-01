@@ -123,6 +123,48 @@ namespace Paralax::Testing {
 		document["scenes"][0]["nodes"] = {0, 2, 4};
 	}
 
+	// Adds animations to a document that has had AddCamerasAndLights, with their keys appended to its buffer:
+	//   "LampBob"    Lamp (node 5) translation, LINEAR, keys 0, 1, 2 s: y 3 -> 4 -> 3.
+	//   "CameraMove" Camera (node 2) translation, LINEAR, 0 -> 2 s: x 0 -> 4; and TopView (node 3, its child) rotation,
+	//                STEP, keys 0 and 1 s: identity, then 90 degrees about Y. Played by Camera.
+	//   "Mixed"      Node0 (node 0) and Lamp (node 5) scale, CUBICSPLINE with zero tangents, 0 -> 1 s: 1 -> 2. They
+	//                share no node above them, so the model's root plays it.
+	inline void AddAnimations(json& document)
+	{
+		std::vector<uint8_t> buffer = MakeTriangleBuffer(); // 104 bytes, already 4-byte aligned.
+		auto addAccessor = [&](const std::vector<float>& floats, const char* type, size_t count) {
+			const size_t offset = buffer.size();
+			for (float value : floats)
+				Append(buffer, value);
+			document["bufferViews"].push_back({{"buffer", 0}, {"byteOffset", offset}, {"byteLength", floats.size() * 4}});
+			json accessor = {{"bufferView", document["bufferViews"].size() - 1}, {"componentType", 5126}, {"count", count}, {"type", type}};
+			if (std::string(type) == "SCALAR")
+			{
+				accessor["min"] = {floats.front()};
+				accessor["max"] = {floats.back()};
+			}
+			document["accessors"].push_back(accessor);
+			return document["accessors"].size() - 1;
+		};
+		const float s = 0.70710678f;
+		const size_t bobTimes = addAccessor({0.0f, 1.0f, 2.0f}, "SCALAR", 3);
+		const size_t bobValues = addAccessor({0, 3, 0, 0, 4, 0, 0, 3, 0}, "VEC3", 3);
+		const size_t moveTimes = addAccessor({0.0f, 2.0f}, "SCALAR", 2);
+		const size_t moveValues = addAccessor({0, 1, 5, 4, 1, 5}, "VEC3", 2);
+		const size_t turnTimes = addAccessor({0.0f, 1.0f}, "SCALAR", 2);
+		const size_t turnValues = addAccessor({0, 0, 0, 1, 0, s, 0, s}, "VEC4", 2);
+		const size_t growValues = addAccessor({0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 2, 2, 2, 0, 0, 0}, "VEC3", 6);
+		document["animations"] = {
+			{{"name", "LampBob"}, {"samplers", {{{"input", bobTimes}, {"output", bobValues}}}}, {"channels", {{{"sampler", 0}, {"target", {{"node", 5}, {"path", "translation"}}}}}}},
+			{{"name", "CameraMove"},
+			 {"samplers", {{{"input", moveTimes}, {"output", moveValues}}, {{"input", turnTimes}, {"output", turnValues}, {"interpolation", "STEP"}}}},
+			 {"channels", {{{"sampler", 0}, {"target", {{"node", 2}, {"path", "translation"}}}}, {{"sampler", 1}, {"target", {{"node", 3}, {"path", "rotation"}}}}}}},
+			{{"name", "Mixed"},
+			 {"samplers", {{{"input", turnTimes}, {"output", growValues}, {"interpolation", "CUBICSPLINE"}}}},
+			 {"channels", {{{"sampler", 0}, {"target", {{"node", 0}, {"path", "scale"}}}}, {{"sampler", 0}, {"target", {{"node", 5}, {"path", "scale"}}}}}}}};
+		document["buffers"][0] = {{"byteLength", buffer.size()}, {"uri", "data:application/octet-stream;base64," + Base64(buffer)}};
+	}
+
 	// The same triangle as binary glTF (GLB): the document as the JSON chunk, its buffer as the BIN chunk.
 	inline std::vector<uint8_t> MakeTriangleGlb(const std::filesystem::path& directory)
 	{

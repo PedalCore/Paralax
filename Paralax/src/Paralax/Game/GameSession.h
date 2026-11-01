@@ -12,6 +12,7 @@
 
 namespace Paralax {
 
+	class AnimationSystem;
 	class AssetManager;
 	class PhysicsSystem;
 	class Scene;
@@ -53,6 +54,7 @@ namespace Paralax {
 		Scene& GetScene() const { return *m_Scene; }
 		ScriptSystem* GetScripts() const { return m_Scripts; }
 		PhysicsSystem* GetPhysics() const { return m_Physics; }
+		AnimationSystem* GetAnimation() const { return m_Animation; }
 		AudioSystem* GetAudio() const { return m_Audio; }
 
 		// Script errors of this session, from every scene played so far, and scene switches that failed (oldest first,
@@ -80,6 +82,7 @@ namespace Paralax {
 		Ref<Scene> m_Scene; // The running copy.
 		AssetHandle m_SceneAsset = 0;
 		ScriptSystem* m_Scripts = nullptr;
+		AnimationSystem* m_Animation = nullptr;
 		PhysicsSystem* m_Physics = nullptr;
 		AudioSystem* m_Audio = nullptr;
 		bool m_AudioPaused = false;

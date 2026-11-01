@@ -95,6 +95,13 @@ def build(editor: EditorSession) -> None:
         "DirectionalLight": {"Intensity": 3.0},
         "Transform": {"Rotation": [-0.26, 0.17, 0.05, 0.95]}})
     editor.call("entity.create", name="Sky", components={"SkyLight": {"Environment": SKY_ENVIRONMENT, "Intensity": 0.8}})
+    # The HUD: score, level and lines at the top-left; a centred message for game over.
+    editor.call("entity.create", name="Hud", components={
+        "Text": {"Text": "Score 0\nLevel 1\nLines 0", "Size": 44, "Color": [1.0, 1.0, 1.0, 1.0]},
+        "Transform": {"Translation": [0.03, 0.03, 0.0]}})
+    editor.call("entity.create", name="Message", components={
+        "Text": {"Text": "", "Size": 96, "Alignment": "Center", "Color": [1.0, 0.85, 0.2, 1.0]},
+        "Transform": {"Translation": [0.5, 0.42, 0.0]}})
     editor.call("entity.create", name="Game", components={"Script": {"Script": script}})
 
     editor.call("scene.save", path="Scenes/Tetris.pxscene")

@@ -45,8 +45,11 @@ namespace Paralax {
 		// Limits: 128 MiB encoded, 256 MiB decoded base level, 16384 per axis. HDR supports top-to-bottom RGBE,
 		// flat pixels or scanline RLE, with a 64 KiB header and 1023-byte lines. Truncated/non-finite HDR is rejected.
 		static Ref<TextureAsset> LoadFromFile(const std::filesystem::path& path, bool srgb, bool generateMips = true, AssetType type = AssetType::Texture);
-		// Decodes an image already in memory (e.g. embedded in a glTF file).
-		static Ref<TextureAsset> LoadFromMemory(const uint8_t* data, size_t size, bool srgb, bool generateMips = true, AssetType type = AssetType::Texture);
+		// Decodes an image already in memory (e.g. embedded in a glTF file). With keepFullPrecision, a 16-bit image (PNG,
+		// PSD or PNM) loaded as linear data (srgb false) keeps its precision as RGBA32F, values 0..1 (for height maps,
+		// where 8 bits show as steps); otherwise it is reduced to RGBA8 like any other image. RGBA32F takes four times the
+		// memory, and its size limit is reached at a quarter of the pixels.
+		static Ref<TextureAsset> LoadFromMemory(const uint8_t* data, size_t size, bool srgb, bool generateMips = true, AssetType type = AssetType::Texture, bool keepFullPrecision = false);
 
 		// Rebuilds mips 1..N from mip 0 with a 2x2 box filter (in linear space for sRGB textures).
 		void GenerateMips();

@@ -18,7 +18,8 @@ namespace Paralax {
 		Scene,
 		Prefab,
 		Script,
-		Audio
+		Audio,
+		AnimationClip // Keyframed transform animation, from a model (glTF) file.
 	};
 
 	std::string_view AssetTypeToString(AssetType type);

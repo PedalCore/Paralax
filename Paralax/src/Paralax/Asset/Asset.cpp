@@ -15,7 +15,7 @@ namespace Paralax {
 			std::string_view Name;
 		};
 
-		constexpr std::array<TypeName, 9> s_TypeNames = {{
+		constexpr std::array<TypeName, 10> s_TypeNames = {{
 			{AssetType::None, "None"},
 			{AssetType::Texture, "Texture"},
 			{AssetType::EnvironmentMap, "EnvironmentMap"},
@@ -25,6 +25,7 @@ namespace Paralax {
 			{AssetType::Prefab, "Prefab"},
 			{AssetType::Script, "Script"},
 			{AssetType::Audio, "Audio"},
+			{AssetType::AnimationClip, "AnimationClip"},
 		}};
 
 	}

@@ -103,6 +103,38 @@ TEST_CASE("ModelPrefab: the model's nodes become nested entities with meshes, ca
 	CHECK(reloaded->ToJson() == prefab->ToJson());
 }
 
+TEST_CASE("ModelPrefab: each animation plays on the entity it is meant for, one clip per entity")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("ModelPrefabAnimations");
+	nlohmann::json document = Paralax::Testing::MakeTriangleDocument(directory);
+	Paralax::Testing::AddCamerasAndLights(document);
+	Paralax::Testing::AddAnimations(document);
+	// A second clip for the lamp, which already plays LampBob.
+	document["animations"].push_back(document["animations"][0]);
+	document["animations"][3]["name"] = "LampBobAgain";
+	MeshImportResult model;
+	std::string error;
+	REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), model, error), error);
+	REQUIRE(model.Animations.size() == 4);
+
+	std::vector<std::string> warnings;
+	Ref<PrefabAsset> prefab = BuildModelPrefab(model, "Rig", error, &warnings);
+	REQUIRE_MESSAGE(prefab, error);
+	Scene scene;
+	Entity root = prefab->Instantiate(scene);
+	CHECK(root.GetComponent<AnimationComponent>().Clip == model.Animations[2].Clip->Handle); // Mixed: on the root.
+	Entity camera = Child(scene, root, "Camera");
+	CHECK(camera.GetComponent<AnimationComponent>().Clip == model.Animations[1].Clip->Handle);
+	Entity lamp = Child(scene, Child(scene, root, "Sun"), "Lamp");
+	const auto& bob = lamp.GetComponent<AnimationComponent>();
+	CHECK(bob.Clip == model.Animations[0].Clip->Handle);
+	CHECK(bob.Playing);
+	CHECK(bob.Loop);
+	REQUIRE(warnings.size() == 1);
+	CHECK(warnings[0].find("LampBobAgain") != std::string::npos);
+	CHECK_FALSE(Child(scene, root, "Node0").HasComponent<AnimationComponent>());
+}
+
 TEST_CASE("ModelPrefab: a model without nodes is refused, and an empty root name is replaced")
 {
 	MeshImportResult model;

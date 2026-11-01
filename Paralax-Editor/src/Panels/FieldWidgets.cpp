@@ -145,7 +145,17 @@ namespace Paralax::Editor {
 				std::string& target = *static_cast<std::string*>(value);
 				std::string edited = target;
 				if (ImGui::InputText("##value", &edited))
+				{
+					// The same limit scene files, agents and scripts get; cut at a UTF-8 character boundary.
+					if (field.MaxLength > 0 && edited.size() > field.MaxLength)
+					{
+						size_t end = field.MaxLength;
+						while (end > 0 && (static_cast<unsigned char>(edited[end]) & 0xC0) == 0x80)
+							end--;
+						edited.resize(end);
+					}
 					write(target, edited, key);
+				}
 				break;
 			}
 

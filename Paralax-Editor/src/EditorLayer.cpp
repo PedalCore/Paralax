@@ -1,5 +1,6 @@
 #include "EditorLayer.h"
 
+#include "EditorCore/FocusBounds.h"
 #include "Panels/FieldWidgets.h"
 
 #include <Paralax/Asset/MeshAsset.h>
@@ -148,7 +149,7 @@ namespace Paralax::Editor {
 							   return CommandResult::Ok(describeCamera());
 						   }});
 
-		commands.Register({"editor.camera.focus", "Frames an entity in the editor camera (like pressing F).", {{"id", "any", "Entity id.", true}}, false, [this, describeCamera](EditorContext& context, const json& params) {
+		commands.Register({"editor.camera.focus", "Frames an entity and everything below it in the editor camera (like pressing F).", {{"id", "any", "Entity id.", true}}, false, [this, describeCamera](EditorContext& context, const json& params) {
 							   std::optional<Entity> entity = context.ResolveEntity(params["id"]);
 							   if (!entity)
 								   return CommandResult::Fail("Entity not found");
@@ -439,19 +440,7 @@ namespace Paralax::Editor {
 
 	void EditorLayer::FocusEntity(Entity entity)
 	{
-		Scene& scene = m_Context.GetActiveScene();
-		const glm::mat4 world = scene.GetWorldTransform(entity);
-		AABB bounds;
-		if (const auto* mesh = entity.TryGetComponent<MeshComponent>())
-		{
-			if (Ref<MeshAsset> asset = m_Context.GetAssets().GetAsset<MeshAsset>(mesh->Mesh))
-				bounds = asset->Bounds.Transformed(world);
-		}
-		if (!bounds.IsValid())
-		{
-			bounds.Expand(glm::vec3(world[3]) - glm::vec3(0.5f));
-			bounds.Expand(glm::vec3(world[3]) + glm::vec3(0.5f));
-		}
+		const AABB bounds = ComputeFocusBounds(m_Context.GetActiveScene(), m_Context.GetAssets(), entity);
 		m_Camera.Focus(bounds.GetCenter(), glm::length(bounds.GetExtents()));
 	}
 

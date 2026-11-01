@@ -256,3 +256,63 @@ TEST_CASE("TextureAsset: a PNG with an empty data chunk before its data still de
 	CHECK(texture->Width == 4);
 	CHECK(texture->Mips[0][(2 * 4 + 1) * 4 + 1] == 20);
 }
+
+TEST_CASE("TextureAsset: 16-bit images keep their precision as linear data only when asked")
+{
+	// Neighbouring 16-bit levels that 8 bits cannot tell apart.
+	const std::vector<uint16_t> values{0, 1000, 1001, 65535};
+	const std::vector<uint8_t> png = Paralax::Testing::MakePng16(2, 2, values);
+
+	Ref<TextureAsset> precise = TextureAsset::LoadFromMemory(png.data(), png.size(), false, false, AssetType::Texture, true);
+	REQUIRE(precise);
+	CHECK(precise->Format == TextureFormat::RGBA32F);
+	CHECK_FALSE(precise->SRGB);
+	const auto* texels = reinterpret_cast<const float*>(precise->Mips[0].data());
+	for (size_t i = 0; i < values.size(); i++)
+	{
+		CAPTURE(i);
+		CHECK(texels[i * 4] == static_cast<float>(values[i]) / 65535.0f); // Grey in red...
+		CHECK(texels[i * 4 + 1] == texels[i * 4]);                        // ...green and blue,
+		CHECK(texels[i * 4 + 3] == 1.0f);                                 // opaque.
+	}
+	CHECK(texels[4] != texels[8]); // 1000 and 1001 stay apart.
+	// A float texture gets float mips.
+	Ref<TextureAsset> mipped = TextureAsset::LoadFromMemory(png.data(), png.size(), false, true, AssetType::Texture, true);
+	REQUIRE(mipped);
+	REQUIRE(mipped->Mips.size() == 2);
+	CHECK(mipped->Mips[1].size() == 16);
+
+	// Not asked for, or as colour: the usual RGBA8 image (16-bit normal maps stay small).
+	for (bool srgb : {false, true})
+	{
+		CAPTURE(srgb);
+		Ref<TextureAsset> usual = TextureAsset::LoadFromMemory(png.data(), png.size(), srgb, true, AssetType::Texture, srgb);
+		REQUIRE(usual);
+		CHECK(usual->Format == TextureFormat::RGBA8);
+	}
+	Ref<TextureAsset> byDefault = TextureAsset::LoadFromMemory(png.data(), png.size(), false);
+	REQUIRE(byDefault);
+	CHECK(byDefault->Format == TextureFormat::RGBA8);
+}
+
+TEST_CASE("TextureAsset: 16-bit grey-alpha, RGB and RGBA images keep every channel at full precision")
+{
+	struct Case
+	{
+		uint32_t Channels;
+		std::vector<uint16_t> Samples;
+		std::vector<float> Expected; // RGBA of the one pixel.
+	};
+	for (const Case& c : {Case{2, {1001, 32768}, {1001, 1001, 1001, 32768}}, Case{3, {1001, 2002, 3003}, {1001, 2002, 3003, 65535}},
+						  Case{4, {1001, 2002, 3003, 4004}, {1001, 2002, 3003, 4004}}})
+	{
+		CAPTURE(c.Channels);
+		const std::vector<uint8_t> png = Paralax::Testing::MakePng16(1, 1, c.Samples, c.Channels);
+		Ref<TextureAsset> texture = TextureAsset::LoadFromMemory(png.data(), png.size(), false, false, AssetType::Texture, true);
+		REQUIRE(texture);
+		REQUIRE(texture->Format == TextureFormat::RGBA32F);
+		const auto* texels = reinterpret_cast<const float*>(texture->Mips[0].data());
+		for (size_t i = 0; i < 4; i++)
+			CHECK(texels[i] == c.Expected[i] / 65535.0f);
+	}
+}

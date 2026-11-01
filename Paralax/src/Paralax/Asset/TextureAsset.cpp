@@ -184,7 +184,7 @@ namespace Paralax {
 		return LoadFromMemory(data.data(), data.size(), srgb, generateMips, type);
 	}
 
-	Ref<TextureAsset> TextureAsset::LoadFromMemory(const uint8_t* data, size_t size, bool srgb, bool generateMips, AssetType type)
+	Ref<TextureAsset> TextureAsset::LoadFromMemory(const uint8_t* data, size_t size, bool srgb, bool generateMips, AssetType type, bool keepFullPrecision)
 	{
 		VerifyTextureType(type);
 		if (!data || size == 0 || size > MaxEncodedBytes)
@@ -196,11 +196,27 @@ namespace Paralax {
 		const int length = static_cast<int>(size);
 		int width = 0, height = 0, channels = 0;
 		const bool hdr = stbi_is_hdr_from_memory(data, length) != 0;
+		// 16-bit data (height maps) can keep its precision as linear floats when asked for.
+		const bool wide = keepFullPrecision && !hdr && !srgb && stbi_is_16_bit_from_memory(data, length) != 0;
 		if ((hdr && !ValidateHDR(data, size, width, height)) ||
-			(!hdr && !stbi_info_from_memory(data, length, &width, &height, &channels)) || !ValidDimensions(width, height, hdr))
+			(!hdr && !stbi_info_from_memory(data, length, &width, &height, &channels)) || !ValidDimensions(width, height, hdr || wide))
 		{
 			PX_CORE_ERROR("Failed to decode texture: malformed image or decoded size limit exceeded");
 			return nullptr;
+		}
+		if (wide)
+		{
+			stbi_us* wordPixels = stbi_load_16_from_memory(data, length, &width, &height, &channels, 4);
+			if (!wordPixels)
+			{
+				PX_CORE_ERROR("Failed to decode texture: {}", stbi_failure_reason());
+				return nullptr;
+			}
+			std::vector<float> values(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
+			for (size_t i = 0; i < values.size(); i++)
+				values[i] = static_cast<float>(wordPixels[i]) / 65535.0f;
+			stbi_image_free(wordPixels);
+			return FromDecoded(static_cast<uint32_t>(width), static_cast<uint32_t>(height), true, values.data(), false, generateMips, type);
 		}
 		void* pixels = hdr ? static_cast<void*>(stbi_loadf_from_memory(data, length, &width, &height, &channels, 4))
 						   : static_cast<void*>(stbi_load_from_memory(data, length, &width, &height, &channels, 4));

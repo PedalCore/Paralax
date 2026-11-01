@@ -43,14 +43,22 @@ windowed one.
    `components` object. Components and their fields are listed by `component.types`, and documented for scripts in
    [Scripting.md](Scripting.md). Asset handles are strings (built-ins: `"1"` cube, `"2"` sphere, `"3"` plane,
    `"4"` cylinder, `"5"` capsule; see `asset.list`). Make materials with `material.create`, prefabs with
-   `prefab.create`, and import files placed under `Assets/` with `asset.import`.
+   `prefab.create`, and import files placed under `Assets/` with `asset.import`. Show a score or a message with a
+   `Text` component (screen space by default: position it with the Transform's X/Y as fractions of the viewport),
+   and change it from a script (`entity:GetComponent("Text").Text = "Score 3"`).
 
    **Models from Blender (or any glTF tool).** Export glTF 2.0 (`.glb`, or `.gltf` with its `.bin` and textures
    beside it) into `Assets/`. `asset.import` makes it one mesh: put it on an entity's `Mesh` to show the whole file.
    `model.create_prefab { model: "Models/Bay.glb" }` (importing it if needed) instead makes a prefab with one entity
    per Blender object, nested as in Blender, each with its name, local transform and mesh, plus its camera (never
-   primary) or light; `prefab.instantiate` places it. The result reports counts and any warnings (animations and
-   skins are not imported; malformed light data is skipped). It is refused during play mode. Light strengths come
+   primary) or light; `prefab.instantiate` places it. Blender actions (glTF animations of object location, rotation
+   and scale) come too, each as an `Animation` component, playing and looping, on the object it animates (or the
+   nearest object above all the ones it animates); start, stop or seek them through the component's `Playing`,
+   `Loop`, `Speed` and `Time`. The result reports counts and any warnings (skins and shape keys are not imported;
+   malformed light data is skipped). It is refused during play mode. Parallax occlusion
+   mapping, which glTF cannot express, comes from material extras as a Blender export script can write them
+   (`"pom": true`, `"height_map": "stone_height.png"`, `"height_depth_m"`, `"texture_repeat_m"`; the height map is
+   found beside the model or in its `textures` folder, and 16-bit maps keep their precision). Light strengths come
    through as in Blender with its default "Standard" lighting mode (sun strength 3 becomes Intensity 3; a 1000 W
    point light about 80), though the renderer's lighting is not physically calibrated, so check them with
    `render.capture`. Re-exporting to the same file updates the meshes in place (they are matched by mesh name, so

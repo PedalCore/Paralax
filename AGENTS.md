@@ -10,7 +10,7 @@ This file is the source of truth for how work is done in this repository. Read i
 | Path | What |
 |---|---|
 | `Paralax/` | Core engine **static library** (`Paralax::Paralax`). All engine code lives here. |
-| `Paralax/src/Paralax/<Module>/` | Engine modules (`Core`, `Events`, `Renderer`, `Scene`, `Asset`, `Scripting`, `Physics`, `Audio`, `Game`, `ImGui`, `Network`, `Project`). `Game/GameSession` is a running game (a scene copy with its systems), used by the runtime and the editor's play mode. |
+| `Paralax/src/Paralax/<Module>/` | Engine modules (`Core`, `Events`, `Renderer`, `Scene`, `Asset`, `Scripting`, `Physics`, `Audio`, `Animation`, `Game`, `ImGui`, `Network`, `Project`). `Game/GameSession` is a running game (a scene copy with its systems), used by the runtime and the editor's play mode. |
 | `docs/` | Reference documentation: `Scripting.md` (the Lua API) and `Agents.md` (driving the editor to build a game). Keep both current when adding scripting functions or commands. |
 | `Paralax/src/Platform/<Backend>/` | Platform/backend implementations (`GLFW`, later `Vulkan`). Never include these from module headers. |
 | `Paralax/src/pxpch.h` | Precompiled header. Every engine `.cpp` starts with `#include "pxpch.h"`. |
@@ -79,7 +79,7 @@ cmake --preset debug && cmake --build build/debug && ctest --preset debug -j8
 
 ## Scripting, prefabs and runtime systems
 
-- **Runtime systems** (scripting, physics, audio) implement `SceneSystem` and are added to the running copy of a scene before `OnRuntimeStart`. `GameSession` does this for both the runtime and the editor's play mode, and performs scene switches (`Scene.Load`/`Scene.Reload`) between updates; add a new system there. The scene calls them in order and defers destruction requested during callbacks. Never call into a system from `Scene` code directly.
+- **Runtime systems** (scripting, animation, physics, audio) implement `SceneSystem` and are added to the running copy of a scene before `OnRuntimeStart`. `GameSession` does this for both the runtime and the editor's play mode, and performs scene switches (`Scene.Load`/`Scene.Reload`) between updates; add a new system there. The scene calls them in order and defers destruction requested during callbacks. Never call into a system from `Scene` code directly.
 - **Lua** (5.4, built as C++ so errors unwind properly) is bound with sol2, only in `Scripting/ScriptSystem.cpp`; keep sol2 out of headers.
   - Bindings read and write components through reflection (`ComponentRegistry::SetField`), so validation matches scene files and agents.
   - Inside bindings, report errors with `ScriptError(...)`. It raises a Lua error, and the system catches it at the call boundary.

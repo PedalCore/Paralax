@@ -22,6 +22,13 @@ function Roller:OnCreate()
 	self.won, self.over, self.endTime = false, false, 0
 	self.jumpQueued = false
 	self.jumps = 0
+	self.hud = Scene.FindEntityByName("Hud"):GetComponent("Text")
+	self.message = Scene.FindEntityByName("Message"):GetComponent("Text")
+	self.message.Text = ""
+end
+
+function Roller:ShowHud()
+	self.hud.Text = string.format("Gems %d/%d\nLives %d\nTime %.1f", self.gemsTotal - self.gemsLeft, self.gemsTotal, self.livesLeft, self.time)
 end
 
 -- Edges of key presses are per frame, and a frame may hold any number of physics steps: the press is noted here and
@@ -35,6 +42,7 @@ function Roller:OnUpdate(dt)
 		return
 	end
 	self.time = self.time + dt
+	self:ShowHud()
 	if Input.WasKeyPressed(Key.Space) then
 		self.jumpQueued = true
 	end
@@ -83,6 +91,7 @@ function Roller:LoseLife()
 	Audio.PlayOneShot("Audio/Fall.wav")
 	if self.livesLeft <= 0 then
 		self.over = true
+		self.message.Text = "OUT OF LIVES"
 		Log.Info("Gem Roller: out of lives")
 	else
 		self:Teleport(Start)
@@ -118,6 +127,7 @@ function Roller:ReachGoal()
 	end
 	Game.Set("Wins", Game.Get("Wins", 0) + 1)
 	Audio.PlayOneShot("Audio/Win.wav")
+	self.message.Text = string.format("FINISHED\n%.1f s (best %.1f s)", self.time, best)
 	Log.Info(string.format("Gem Roller: finished in %.2f s (best %.2f s)", self.time, best))
 end
 

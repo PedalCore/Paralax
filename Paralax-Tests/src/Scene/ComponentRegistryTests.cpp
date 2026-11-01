@@ -163,3 +163,19 @@ TEST_CASE("ComponentRegistry: a range on a vector field applies to every compone
 	CHECK(ComponentRegistry::SetField(*info.FindField("Offset"), &collider, json::array({-5, 0, 1e6}), error));
 	CHECK(collider.Offset == glm::vec3(-5.0f, 0.0f, 1e6f));
 }
+
+TEST_CASE("ComponentRegistry: a GI volume keeps its probe counts within the renderer's limits")
+{
+	const ComponentInfo* info = ComponentRegistry::Find("GIVolume");
+	REQUIRE(info);
+	GIVolumeComponent volume;
+	std::string error;
+	CHECK(ComponentRegistry::SetField(*info->FindField("ProbeCountX"), &volume, 12, error));
+	CHECK(volume.ProbeCountX == 12);
+	CHECK_FALSE(ComponentRegistry::SetField(*info->FindField("ProbeCountX"), &volume, 13, error));
+	CHECK_FALSE(ComponentRegistry::SetField(*info->FindField("ProbeCountY"), &volume, 1, error));
+	CHECK_FALSE(ComponentRegistry::SetField(*info->FindField("ProbeSpacing"), &volume, 0.0f, error));
+	CHECK(volume.ProbeCountX == 12);
+	CHECK(volume.ProbeCountY == 4);
+	CHECK(volume.ProbeSpacing == 1.0f);
+}

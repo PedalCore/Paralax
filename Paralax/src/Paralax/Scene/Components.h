@@ -80,6 +80,19 @@ namespace Paralax {
 		bool CastShadows = false;
 	};
 
+	// A grid of light probes that cache indirect (bounced) lighting for the renderer's global illumination. Probe
+	// (0, 0, 0) sits at the entity's world position and the grid extends along the world axes, ProbeSpacing metres
+	// between probes (the entity's rotation and scale are ignored). One volume lights a scene: the enabled one on the
+	// entity with the lowest UUID; further enabled volumes are ignored, with a warning.
+	struct GIVolumeComponent
+	{
+		bool Enabled = true;
+		float ProbeSpacing = 1.0f; // Metres.
+		int ProbeCountX = 4;       // 2 to 12 along each axis (at most 1728 probes).
+		int ProbeCountY = 4;
+		int ProbeCountZ = 4;
+	};
+
 	// Image-based lighting and background from an HDR environment.
 	struct SkyLightComponent
 	{
@@ -159,6 +172,39 @@ namespace Paralax {
 	struct AudioListenerComponent
 	{
 		bool Active = true;
+	};
+
+	enum class TextAlignment : int
+	{
+		Left = 0,
+		Center = 1,
+		Right = 2
+	};
+
+	// Text drawn by the renderer after tone mapping (so exposure never dims it), in the engine's font. Screen space:
+	// the entity's X and Y are the anchor in normalised viewport coordinates (0, 0 top-left to 1, 1 bottom-right) and
+	// Size is the line height in pixels at a 1080-pixel-high viewport, scaled with the viewport, so a HUD keeps its
+	// place and proportion at any resolution. World space: the text lies in the entity's local XY plane facing +Z
+	// (readable from the front, mirrored from behind), Size is the line height in metres, and it is depth-tested
+	// against the scene. Text is UTF-8 (ASCII and Latin-1 have glyphs; other characters show as boxes), with
+	// newlines, and is aligned about the anchor.
+	struct TextComponent
+	{
+		std::string Text = "Text";
+		float Size = 48.0f;
+		glm::vec4 Color{1.0f}; // Linear RGBA.
+		TextAlignment Alignment = TextAlignment::Left;
+		bool ScreenSpace = true;
+	};
+
+	// Plays an animation clip on the entity and the entities below it while the scene is running (see AnimationSystem).
+	struct AnimationComponent
+	{
+		AssetHandle Clip = 0;
+		bool Playing = true; // Cleared when a clip that does not loop reaches its end.
+		bool Loop = true;
+		float Speed = 1.0f; // Negative plays backwards.
+		float Time = 0.0f;  // Seconds into the clip; set it to start part-way or to seek.
 	};
 
 	// Runs a Lua script on the entity while the scene is running (see ScriptSystem).
