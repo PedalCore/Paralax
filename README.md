@@ -3,15 +3,23 @@
 A 3D game engine written in C++20 for **Windows, macOS and Linux**, with an editor, a runtime that exports games,
 and an editor that AI agents can drive end to end.
 
-> Status: early development. The core application layer, windowing, events and input are in place; the renderer,
-> scene/ECS, physics, scripting and audio are next.
+> Status: early development. In place:
+> - the core application layer and windowing
+> - a PBR renderer (NVRHI/Vulkan) with shadows and image-based lighting
+> - an ECS scene with prefabs
+> - the editor and agent control
+> - Lua scripting and Jolt physics
+> - the runtime and project export
+>
+> Audio and further renderer features are next.
 
 ## Tech stack
 
 - C++20, CMake (3.25+), dependencies pinned via [CPM.cmake](https://github.com/cpm-cmake/CPM.cmake)
 - [GLFW](https://github.com/glfw/glfw) windowing, [NVRHI](https://github.com/NVIDIA-RTX/NVRHI) over Vulkan for rendering
 - [glm](https://github.com/g-truc/glm) math, [spdlog](https://github.com/gabime/spdlog) logging, [doctest](https://github.com/doctest/doctest) tests
-- Planned: [Jolt Physics](https://github.com/jrouwe/JoltPhysics), Lua scripting, [miniaudio](https://github.com/mackron/miniaudio), glTF import
+- [EnTT](https://github.com/skypjack/entt) scenes, [Jolt Physics](https://github.com/jrouwe/JoltPhysics), [Lua](https://www.lua.org) 5.4 scripting via [sol2](https://github.com/ThePhD/sol2), [fastgltf](https://github.com/spnda/fastgltf) import, [Dear ImGui](https://github.com/ocornut/imgui) editor UI
+- Planned: [miniaudio](https://github.com/mackron/miniaudio)
 
 ## Building
 
@@ -30,6 +38,15 @@ sudo apt install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-d
 ```
 
 Run the editor without a display (CI, agents): `build/debug/bin/Paralax-Editor --headless --frames 10`.
+
+Export a game as a standalone folder (the runtime, `Resources/` and the project), then run it from there:
+
+```bash
+build/release/bin/Paralax-Editor --headless --project path/to/MyGame --export path/to/MyGameBuild
+path/to/MyGameBuild/MyGame
+```
+
+Scripting is documented in [docs/Scripting.md](docs/Scripting.md).
 
 ## Contributing
 

@@ -13,6 +13,8 @@ target_include_directories(Paralax-Tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/sr
 target_link_libraries(Paralax-Tests PRIVATE Paralax::Paralax doctest::doctest nvrhi)
 if(TARGET Paralax-EditorCore)
 	target_link_libraries(Paralax-Tests PRIVATE Paralax-EditorCore)
+	# project.export copies the runtime from beside the running executable.
+	add_dependencies(Paralax-Tests Paralax-Runtime)
 endif()
 target_compile_definitions(Paralax-Tests PRIVATE DOCTEST_CONFIG_SUPER_FAST_ASSERTS)
 px_configure_target(Paralax-Tests)
@@ -66,6 +68,40 @@ if(TARGET Paralax-Runtime)
 	set_tests_properties("FeatureTest: the runtime plays the feature scene headless without errors" PROPERTIES
 		TIMEOUT 300
 		LABELS "smoke;gpu"
+		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp")
+endif()
+
+# Export end to end: the editor exports the feature test as a standalone game (to a path relative to the working
+# directory, as a user would type it), which then runs from its own folder with no --project: it finds the bundled
+# project beside the executable. Each run replaces the previous export.
+if(TARGET Paralax-Editor)
+	add_test(NAME "Export: the editor exports the feature test as a standalone game"
+		COMMAND $<TARGET_FILE:Paralax-Editor> --headless --project "${CMAKE_CURRENT_SOURCE_DIR}/FeatureTest" --export ExportedFeatureTest
+		WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+	add_test(NAME "Export: the exported feature test plays from its own folder without errors"
+		COMMAND "${CMAKE_CURRENT_BINARY_DIR}/ExportedFeatureTest/FeatureTest$<TARGET_FILE_SUFFIX:Paralax-Runtime>" --headless --frames 60
+			--fixed-timestep 0.0166667 --validation --fail-on-script-error
+		WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+	set_tests_properties("Export: the editor exports the feature test as a standalone game" PROPERTIES
+		TIMEOUT 300
+		LABELS "smoke;gpu"
+		FIXTURES_SETUP ExportedFeatureTest
+		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp")
+	set_tests_properties("Export: the exported feature test plays from its own folder without errors" PROPERTIES
+		TIMEOUT 300
+		LABELS "smoke;gpu"
+		FIXTURES_REQUIRED ExportedFeatureTest
+		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp")
+endif()
+
+# Without --project and with no game beside it (the build directory has none), the runtime refuses to start.
+if(TARGET Paralax-Runtime)
+	add_test(NAME "Runtime: without a project beside it the runtime exits with an error"
+		COMMAND $<TARGET_FILE:Paralax-Runtime> --headless --frames 1)
+	# Matching the message (rather than any failure) proves it failed for this reason; that path exits non-zero.
+	set_tests_properties("Runtime: without a project beside it the runtime exits with an error" PROPERTIES
+		PASS_REGULAR_EXPRESSION "No game to run"
+		TIMEOUT 60
 		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp")
 endif()
 

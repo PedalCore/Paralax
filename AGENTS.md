@@ -99,6 +99,16 @@ cmake --preset debug && cmake --build build/debug && ctest --preset debug -j8
 - **Paths from commands** are untrusted: resolve scene paths with `EditorContext::ResolveProjectPath` and output files with `ResolveOutputPath`.
 - **Agent server.** `Paralax-Editor --agent-port 0` serves JSON-RPC 2.0 on 127.0.0.1 (one request per line) and writes the port and token to `<project>/.paralax/AgentServer.json` (or `--agent-info <file>`). The first request must be `session.authenticate`. Every command is a method; `help` lists them. `editor.quit` exits.
 - **Play mode for agents:** `play.start { paused: true }`, then `play.step { frames, dt }`, keeps runs deterministic. `script.eval` inspects the running game and `script.errors` lists script failures.
+- **Export.** `project.export { output }` (or `Paralax-Editor --project <dir> --export <dir>`) writes a standalone game folder. It contains:
+  - the runtime, renamed after the project
+  - `Resources/`
+  - the project file and `Assets/`, and nothing else from the project
+
+  The runtime plays the single `.pxproj` beside it. Export is the one command that writes outside the project, so it is deliberately narrow:
+  - the output's parent must exist
+  - it must not overlap the project or the engine resources (checked by file identity, not only by name)
+  - it replaces only an empty folder, or a previous export (marked by `.paralax-export`, which lists its files) that holds nothing else
+  - it is assembled in a sibling staging folder and swapped in, so a failure never leaves a half-written export
 - **MCP.** `python3 tools/agent/paralax_mcp.py --launch <Paralax-Editor> -- --headless --project <dir>` (or `--info <AgentServer.json>`) exposes every command as an MCP tool; `render_capture` returns the image. The CTest smoke test drives the editor through both.
 
 ## Code style (Hazel conventions)

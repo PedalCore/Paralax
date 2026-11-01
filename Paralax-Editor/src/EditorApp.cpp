@@ -21,6 +21,8 @@ namespace Paralax {
 	//   --agent-port <port>           start the agent JSON-RPC server on 127.0.0.1 (0 = any free port)
 	//   --agent-info <file>           where to write the server's connection details (default: <project>/.paralax/AgentServer.json,
 	//                                 or ./.paralax/AgentServer.json without a project)
+	//   --export <dir>                export the project as a standalone game (project.export) and exit; the exit code is 1
+	//                                 if the export failed. A relative path is taken from the working directory.
 
 	namespace {
 
@@ -150,6 +152,24 @@ namespace Paralax {
 												  Application::Get().Close();
 												  return Editor::CommandResult::Ok();
 											  }});
+
+			if (std::optional<std::string> output = args.GetOption("export"))
+			{
+				// On the command line a relative path means the working directory (the command itself takes relative
+				// paths from the project directory).
+				std::error_code error;
+				const std::u8string absolute = std::filesystem::absolute(std::filesystem::path(std::u8string(output->begin(), output->end())), error).generic_u8string();
+				const Editor::CommandResult result = m_Context.Execute("project.export", {{"output", std::string(absolute.begin(), absolute.end())}});
+				if (result.Success)
+					PX_CORE_INFO("Exported the game to '{}'", result.Result["path"].get<std::string>());
+				else
+				{
+					PX_CORE_ERROR("Export failed: {}", result.Error);
+					SetExitCode(1);
+				}
+				Close();
+				return;
+			}
 
 			if (agentServer)
 			{

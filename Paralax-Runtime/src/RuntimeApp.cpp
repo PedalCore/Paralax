@@ -1,4 +1,5 @@
 #include <Paralax.h>
+#include <Paralax/Core/EngineResources.h>
 #include <Paralax/Core/EntryPoint.h>
 #include <Paralax/Physics/PhysicsSystem.h>
 #include <Paralax/Project/Project.h>
@@ -99,23 +100,22 @@ namespace Paralax {
 			bool m_WarnedNoCamera = false;
 		};
 
-		// Finds the game next to the executable (how exported games are laid out).
-		std::optional<std::filesystem::path> FindBundledProject(const CommandLine& args)
+		// Finds the game next to the executable (how exported games are laid out). The executable's real location is
+		// used rather than argv[0], which may be a bare name found on PATH.
+		std::optional<std::filesystem::path> FindBundledProject()
 		{
-			if (args.GetProgram().empty())
+			const std::filesystem::path executable = GetExecutablePath();
+			if (executable.empty())
 				return std::nullopt;
 			std::error_code error;
-			const std::filesystem::path directory = std::filesystem::absolute(args.GetProgram(), error).parent_path();
-			if (error)
-				return std::nullopt;
 			std::optional<std::filesystem::path> found;
-			for (const auto& entry : std::filesystem::directory_iterator(directory, error))
+			for (auto it = std::filesystem::directory_iterator(executable.parent_path(), error); !error && it != std::filesystem::directory_iterator(); it.increment(error))
 			{
-				if (entry.path().extension() != Project::FileExtension)
+				if (it->path().extension() != Project::FileExtension)
 					continue;
 				if (found)
 					return std::nullopt; // Ambiguous.
-				found = entry.path();
+				found = it->path();
 			}
 			return found;
 		}
@@ -175,7 +175,7 @@ namespace Paralax {
 		if (std::optional<std::string> option = args.GetOption("project"))
 			projectPath = std::filesystem::path(*option);
 		else
-			projectPath = FindBundledProject(args);
+			projectPath = FindBundledProject();
 		if (!projectPath)
 		{
 			PX_CORE_ERROR("No game to run: pass --project <dir|file.pxproj>, or place exactly one .pxproj next to the executable");
