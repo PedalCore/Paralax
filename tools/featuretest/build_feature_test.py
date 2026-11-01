@@ -116,6 +116,9 @@ def build(editor: EditorSession) -> None:
                               "Transform": {"Translation": [0, 3.5, 9], "Rotation": [-0.17, 0, 0, 0.985]}})
     entity(editor, "Sun", {"DirectionalLight": {"Intensity": 3.0}, "Transform": {"Rotation": [-0.40, 0.30, 0.14, 0.85]}})
     entity(editor, "Sky", {"SkyLight": {"Environment": SKY_ENVIRONMENT, "Intensity": 1.0}})
+    # Probes covering the scene's 10 x 10 m ground and the objects on it (see GIVolumeComponent).
+    entity(editor, "LightProbes", {"GIVolume": {"ProbeSpacing": 2.0, "ProbeCountX": 6, "ProbeCountY": 3, "ProbeCountZ": 6},
+                                   "Transform": {"Translation": [-5, 0.5, -5]}})
     # The built-in plane is 10 x 10; its collider is a thin box whose top is the plane's surface.
     entity(editor, "Ground", {"Mesh": {"Mesh": PLANE, "Materials": [GROUND_MATERIAL]},
                               "Collider": {"Shape": "Box", "Size": [10, 0.2, 10], "Offset": [0, -0.1, 0]}})

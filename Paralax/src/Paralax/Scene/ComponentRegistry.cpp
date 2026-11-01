@@ -98,6 +98,15 @@ namespace Paralax {
 																	   MakeField<&SpotLightComponent::CastShadows>("CastShadows"),
 																   }));
 
+			components.push_back(MakeComponent<GIVolumeComponent>("GIVolume", "A world-aligned grid of light probes caching indirect lighting (global illumination); one per scene.",
+																  {
+																	  MakeField<&GIVolumeComponent::Enabled>("Enabled"),
+																	  MakeField<&GIVolumeComponent::ProbeSpacing>("ProbeSpacing", FieldOptions().Range(0.1f, 100.0f).Describe("Metres between probes.")),
+																	  MakeField<&GIVolumeComponent::ProbeCountX>("ProbeCountX", FieldOptions().Range(2.0f, 12.0f).Describe("Probes along world X, from the entity's position.")),
+																	  MakeField<&GIVolumeComponent::ProbeCountY>("ProbeCountY", FieldOptions().Range(2.0f, 12.0f).Describe("Probes along world Y.")),
+																	  MakeField<&GIVolumeComponent::ProbeCountZ>("ProbeCountZ", FieldOptions().Range(2.0f, 12.0f).Describe("Probes along world Z.")),
+																  }));
+
 			components.push_back(MakeComponent<SkyLightComponent>("SkyLight", "Image-based lighting and background from an HDR environment map.",
 																  {
 																	  MakeField<&SkyLightComponent::Environment>("Environment", FieldOptions().Describe("Environment (HDR) texture asset.")),

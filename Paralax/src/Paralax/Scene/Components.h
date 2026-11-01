@@ -80,6 +80,19 @@ namespace Paralax {
 		bool CastShadows = false;
 	};
 
+	// A grid of light probes that cache indirect (bounced) lighting for the renderer's global illumination. Probe
+	// (0, 0, 0) sits at the entity's world position and the grid extends along the world axes, ProbeSpacing metres
+	// between probes (the entity's rotation and scale are ignored). One volume lights a scene: the enabled one on the
+	// entity with the lowest UUID; further enabled volumes are ignored, with a warning.
+	struct GIVolumeComponent
+	{
+		bool Enabled = true;
+		float ProbeSpacing = 1.0f; // Metres.
+		int ProbeCountX = 4;       // 2 to 12 along each axis (at most 1728 probes).
+		int ProbeCountY = 4;
+		int ProbeCountZ = 4;
+	};
+
 	// Image-based lighting and background from an HDR environment.
 	struct SkyLightComponent
 	{

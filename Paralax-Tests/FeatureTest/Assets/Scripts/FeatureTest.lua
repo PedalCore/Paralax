@@ -58,6 +58,9 @@ local function TestComponents(self)
 	assert(probe:AddComponent("PointLight", { Range = 7 }).Range == 7)
 	assert(probe:AddComponent("SpotLight", { Color = vec3(1, 0, 0) }).Color == vec3(1, 0, 0))
 	assert(probe:AddComponent("SkyLight", { Intensity = 0.5 }).Intensity == 0.5)
+	local volume = probe:AddComponent("GIVolume", { ProbeSpacing = 2, ProbeCountY = 3 })
+	assert(volume.Enabled == true and volume.ProbeSpacing == 2 and volume.ProbeCountX == 4 and volume.ProbeCountY == 3)
+	assert(not pcall(function() volume.ProbeCountZ = 13 end) and volume.ProbeCountZ == 4)
 	local mesh = probe:AddComponent("Mesh", { Mesh = "2" })
 	mesh.Materials = { "16" }
 	assert(mesh.Mesh == "2" and mesh.Materials[1] == "16" and mesh.CastShadows == true)
@@ -75,7 +78,7 @@ local function TestComponents(self)
 	assert(not pcall(function() probe:GetComponent("NoSuchComponent") end))
 	-- Every component type in the engine appears in the authored scene.
 	for _, name in ipairs({ "Tag", "Transform", "Camera", "DirectionalLight", "PointLight", "SpotLight", "SkyLight", "Mesh", "Rigidbody",
-		"Collider", "AudioSource", "AudioListener", "Animation", "Script", "PrefabInstance" }) do
+		"Collider", "AudioSource", "AudioListener", "Animation", "GIVolume", "Script", "PrefabInstance" }) do
 		local found = false
 		for _, entity in ipairs(Scene.FindEntitiesByTag("Feature")) do
 			found = found or entity:HasComponent(name)
