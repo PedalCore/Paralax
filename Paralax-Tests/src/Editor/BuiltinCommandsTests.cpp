@@ -307,9 +307,9 @@ TEST_CASE("BuiltinCommands: asset list exposes the complete built-in catalog wit
 	size_t index = 0;
 	for (const BuiltinAssetInfo& info : AssetManager::GetBuiltinAssets())
 	{
-		CHECK(builtins[index]["handle"] == std::to_string(info.Handle));
-		CHECK(builtins[index]["type"] == AssetTypeToString(info.Type));
-		CHECK(builtins[index]["name"] == info.Name);
+		CHECK(builtins[index]["handle"].get<std::string>() == std::to_string(info.Handle));
+		CHECK(builtins[index]["type"].get<std::string>() == std::string(AssetTypeToString(info.Type)));
+		CHECK(builtins[index]["name"].get<std::string>() == std::string(info.Name));
 		index++;
 	}
 }

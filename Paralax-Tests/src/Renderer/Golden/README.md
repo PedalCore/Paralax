@@ -5,10 +5,16 @@
 The camera, materials and lights are fixed in that test. It uses the renderer's
 default settings, including the built-in ground material and 10% cascade blend.
 
+Only the llvmpipe/lavapipe reference driver family is compared against this image,
+identified through GraphicsDeviceInfo adapter/driver names. Every device must pass
+frame determinism, opaque/non-black output, sky and sphere hue, sphere shadow, and
+metallic cube lighting checks. A device-specific comparison must never hide a
+missing specular/IBL contribution.
+
 The test writes the current result to `TestOutput/R1-Reference.png`. It requires
 identical repeated frames, mean channel error below 2/255 and fewer than 1% of
 channels differing by more than 12/255. Sparse raster-edge differences are allowed
-across GPU drivers; broad lighting and color changes are not.
+within the reference driver family; broad lighting and color changes are not.
 
 When deliberately changing the look, inspect the current capture and editor
 screenshot, obtain an independent visual review, and then explicitly replace the

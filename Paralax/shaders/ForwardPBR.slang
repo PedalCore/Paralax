@@ -224,6 +224,7 @@ float4 MainPS(VertexOutput input, bool isFrontFace: SV_IsFrontFace) : SV_Target
 	float3 receiverNormal = cross(ddx(input.WorldPosition), ddy(input.WorldPosition));
 	float receiverLength = length(receiverNormal);
 	receiverNormal = receiverLength > 1e-12 ? receiverNormal / receiverLength : N;
+	// Keep the geometric shading normal for shadow bias before material normal mapping changes N.
 	float3 shadowNormal = N;
 	float3 T = normalize(input.Tangent.xyz - N * dot(N, input.Tangent.xyz));
 	float3 B = cross(N, T) * input.Tangent.w;

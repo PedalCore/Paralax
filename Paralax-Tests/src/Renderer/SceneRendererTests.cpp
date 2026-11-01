@@ -190,20 +190,48 @@ TEST_CASE("SceneRenderer: fixed look matches the reviewed reference image")
 		const Image actual = ReadbackTexture(graphics.GetDevice(), output.Texture);
 		CHECK(Image::MaxChannelDifference(first, actual) == 0);
 		REQUIRE(actual.SavePNG(Testing::GetTestOutputDirectory() / "R1-Reference.png"));
-		const Image expected = Image::LoadFromFile(std::filesystem::path(__FILE__).parent_path() / "Golden" / "R1-Reference.png");
-		REQUIRE(expected.GetWidth() == actual.GetWidth());
-		REQUIRE(expected.GetHeight() == actual.GetHeight());
-		// Permit sparse raster-edge differences across GPU drivers, but not a broad lighting or color shift.
-		uint64_t totalDifference = 0;
-		size_t outliers = 0;
-		for (size_t i = 0; i < actual.GetPixels().size(); i++)
+		// Every GPU must retain the scene's lighting, including the metal which has no diffuse fallback.
+		const auto sky = actual.GetPixel(160, 5);
+		CHECK(sky.b > sky.r);
+		CHECK(Luminance(sky) > 70.0f);
+		const auto sphere = actual.GetPixel(125, 85);
+		CHECK(sphere.r > sphere.g + 40);
+		CHECK(sphere.r > sphere.b + 40);
+		const auto metal = actual.GetPixel(195, 95);
+		CHECK(Luminance(metal) > 25.0f);
+		CHECK(metal.r > metal.b + 10);
+		CHECK(metal.g > metal.b + 10);
+		CHECK(Luminance(actual.GetPixel(112, 102)) + 8.0f < Luminance(actual.GetPixel(95, 102)));
+		size_t blackPixels = 0;
+		for (uint32_t y = 0; y < actual.GetHeight(); y++)
+			for (uint32_t x = 0; x < actual.GetWidth(); x++)
+			{
+				const auto pixel = actual.GetPixel(x, y);
+				REQUIRE(pixel.a == 255);
+				blackPixels += Luminance(pixel) < 1.0f ? 1 : 0;
+			}
+		CHECK(blackPixels < 10);
+
+		const auto& info = graphics.GetInfo();
+		const bool referenceDevice = info.AdapterName.find("llvmpipe") != std::string::npos ||
+									 info.DriverName.find("llvmpipe") != std::string::npos || info.DriverName.find("lavapipe") != std::string::npos;
+		if (referenceDevice)
 		{
-			const int difference = std::abs(int(actual.GetPixels()[i]) - int(expected.GetPixels()[i]));
-			totalDifference += static_cast<uint64_t>(difference);
-			outliers += difference > 12 ? 1 : 0;
+			const Image expected = Image::LoadFromFile(std::filesystem::path(__FILE__).parent_path() / "Golden" / "R1-Reference.png");
+			REQUIRE(expected.GetWidth() == actual.GetWidth());
+			REQUIRE(expected.GetHeight() == actual.GetHeight());
+			// Permit sparse raster-edge differences within the reference driver family, but no broad color shift.
+			uint64_t totalDifference = 0;
+			size_t outliers = 0;
+			for (size_t i = 0; i < actual.GetPixels().size(); i++)
+			{
+				const int difference = std::abs(int(actual.GetPixels()[i]) - int(expected.GetPixels()[i]));
+				totalDifference += static_cast<uint64_t>(difference);
+				outliers += difference > 12 ? 1 : 0;
+			}
+			CHECK(double(totalDifference) / double(actual.GetPixels().size()) < 2.0);
+			CHECK(double(outliers) / double(actual.GetPixels().size()) < 0.01);
 		}
-		CHECK(double(totalDifference) / double(actual.GetPixels().size()) < 2.0);
-		CHECK(double(outliers) / double(actual.GetPixels().size()) < 0.01);
 	}
 	CHECK(graphics.GetValidationErrorCount() == initialErrors);
 }

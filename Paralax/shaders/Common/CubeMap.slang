@@ -35,8 +35,9 @@ public float3 ImportanceSampleGGX(float2 xi, float3 N, float roughness)
 {
 	float a = roughness * roughness;
 	float phi = 2.0 * 3.14159265358979 * xi.x;
-	float cosTheta = sqrt((1.0 - xi.y) / (1.0 + (a * a - 1.0) * xi.y));
-	float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+	// At the pole, rounding must not make the sine radicand negative and poison an entire convolution.
+	float cosTheta = sqrt(saturate((1.0 - xi.y) / max(1.0 + (a * a - 1.0) * xi.y, 1e-8)));
+	float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
 	float3 H = float3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
 
 	float3 up = abs(N.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
