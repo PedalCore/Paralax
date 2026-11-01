@@ -180,9 +180,21 @@ namespace Paralax {
 
 		m_CommandList->open();
 		m_Resources.Initialize(m_CommandList);
-		const bool environmentReady = m_Environment.Initialize(m_CommandList);
 		m_CommandList->close();
 		m_Device->executeCommandList(m_CommandList);
+
+		// Keep the static lighting computation separate from texture uploads and finish it before pipeline setup.
+		auto environmentCommands = m_Device->createCommandList();
+		if (!environmentCommands)
+		{
+			PX_CORE_ERROR("Failed to create the environment initialization command list");
+			return false;
+		}
+		environmentCommands->open();
+		const bool environmentReady = m_Environment.Initialize(environmentCommands);
+		environmentCommands->close();
+		m_Device->executeCommandList(environmentCommands);
+		m_GraphicsDevice.WaitForIdle();
 		if (!environmentReady)
 			return false;
 
