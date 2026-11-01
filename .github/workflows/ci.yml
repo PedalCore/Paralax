@@ -83,7 +83,22 @@ jobs:
           # Best effort: MoltenVK over the runner's paravirtual GPU. GPU tests skip with a warning if unavailable.
           brew install vulkan-loader molten-vk || true
           brew install vulkan-validationlayers
-          echo "VK_LAYER_PATH=$(brew --prefix vulkan-validationlayers)/share/vulkan/explicit_layer.d" >> "$GITHUB_ENV"
+          validation_prefix="$(brew --prefix vulkan-validationlayers)"
+          python3 - "$validation_prefix" "$RUNNER_TEMP/paralax-vulkan-layers" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          prefix, destination = map(Path, sys.argv[1:])
+          manifest = prefix / "share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json"
+          library = prefix / "lib/libVkLayer_khronos_validation.dylib"
+          if not library.is_file():
+              raise RuntimeError(f"Validation library is missing: {library}")
+          data = json.loads(manifest.read_text())
+          data["layer"]["library_path"] = str(library.resolve())
+          destination.mkdir(parents=True, exist_ok=True)
+          (destination / manifest.name).write_text(json.dumps(data))
+          PY
+          echo "VK_LAYER_PATH=$RUNNER_TEMP/paralax-vulkan-layers" >> "$GITHUB_ENV"
           echo "VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT" >> "$GITHUB_ENV"
 
       - name: Cache CPM sources
