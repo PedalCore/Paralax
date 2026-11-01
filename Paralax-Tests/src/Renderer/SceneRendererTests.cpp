@@ -19,6 +19,8 @@
 #include <fstream>
 #include <cstring>
 #include <limits>
+#include <string>
+#include <vector>
 
 using namespace Paralax;
 
@@ -370,6 +372,105 @@ TEST_CASE("SceneRenderer: renders a lit, shadowed PBR scene without validation e
 		for (uint32_t y = 20; y < height; y += 20)
 			for (uint32_t x = 20; x < width; x += 20)
 				REQUIRE(image.GetPixel(x, y).a == 255);
+	}
+	CHECK(graphics.GetValidationErrorCount() == initialErrors);
+}
+
+TEST_CASE("SceneRenderer: BRDF LUT survives output and internal target allocation")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto initialErrors = graphics.GetValidationErrorCount();
+	{
+		auto* device = graphics.GetDevice();
+		AssetManager assets;
+		Scene scene("AllocationCheckpoints");
+		BuildTestScene(scene, assets);
+		SceneRenderer renderer(graphics, assets);
+		REQUIRE(renderer.Initialize());
+
+		const auto readSnapshot = [device](nvrhi::IStagingTexture* staging) {
+			REQUIRE(staging);
+			const auto& desc = staging->getDesc();
+			REQUIRE(desc.format == nvrhi::Format::RG16_FLOAT);
+			REQUIRE(desc.width == 128);
+			REQUIRE(desc.height == 128);
+			std::vector<uint16_t> pixels(128 * 128 * 2);
+			constexpr size_t RowBytes = 128 * 2 * sizeof(uint16_t);
+			size_t pitch = 0;
+			const auto* mapped = static_cast<const uint8_t*>(device->mapStagingTexture(staging, nvrhi::TextureSlice(), nvrhi::CpuAccessMode::Read, &pitch));
+			REQUIRE(mapped);
+			const bool validPitch = pitch >= RowBytes;
+			if (validPitch)
+				for (size_t row = 0; row < 128; row++)
+					std::memcpy(pixels.data() + row * 128 * 2, mapped + row * pitch, RowBytes);
+			device->unmapStagingTexture(staging);
+			REQUIRE(validPitch);
+			return pixels;
+		};
+		const auto readCurrent = [&] {
+			auto staging = device->createStagingTexture(renderer.GetInitialBRDFLut()->getDesc(), nvrhi::CpuAccessMode::Read);
+			REQUIRE(staging);
+			auto commands = device->createCommandList();
+			REQUIRE(commands);
+			commands->open();
+			commands->copyTexture(staging, nvrhi::TextureSlice(), renderer.GetBRDFLut(), nvrhi::TextureSlice());
+			commands->close();
+			device->executeCommandList(commands);
+			device->waitForIdle();
+			return readSnapshot(staging);
+		};
+
+		// Waiting at each observation narrows the loss interval, but can change the intermittent failure's timing.
+		device->waitForIdle();
+		const auto initial = readSnapshot(renderer.GetInitialBRDFLut());
+		const auto afterInitialization = readCurrent();
+		auto output = CreateOutput(device, 320, 180);
+		REQUIRE(output.Texture);
+		REQUIRE(output.Framebuffer);
+		const auto afterOutputAllocation = readCurrent();
+		const auto camera = CameraView::LookAt({0, 2, 4.5f}, {0, 0.4f, 0}, glm::radians(50.0f), 320.0f / 180.0f);
+		renderer.Render(scene, camera, output.Framebuffer);
+		device->waitForIdle();
+		const auto atFirstFrame = readSnapshot(renderer.GetFirstFrameBRDFLut());
+		const auto afterRendering = readCurrent();
+
+		struct Observation
+		{
+			const char* Name;
+			const std::vector<uint16_t>& Pixels;
+		};
+		const Observation observations[] = {{"initial dispatch snapshot", initial}, {"after initialization submission", afterInitialization}, {"after output allocation", afterOutputAllocation}, {"first frame after internal target allocation", atFirstFrame}, {"after rendering", afterRendering}};
+		// Emit diagnostics after collecting every observation, so logging does not delay later GPU work.
+		for (const auto& observation : observations)
+		{
+			INFO("checkpoint: ", std::string(observation.Name));
+			REQUIRE(observation.Pixels.size() == initial.size());
+			size_t mismatches = 0, invalid = 0, firstMismatch = initial.size();
+			double energy = 0.0;
+			for (size_t component = 0; component < initial.size(); component++)
+			{
+				const float value = glm::unpackHalf1x16(observation.Pixels[component]);
+				invalid += !std::isfinite(value) || value < 0.0f ? 1 : 0;
+				energy += static_cast<double>(value);
+				if (observation.Pixels[component] != initial[component])
+				{
+					firstMismatch = std::min(firstMismatch, component);
+					mismatches++;
+				}
+			}
+			CAPTURE(energy);
+			CAPTURE(mismatches);
+			if (firstMismatch != initial.size())
+			{
+				INFO("first differing component: ", firstMismatch, ", initial: ", glm::unpackHalf1x16(initial[firstMismatch]),
+					 ", observed: ", glm::unpackHalf1x16(observation.Pixels[firstMismatch]));
+				CHECK(mismatches == 0);
+			}
+			CHECK(invalid == 0);
+			CHECK(energy > 1.0);
+		}
 	}
 	CHECK(graphics.GetValidationErrorCount() == initialErrors);
 }
