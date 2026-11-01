@@ -236,3 +236,31 @@ TEST_CASE("ScriptingCommands: injected input reaches the game one step at a time
 	CHECK_FALSE(fixture.Context.Execute("input.scroll", {{"x", 0}, {"y", -1e7}}).Success);
 	CHECK(fixture.Run("input.state")["queued"] == 0);
 }
+
+TEST_CASE("ScriptingCommands: scripts switch scenes in play mode, and stopping returns to the edited scene")
+{
+	ProjectFixture fixture("PlaySceneSwitch");
+	fixture.Run("entity.create", {{"name", "LevelTwoMarker"}});
+	fixture.Run("scene.save", {{"path", "Scenes/LevelTwo"}});
+	fixture.Run("scene.new", {{"name", "LevelOne"}});
+	fixture.Run("entity.create", {{"name", "LevelOneMarker"}});
+
+	fixture.Run("play.start", {{"paused", true}});
+	const std::string marker = fixture.Run("scene.find", {{"name", "LevelOneMarker"}})["ids"][0];
+	fixture.Run("selection.set", {{"ids", {marker}}});
+	fixture.Run("script.eval", {{"code", "Game.Set('Coins', 7) Scene.Load('Scenes/LevelTwo.pxscene')"}});
+	fixture.Run("play.step");
+	CHECK(fixture.Run("selection.get")["ids"].empty()); // Its entities are gone with the old scene.
+	CHECK(fixture.Run("scene.find", {{"name", "LevelTwoMarker"}})["ids"].size() == 1);
+	CHECK(fixture.Run("scene.find", {{"name", "LevelOneMarker"}})["ids"].empty());
+	CHECK(fixture.Run("script.eval", {{"code", "Game.Get('Coins')"}})["result"] == "7"); // Kept across the switch.
+	fixture.Run("script.eval", {{"code", "Scene.Reload()"}});
+	fixture.Run("play.step");
+	CHECK(fixture.Run("scene.find", {{"name", "LevelTwoMarker"}})["ids"].size() == 1); // Reloads the current level.
+	CHECK(fixture.Context.GetGame()->GetSceneSwitches() == 2);
+
+	fixture.Run("play.stop");
+	CHECK(fixture.Run("scene.find", {{"name", "LevelOneMarker"}})["ids"].size() == 1);
+	CHECK(fixture.Run("scene.find", {{"name", "LevelTwoMarker"}})["ids"].empty());
+	CHECK(fixture.Run("script.errors")["errors"].empty());
+}

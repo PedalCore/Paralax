@@ -92,6 +92,22 @@ Field values are **copies**. `t.Translation.x = 1` changes only the copy, so ass
 | `Scene.Instantiate(prefab [, { parent = e, position = vec3 }])` | Spawns a prefab, given by handle or by asset path (e.g. `"Prefabs/Enemy.pxprefab"`), and returns its root entity. |
 | `Scene.Destroy(entity)` | Same as `entity:Destroy()`. |
 | `Scene.GetEntityCount()` | Number of entities. |
+| `Scene.Load(scene)` | Switches to another scene, given by handle or asset path (e.g. `"Scenes/Level2.pxscene"`), after the current update: this scene stops (its scripts get `OnDestroy`) and the new one starts fresh. An unknown scene is an error. |
+| `Scene.Reload()` | Restarts the current scene from the state it started in, after the current update (e.g. after "Game Over"). |
+
+## Game
+
+Values that survive `Scene.Load` and `Scene.Reload` for the whole run: a score, the level reached, settings. Each
+scene starts with fresh scripts, so this is the way to carry state from one to the next.
+
+| Function | Description |
+|---|---|
+| `Game.Set(key, value)` | Stores a boolean, number or string under a key (1 to 256 bytes); `nil` removes it. Integers stay integers. Strings up to 64 KiB; at most 1024 keys and 1 MiB in all. Anything else is an error. |
+| `Game.Get(key [, default])` | The stored value, or `default` (or `nil`) if there is none. |
+
+A switch requested from `OnDestroy` while a scene is already stopping (during a switch, or when the game ends) is
+ignored. In the editor, `Scene.Load` loads the scene's saved file, not unsaved edits; a scene that cannot be loaded
+when the switch happens is reported like a script error, and the game stays where it is.
 
 ## Physics
 

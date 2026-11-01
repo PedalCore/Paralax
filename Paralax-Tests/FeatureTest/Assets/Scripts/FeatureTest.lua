@@ -177,6 +177,16 @@ function FeatureTest:OnCreate()
 		return
 	end
 	self.startFrame = Time.frame
+	-- After the first run finishes it reloads the scene (Scene.Reload); Game values survive that, scripts do not.
+	self.reloaded = Game.Get("FeatureTestRuns", 0) > 0
+	if self.reloaded then
+		Log.Info("FeatureTest: the reloaded scene started")
+		assert(Game.Get("FeatureTestRuns") == 1 and math.type(Game.Get("FeatureTestRuns")) == "integer", "Game values should survive Scene.Reload")
+		assert(Game.Get("Note") == "kept")
+	end
+	assert(Game.Get("NoSuchKey") == nil and Game.Get("NoSuchKey", "fallback") == "fallback")
+	assert(not pcall(Game.Set, "", 1) and not pcall(Game.Set, "Bad", {}))
+	assert(not pcall(Scene.Load, "Scenes/Missing.pxscene") and not pcall(Scene.Load, "Prefabs/Crate.pxprefab"))
 	TestMath()
 	TestComponents(self)
 	TestScene(self)
@@ -204,12 +214,22 @@ function FeatureTest:OnUpdate(dt)
 		assert(Audio.IsPlaying(Scene.FindEntityByName("Speaker")), "the looping speaker should still be playing")
 		self.done = true
 		Log.Info("FeatureTest: all checks passed at frame " .. Time.frame)
+		if not self.reloaded then
+			-- Restart the scene once; the reloaded run checks that the Game value came through.
+			Game.Set("FeatureTestRuns", 1)
+			Game.Set("Note", "kept")
+			Scene.Reload()
+		end
 	end
 end
 
 function FeatureTest:OnDestroy()
-	if self.entity.tag ~= "Spawned" then
+	-- The reloaded run may be cut short by the end of the run; the first one must have finished.
+	if self.entity.tag ~= "Spawned" and not self.reloaded then
 		assert(self.done, "the feature test did not run to completion (run at least " .. self.finishFrame .. " frames)")
+	end
+	if self.reloaded then
+		assert(Game.Get("FeatureTestRuns") == 1 and Game.Get("Note") == "kept", "Game values should survive Scene.Reload")
 	end
 end
 

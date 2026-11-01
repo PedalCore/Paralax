@@ -1,0 +1,90 @@
+#pragma once
+
+#include "Paralax/Asset/AssetHandle.h"
+#include "Paralax/Audio/AudioSystem.h"
+#include "Paralax/Core/Base.h"
+#include "Paralax/Core/Timestep.h"
+#include "Paralax/Game/GameState.h"
+#include "Paralax/Scripting/ScriptSystem.h"
+
+#include <string>
+#include <vector>
+
+namespace Paralax {
+
+	class AssetManager;
+	class PhysicsSystem;
+	class Scene;
+
+	struct GameSessionSpecification
+	{
+		AudioOutput Audio = AudioOutput::Offline;
+		ScriptSystemSpecification Scripts;
+	};
+
+	// A running game: a copy of a scene with the runtime systems (scripts, then physics, then audio), as played by the
+	// runtime and by the editor's play mode.
+	//
+	// Scripts may switch scenes (Scene.Load) or restart the current one (Scene.Reload). The switch happens after the
+	// update that asked for it: the running scene stops and a fresh copy of the requested scene (as authored, or as
+	// it was when this level started) starts with new systems. Script errors and the Game table's values (GetState)
+	// are kept across switches.
+	//
+	// Main-thread-only. The scene object changes on a switch, so never hold GetScene() across Update.
+	class GameSession
+	{
+	public:
+		// assets must outlive the session. scene is the level to play; the session plays a copy and keeps the original
+		// for Scene.Reload.
+		GameSession(AssetManager& assets, const Scene& scene, GameSessionSpecification specification = {});
+		~GameSession();
+
+		GameSession(const GameSession&) = delete;
+		GameSession& operator=(const GameSession&) = delete;
+
+		// Advances the game one step, then performs a scene switch if scripts asked for one. Not after End.
+		void Update(Timestep timestep);
+		// Stops the game (scripts get OnDestroy) so that every error, including those raised while stopping, is in
+		// GetScriptErrors. Called by the destructor if not before; later calls do nothing.
+		void End();
+		bool HasEnded() const { return m_Scene == nullptr; }
+
+		// Not after End.
+		Scene& GetScene() const { return *m_Scene; }
+		ScriptSystem* GetScripts() const { return m_Scripts; }
+		PhysicsSystem* GetPhysics() const { return m_Physics; }
+		AudioSystem* GetAudio() const { return m_Audio; }
+
+		// Script errors of this session, from every scene played so far, and scene switches that failed (oldest first,
+		// capped like the script system's).
+		std::vector<std::string> GetScriptErrors() const;
+		void ClearScriptErrors();
+		// Scene switches performed (Scene.Load and Scene.Reload).
+		uint32_t GetSceneSwitches() const { return m_Switches; }
+		// The asset the current level was loaded from, or 0 for the scene the session started with.
+		AssetHandle GetSceneAsset() const { return m_SceneAsset; }
+		// Values scripts keep across scene switches (the Game table).
+		GameState& GetState() { return m_State; }
+
+	private:
+		void Start(Ref<Scene> level);
+		void Stop();
+		void SwitchScene(AssetHandle target);
+		void RecordErrors(const std::vector<std::string>& errors);
+
+	private:
+		AssetManager& m_Assets;
+		GameSessionSpecification m_Specification;
+		GameState m_State;
+		Ref<Scene> m_Level; // The current level as it was when it started (never run).
+		Ref<Scene> m_Scene; // The running copy.
+		AssetHandle m_SceneAsset = 0;
+		ScriptSystem* m_Scripts = nullptr;
+		PhysicsSystem* m_Physics = nullptr;
+		AudioSystem* m_Audio = nullptr;
+		bool m_AudioPaused = false;
+		std::vector<std::string> m_EarlierErrors;
+		uint32_t m_Switches = 0;
+	};
+
+}

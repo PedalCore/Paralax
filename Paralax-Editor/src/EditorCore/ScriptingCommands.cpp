@@ -211,12 +211,13 @@ return {name}
 
 		registry.Register({"script.errors", "Script errors (with tracebacks) recorded in the current play session, oldest first.", {{"clear", "boolean", "Clear the list after returning it.", false}}, false, [](EditorContext& context, const json& params) {
 							   json errors = json::array();
-							   if (ScriptSystem* scripts = context.GetScriptSystem())
+							   if (GameSession* game = context.GetGame())
 							   {
-								   for (const std::string& error : scripts->GetErrors())
+								   // Across scene switches (Scene.Load) within the session.
+								   for (const std::string& error : game->GetScriptErrors())
 									   errors.push_back(error);
 								   if (params.contains("clear") && params["clear"].get<bool>())
-									   scripts->ClearErrors();
+									   game->ClearScriptErrors();
 							   }
 							   return CommandResult::Ok({{"errors", errors}, {"playing", context.IsPlaying()}});
 						   }});

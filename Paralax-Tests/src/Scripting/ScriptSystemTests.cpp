@@ -948,6 +948,22 @@ TEST_CASE("ScriptSystem: scripts control sound through the Audio API")
 	CHECK_FALSE(fixture.System->Evaluate("Audio.Play(Scene.GetEntity('1'))", error)); // Not an entity.
 }
 
+TEST_CASE("ScriptSystem: Scene.Load and Game need a game session and a real scene")
+{
+	ScriptFixture fixture;
+	fixture.Start();
+	std::string error;
+	CHECK_FALSE(fixture.System->Evaluate("Game.Set('Score', 1)", error));
+	CHECK(error.find("no game session") != std::string::npos);
+	CHECK_FALSE(fixture.System->Evaluate("Game.Get('Score')", error));
+	CHECK_FALSE(fixture.System->Evaluate("Scene.Load('Scenes/None.pxscene')", error));
+	CHECK(error.find("no scene") != std::string::npos);
+	// Reload is only a request; without a session nothing acts on it, and it is taken once.
+	fixture.Eval("Scene.Reload()");
+	CHECK(fixture.System->TakeSceneRequest() == AssetHandle(0));
+	CHECK_FALSE(fixture.System->TakeSceneRequest());
+}
+
 TEST_CASE("ScriptSystem: the Audio API reports when the scene has no audio")
 {
 	ScriptFixture fixture;

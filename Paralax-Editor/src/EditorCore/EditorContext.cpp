@@ -2,7 +2,6 @@
 
 #include <Paralax/Core/Input.h>
 #include <Paralax/Events/ApplicationEvent.h>
-#include <Paralax/Physics/PhysicsSystem.h>
 #include <Paralax/Scene/Entity.h>
 #include <Paralax/Scene/SceneSerializer.h>
 #include <Paralax/Scripting/ScriptSystem.h>
@@ -194,23 +193,17 @@ namespace Paralax::Editor {
 
 	bool EditorContext::StartPlaying(bool paused)
 	{
-		if (m_RuntimeScene)
+		if (m_Game)
 			return false;
 		// An interactive edit belongs to the scene it started in; later writes must not join it across the switch.
 		CommitInteractiveEdit();
-		m_RuntimeScene = Scene::Copy(*m_EditorScene);
-		// Scripts first: forces they apply in OnUpdate act in the same update's physics step.
-		m_RuntimeScene->AddSystem(CreateScope<ScriptSystem>(GetAssets()));
-		m_RuntimeScene->AddSystem(CreateScope<PhysicsSystem>());
-		// Audio last, so it hears where scripts and physics left things this frame.
-		AudioSystemSpecification audio;
-		audio.Output = m_AudioOutput;
-		m_RuntimeScene->AddSystem(CreateScope<AudioSystem>(GetAssets(), audio));
 		// Keys held before the game started belong to the editor, not the game: release them (keeping the cursor),
 		// as when the window loses focus.
 		m_QueuedInput.clear();
 		Input::OnEvent(WindowLostFocusEvent());
-		m_RuntimeScene->OnRuntimeStart();
+		GameSessionSpecification specification;
+		specification.Audio = m_AudioOutput;
+		m_Game = CreateScope<GameSession>(GetAssets(), *m_EditorScene, specification);
 		SetPaused(paused);
 		return true;
 	}
@@ -224,12 +217,11 @@ namespace Paralax::Editor {
 
 	bool EditorContext::StopPlaying()
 	{
-		if (!m_RuntimeScene)
+		if (!m_Game)
 			return false;
 		CommitInteractiveEdit();
 		m_Paused = false;
-		m_RuntimeScene->OnRuntimeStop();
-		m_RuntimeScene = nullptr;
+		m_Game = nullptr;
 		// Nothing injected for the game may stay held afterwards (it would steer the editor camera).
 		m_QueuedInput.clear();
 		Input::OnEvent(WindowLostFocusEvent());
@@ -242,18 +234,23 @@ namespace Paralax::Editor {
 
 	void EditorContext::UpdateRuntime(Timestep ts)
 	{
-		if (m_RuntimeScene)
-			m_RuntimeScene->OnUpdateRuntime(ts);
+		if (!m_Game)
+			return;
+		const uint32_t switches = m_Game->GetSceneSwitches();
+		m_Game->Update(ts);
+		// A scene switch (Scene.Load or Scene.Reload) replaced every entity: the selection refers to the old ones.
+		if (m_Game->GetSceneSwitches() != switches)
+			PruneSelection();
 	}
 
 	bool EditorContext::StepRuntime(int64_t frames, Timestep ts)
 	{
-		if (!m_RuntimeScene)
+		if (!m_Game)
 			return false;
-		for (int64_t i = 0; i < frames && m_RuntimeScene; i++)
+		for (int64_t i = 0; i < frames; i++)
 		{
 			DeliverQueuedInput();
-			m_RuntimeScene->OnUpdateRuntime(ts);
+			UpdateRuntime(ts);
 			Input::EndFrame();
 		}
 		return true;
@@ -261,7 +258,7 @@ namespace Paralax::Editor {
 
 	void EditorContext::TickRuntime(Timestep ts)
 	{
-		if (m_Paused || !m_RuntimeScene)
+		if (m_Paused || !m_Game)
 			return;
 		// Seen by this update; the application clears the transitions at the end of the frame.
 		DeliverQueuedInput();
@@ -270,7 +267,7 @@ namespace Paralax::Editor {
 
 	bool EditorContext::QueueInput(Scope<Event> event)
 	{
-		if (!m_RuntimeScene || !event)
+		if (!m_Game || !event)
 			return false;
 		m_QueuedInput.push_back(std::move(event));
 		return true;
@@ -286,7 +283,7 @@ namespace Paralax::Editor {
 
 	void EditorContext::ReloadAssetWhenStopped(AssetHandle handle)
 	{
-		if (!m_RuntimeScene)
+		if (!m_Game)
 			GetAssets().ReloadAsset(handle);
 		else if (std::find(m_DeferredReloads.begin(), m_DeferredReloads.end(), handle) == m_DeferredReloads.end())
 			m_DeferredReloads.push_back(handle);

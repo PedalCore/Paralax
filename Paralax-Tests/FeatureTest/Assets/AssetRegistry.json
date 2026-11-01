@@ -1,42 +1,42 @@
 {
 	"Assets": [
 		{
-			"Handle": "9219356388320815132",
+			"Handle": "18360999957996567861",
 			"Path": "Audio/Beep.wav",
 			"Type": "Audio"
 		},
 		{
-			"Handle": "5623606358985902181",
+			"Handle": "2780602726278069989",
 			"Path": "Materials/Gold.pxmat",
 			"Type": "Material"
 		},
 		{
-			"Handle": "8367910121001399298",
+			"Handle": "2983217015136112442",
 			"Path": "Prefabs/Crate.pxprefab",
 			"Type": "Prefab"
 		},
 		{
-			"Handle": "1473052521179109146",
+			"Handle": "9763718452380135951",
 			"Path": "Scenes/FeatureTest.pxscene",
 			"Type": "Scene"
 		},
 		{
-			"Handle": "15325544584372786407",
+			"Handle": "9000898865851366975",
 			"Path": "Scripts/Ball.lua",
 			"Type": "Script"
 		},
 		{
-			"Handle": "11638153783368997558",
+			"Handle": "10236783853220958186",
 			"Path": "Scripts/FeatureTest.lua",
 			"Type": "Script"
 		},
 		{
-			"Handle": "4210188523616923914",
+			"Handle": "11428764177108119871",
 			"Path": "Scripts/Spinner.lua",
 			"Type": "Script"
 		},
 		{
-			"Handle": "4172058401845817548",
+			"Handle": "13852502645935829702",
 			"Path": "Scripts/Util.lua",
 			"Type": "Script"
 		}

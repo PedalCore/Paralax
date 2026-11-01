@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Paralax/Core/Base.h"
+#include "Paralax/Asset/AssetHandle.h"
 #include "Paralax/Scene/SceneSystem.h"
 
 #include <cstdint>
@@ -12,6 +13,7 @@
 namespace Paralax {
 
 	class AssetManager;
+	class GameState;
 
 	struct ScriptSystemSpecification
 	{
@@ -27,6 +29,9 @@ namespace Paralax {
 		uint64_t MaxEntitiesCreatedPerCall = 10'000;
 		// Errors kept for GetErrors (older ones are dropped; all errors are logged).
 		size_t MaxRecordedErrors = 100;
+		// Values that outlive the scene (the Game table), owned by the GameSession; must outlive the system. Without
+		// one, the Game functions raise an error.
+		GameState* State = nullptr;
 	};
 
 	// Runs Lua scripts (ScriptComponent) in a running scene. Add it to a scene before Scene::OnRuntimeStart.
@@ -72,6 +77,10 @@ namespace Paralax {
 
 		// Number of live script instances.
 		size_t GetInstanceCount() const;
+
+		// A scene change scripts asked for (Scene.Load or Scene.Reload): the scene to switch to, or 0 to restart the
+		// current one. The host performs it after the update (see GameSession); the last request of an update wins.
+		std::optional<AssetHandle> TakeSceneRequest();
 
 		// Runs a Lua chunk in the running scene's script environment (for the console and agents) and returns its
 		// results converted with tostring, separated by tabs. Returns nullopt (with outError set) if the scene is not

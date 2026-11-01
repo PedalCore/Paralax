@@ -5,6 +5,7 @@
 #include "Paralax/Audio/AudioSystem.h"
 #include "Paralax/Core/Input.h"
 #include "Paralax/Core/InputNames.h"
+#include "Paralax/Game/GameState.h"
 #include "Paralax/Math/Math.h"
 #include "Paralax/Physics/PhysicsSystem.h"
 #include "Paralax/Scene/ComponentRegistry.h"
@@ -386,6 +387,8 @@ namespace Paralax {
 		Scene* ActiveScene = nullptr;
 		// The running scene's physics, if it simulates any (for the Physics API and collision callbacks).
 		PhysicsSystem* Physics = nullptr;
+		// A scene change requested by Scene.Load / Scene.Reload during this update (0 = reload).
+		std::optional<AssetHandle> SceneRequest;
 		// The running scene's audio, if it plays any (for the Audio API).
 		AudioSystem* Audio = nullptr;
 
@@ -887,6 +890,7 @@ namespace Paralax {
 			BindInput(lua);
 			BindPhysics(lua);
 			BindAudio(lua);
+			BindGame(lua);
 
 			TimeTable = lua.create_table_with("delta", 0.0, "elapsed", 0.0, "frame", 0);
 			lua["Time"] = TimeTable;
@@ -1137,6 +1141,21 @@ namespace Paralax {
 			});
 			scene.set_function("Destroy", [this](const ScriptEntity& entity) { GetScene().DestroyEntity(Resolve(entity)); });
 			scene.set_function("GetEntityCount", [this] { return GetScene().GetEntityCount(); });
+			scene.set_function("Load", [this](const sol::object& target) {
+				AssetHandle handle = 0;
+				if (std::optional<uint64_t> id = ParseId(target))
+					handle = UUID(*id);
+				else if (target.get_type() == sol::type::string)
+					handle = Assets.GetHandleForPath(target.as<std::string>());
+				if (!handle.IsValid() || Assets.GetAssetType(handle) != AssetType::Scene)
+					ScriptError("Scene.Load: no scene with that handle or path");
+				GetScene(); // Only while running.
+				SceneRequest = handle;
+			});
+			scene.set_function("Reload", [this] {
+				GetScene();
+				SceneRequest = AssetHandle(0);
+			});
 			scene.set_function("Instantiate", [this](const sol::object& prefab, sol::optional<sol::table> options) {
 				AssetHandle handle = 0;
 				if (std::optional<uint64_t> id = ParseId(prefab))
@@ -1263,6 +1282,55 @@ namespace Paralax {
 			});
 		}
 
+		GameState& GetState() const
+		{
+			if (!Specification.State)
+				ScriptError("there is no game session to keep values in");
+			return *Specification.State;
+		}
+
+		void BindGame(sol::state& lua)
+		{
+			sol::table game = lua.create_named_table("Game");
+			// Values that survive Scene.Load and Scene.Reload: booleans, numbers and strings. Setting nil removes.
+			game.set_function("Set", [this](const std::string& key, const sol::object& value, sol::this_state caller) {
+				GameState& state = GetState();
+				if (!value.valid() || value.get_type() == sol::type::lua_nil)
+				{
+					state.Remove(key);
+					return;
+				}
+				GameState::Value stored;
+				switch (value.get_type())
+				{
+					case sol::type::boolean: stored = value.as<bool>(); break;
+					case sol::type::number:
+					{
+						// Lua 5.4 tells integers from floats; keep the distinction.
+						value.push(caller);
+						const bool integer = lua_isinteger(caller, -1) != 0;
+						lua_pop(caller, 1);
+						if (integer)
+							stored = value.as<int64_t>();
+						else
+							stored = value.as<double>();
+						break;
+					}
+					case sol::type::string: stored = value.as<std::string>(); break;
+					default: ScriptError("Game.Set: values must be booleans, numbers, strings or nil");
+				}
+				if (!state.Set(key, std::move(stored)))
+					ScriptError(fmt::format("Game.Set: the key must be 1-{} bytes, numbers finite, strings at most {} bytes, and the store at most {} keys and {} bytes",
+											GameState::MaxKeyBytes, GameState::MaxStringBytes, GameState::MaxKeys, GameState::MaxTotalBytes));
+			});
+			game.set_function("Get", [this](const std::string& key, const sol::object& fallback, sol::this_state state) -> sol::object {
+				std::optional<GameState::Value> value = GetState().Get(key);
+				if (!value)
+					return fallback.valid() ? fallback : sol::make_object(state, sol::lua_nil);
+				return std::visit([&](const auto& stored) { return sol::make_object(state, stored); }, *value);
+			});
+		}
+
 		void BindInput(sol::state& lua)
 		{
 			sol::table keys = lua.create_named_table("Key");
@@ -1299,6 +1367,7 @@ namespace Paralax {
 			ActiveScene = nullptr;
 			Physics = nullptr;
 			Audio = nullptr;
+			SceneRequest.reset();
 			Instances.clear();
 			Classes.clear();
 			Modules.clear();
@@ -1437,6 +1506,11 @@ namespace Paralax {
 		return output;
 	}
 
+	std::optional<AssetHandle> ScriptSystem::TakeSceneRequest()
+	{
+		return std::exchange(m_Impl->SceneRequest, std::nullopt);
+	}
+
 	std::vector<std::string> ScriptSystem::GetApiNames()
 	{
 		// Enumerated from the bindings themselves, so the list can never drift from the implementation.
@@ -1462,7 +1536,7 @@ namespace Paralax {
 					lua_pop(L, 1);
 				}
 			};
-			for (const char* table : {"Scene", "Input", "Log", "Time", "Physics", "Audio"})
+			for (const char* table : {"Scene", "Input", "Log", "Time", "Physics", "Audio", "Game"})
 			{
 				lua_getglobal(L, table);
 				if (lua_istable(L, -1))

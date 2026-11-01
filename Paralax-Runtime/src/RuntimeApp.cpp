@@ -1,13 +1,11 @@
 #include <Paralax.h>
-#include <Paralax/Audio/AudioSystem.h>
 #include <Paralax/Core/EngineResources.h>
 #include <Paralax/Core/EntryPoint.h>
-#include <Paralax/Physics/PhysicsSystem.h>
+#include <Paralax/Game/GameSession.h>
 #include <Paralax/Project/Project.h>
 #include <Paralax/Renderer/SceneRenderer.h>
 #include <Paralax/Scene/Entity.h>
 #include <Paralax/Scene/SceneSerializer.h>
-#include <Paralax/Scripting/ScriptSystem.h>
 
 namespace Paralax {
 
@@ -26,7 +24,7 @@ namespace Paralax {
 			GameLayer(Ref<Project> project, Ref<Scene> scene, bool failOnScriptError)
 				: Layer("Game")
 				, m_Project(std::move(project))
-				, m_Scene(std::move(scene))
+				, m_StartScene(std::move(scene))
 				, m_FailOnScriptError(failOnScriptError)
 			{
 			}
@@ -34,13 +32,6 @@ namespace Paralax {
 			void OnAttach() override
 			{
 				Application& app = Application::Get();
-				// Scripts first: forces they apply in OnUpdate act in the same update's physics step.
-				m_Scripts = static_cast<ScriptSystem*>(m_Scene->AddSystem(CreateScope<ScriptSystem>(m_Project->GetAssetManager())));
-				m_Scene->AddSystem(CreateScope<PhysicsSystem>());
-				// Audio last, so it hears where scripts and physics left things this frame. Headless runs mix silently.
-				AudioSystemSpecification audio;
-				audio.Output = app.GetSpecification().Window.Headless ? AudioOutput::Offline : AudioOutput::Device;
-				m_Scene->AddSystem(CreateScope<AudioSystem>(m_Project->GetAssetManager(), audio));
 				if (app.HasGraphics())
 				{
 					m_Renderer = CreateScope<SceneRenderer>(app.GetGraphicsDevice(), m_Project->GetAssetManager());
@@ -52,21 +43,27 @@ namespace Paralax {
 						app.Close();
 					}
 				}
-				m_Scene->OnRuntimeStart();
+				// Headless runs mix sound silently.
+				GameSessionSpecification specification;
+				specification.Audio = app.GetSpecification().Window.Headless ? AudioOutput::Offline : AudioOutput::Device;
+				m_Game = CreateScope<GameSession>(m_Project->GetAssetManager(), *m_StartScene, specification);
+				m_StartScene = nullptr; // The session keeps its own copy.
 			}
 
 			void OnDetach() override
 			{
-				m_Scene->OnRuntimeStop();
-				if (m_FailOnScriptError && !m_Scripts->GetErrors().empty())
+				m_Game->End(); // OnDestroy runs first: its errors count too.
+				const size_t errors = m_Game->GetScriptErrors().size();
+				m_Game.reset();
+				if (m_FailOnScriptError && errors > 0)
 				{
-					PX_CORE_ERROR("{} script error(s) occurred", m_Scripts->GetErrors().size());
+					PX_CORE_ERROR("{} script error(s) occurred", errors);
 					Application::Get().SetExitCode(ScriptErrorExitCode);
 				}
 				m_Renderer.reset();
 			}
 
-			void OnUpdate(Timestep timestep) override { m_Scene->OnUpdateRuntime(timestep); }
+			void OnUpdate(Timestep timestep) override { m_Game->Update(timestep); }
 
 			void OnRender() override
 			{
@@ -78,12 +75,13 @@ namespace Paralax {
 				const uint32_t height = swapchain.GetHeight();
 				if (width == 0 || height == 0)
 					return;
-				m_Scene->SetViewportSize(width, height);
+				Scene& scene = m_Game->GetScene(); // May be a different scene each update (Scene.Load).
+				scene.SetViewportSize(width, height);
 				const float aspect = static_cast<float>(width) / static_cast<float>(height);
 
 				std::optional<CameraView> view;
-				if (std::optional<Entity> camera = m_Scene->GetPrimaryCameraEntity())
-					view = CameraView::FromEntity(*m_Scene, *camera, aspect);
+				if (std::optional<Entity> camera = scene.GetPrimaryCameraEntity())
+					view = CameraView::FromEntity(scene, *camera, aspect);
 				if (!view)
 				{
 					if (!m_WarnedNoCamera)
@@ -93,14 +91,14 @@ namespace Paralax {
 					}
 					view = CameraView::LookAt(glm::vec3(0.0f, 2.0f, 8.0f), glm::vec3(0.0f), glm::radians(50.0f), aspect);
 				}
-				m_Renderer->Render(*m_Scene, *view, swapchain.GetCurrentFramebuffer());
+				m_Renderer->Render(scene, *view, swapchain.GetCurrentFramebuffer());
 			}
 
 		private:
 			Ref<Project> m_Project;
-			Ref<Scene> m_Scene;
+			Ref<Scene> m_StartScene;
+			Scope<GameSession> m_Game;
 			bool m_FailOnScriptError = false;
-			ScriptSystem* m_Scripts = nullptr;
 			Scope<SceneRenderer> m_Renderer;
 			bool m_WarnedNoCamera = false;
 		};

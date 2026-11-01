@@ -8,6 +8,7 @@
 #include <Paralax/Core/Timestep.h>
 #include <Paralax/Core/UUID.h>
 #include <Paralax/Events/Event.h>
+#include <Paralax/Game/GameSession.h>
 #include <Paralax/Project/Project.h>
 #include <Paralax/Scene/Scene.h>
 #include <Paralax/Scripting/ScriptSystem.h>
@@ -41,7 +42,7 @@ namespace Paralax::Editor {
 
 		// --- Scene ---
 		// The scene being edited, or the running copy while playing.
-		Scene& GetActiveScene() { return m_RuntimeScene ? *m_RuntimeScene : *m_EditorScene; }
+		Scene& GetActiveScene() { return m_Game ? m_Game->GetScene() : *m_EditorScene; }
 		Scene& GetEditorScene() { return *m_EditorScene; }
 		const std::filesystem::path& GetScenePath() const { return m_ScenePath; }
 		bool IsSceneDirty() const { return m_SceneDirty; }
@@ -73,7 +74,7 @@ namespace Paralax::Editor {
 		bool IsSelected(UUID id) const;
 
 		// --- Play mode ---
-		bool IsPlaying() const { return m_RuntimeScene != nullptr; }
+		bool IsPlaying() const { return m_Game != nullptr; }
 		// How play mode sounds: Offline (the default: headless runs, agents and tests mix silently and
 		// deterministically) or Device. Applies from the next StartPlaying.
 		void SetAudioOutput(AudioOutput output) { m_AudioOutput = output; }
@@ -105,9 +106,11 @@ namespace Paralax::Editor {
 		// Pausing outside play mode is ignored.
 		// Pausing also silences the game's audio device (sounds resume where they were).
 		void SetPaused(bool paused);
-		// The running scene's script system, or nullptr when not playing.
-		ScriptSystem* GetScriptSystem() const { return m_RuntimeScene ? m_RuntimeScene->GetSystem<ScriptSystem>() : nullptr; }
-		AudioSystem* GetAudioSystem() const { return m_RuntimeScene ? m_RuntimeScene->GetSystem<AudioSystem>() : nullptr; }
+		// The running game (play mode), or nullptr. Its scene changes when scripts switch scenes, so never hold it, or
+		// its scene or systems, across Execute or an update.
+		GameSession* GetGame() const { return m_Game.get(); }
+		ScriptSystem* GetScriptSystem() const { return m_Game ? m_Game->GetScripts() : nullptr; }
+		AudioSystem* GetAudioSystem() const { return m_Game ? m_Game->GetAudio() : nullptr; }
 
 		// --- Undo (scene snapshots) ---
 		// Brackets a scene change. Nested pairs are merged into the outermost; every Begin must be matched by an End.
@@ -174,7 +177,7 @@ namespace Paralax::Editor {
 		Ref<Project> m_Project;
 		AssetManager m_ScratchAssets;
 		Ref<Scene> m_EditorScene;
-		Ref<Scene> m_RuntimeScene;
+		Scope<GameSession> m_Game;
 		bool m_Paused = false;
 		AudioOutput m_AudioOutput = AudioOutput::Offline;
 		std::vector<Scope<Event>> m_QueuedInput;
