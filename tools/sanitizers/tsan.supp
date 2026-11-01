@@ -1,13 +1,13 @@
 # ThreadSanitizer suppressions for third-party system libraries only. Never suppress Paralax code here.
 #
-# Mesa's lavapipe/llvmpipe software Vulkan driver runs uninstrumented worker threads whose internal
-# synchronisation TSan cannot see.
-called_from_lib:libvulkan_lvp.so
+# Mesa's lavapipe/llvmpipe software Vulkan driver runs uninstrumented worker threads (including its LLVM shader
+# compiler) whose internal synchronisation TSan cannot see. These are race suppressions, which match frames of those
+# libraries anywhere in a report. called_from_lib would also work, but TSan aborts the process when a library it names
+# is unloaded, and the Vulkan loader may unload the driver (seen on some CI runner images).
 race:libvulkan_lvp.so
+race:libLLVM
 
 # lavapipe compiles shaders with LLVM while the Khronos loader holds its own locks; the resulting lock-order reports
 # are between those two third-party libraries.
 deadlock:libLLVM
 deadlock:libvulkan.so
-called_from_lib:libLLVM
-
