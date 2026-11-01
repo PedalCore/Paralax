@@ -41,7 +41,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("build", nargs="?", type=Path, default=Path("build"))
     parser.add_argument("--config", choices=["Debug", "Release"], default="Debug")
-    parser.add_argument("--isolated-only", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--isolated-only", action="store_true")
+    mode.add_argument("--concurrency-only", action="store_true")
     arguments = parser.parse_args()
     build = arguments.build.resolve()
     candidates = [build / "bin" / "Paralax-Tests", build / "bin" / arguments.config / "Paralax-Tests"]
@@ -90,7 +92,7 @@ def main():
             report.write_text(text + f"FirstObservedGPUTestOnRunner={first}\nOrderingEvidence=../../GPUOrder.txt (GPUTestContext markers)\n")
 
     capture(run / "Baseline")
-    if not arguments.isolated_only:
+    if not arguments.isolated_only and not arguments.concurrency_only:
         try:
             cache_report = clear_metal_cache()
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
@@ -106,7 +108,8 @@ def main():
     phases = [("AfterCacheClear", "1", "1"), ("WarmRepeat", "1", "1"),
               ("SilentPassThrough", "passthrough", "1"), ("DiscreteBindings", "passthrough", "0"),
               ("ArgumentBuffersAgain", "passthrough", "1"), ("DiscreteBindingsAgain", "passthrough", "0")]
-    phases = [(name, trace, bindings, None) for name, trace, bindings in phases]
+    # Phase metadata keeps cache operations and worker counts independent of test selection.
+    phases = [(name, trace, bindings, None, 4, False) for name, trace, bindings in phases]
     if arguments.isolated_only:
         phases = []
     isolated = [("Normal", "SceneRenderer: BRDF LUT survives output and internal target allocation"),
@@ -114,13 +117,17 @@ def main():
                 ("Stages", "SceneRenderer: BRDF LUT survives each target preparation stage")]
     # Each case starts after its own clear. Reverse round two to expose other persistent order effects.
     for round_number, cases in [(1, isolated), (2, list(reversed(isolated)))]:
-        phases.extend((f"Isolated{round_number}{name}", "1", "1", test_case) for name, test_case in cases)
-    for phase, trace, argument_buffers, test_case in phases:
+        phases.extend((f"Isolated{round_number}{name}", "1", "1", test_case, 1, True) for name, test_case in cases)
+    if arguments.concurrency_only:
+        # Match instrumentation, binding mode and cache operations; reverse the second pair's order.
+        phases = [(name, "0", "1", None, workers, True) for name, workers in
+                  [("Parallel1", 4), ("Serial1", 1), ("Serial2", 1), ("Parallel2", 4)]]
+    for phase, trace, argument_buffers, test_case, workers, clear_cache in phases:
         environment["PX_TRACE_BRDF_BARRIERS"] = trace
         environment["MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS"] = argument_buffers
         destination = run / phase
         destination.mkdir()
-        if test_case is not None:
+        if clear_cache:
             try:
                 cache_report = clear_metal_cache()
             except (OSError, RuntimeError, subprocess.SubprocessError) as error:
@@ -138,7 +145,7 @@ def main():
         (build / "Testing" / "Temporary" / "LastTest.log").unlink(missing_ok=True)
         # Learned costs prioritize slow/failed tests and otherwise change the baseline's scheduling order.
         (build / "Testing" / "Temporary" / "CTestCostData.txt").unlink(missing_ok=True)
-        command = ["ctest", "--test-dir", str(build), "--build-config", arguments.config, "--parallel", "1" if test_case is not None else "4",
+        command = ["ctest", "--test-dir", str(build), "--build-config", arguments.config, "--parallel", str(workers),
                    "--timeout", "300", "--no-tests=error", "--verbose", "--output-junit", str(destination / "Results.xml")]
         if test_case is not None:
             command.extend(["--tests-regex", f"^{re.escape(test_case)}$"])

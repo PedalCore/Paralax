@@ -138,10 +138,10 @@ jobs:
         shell: bash
         run: python3 .github/scripts/diagnose-metal.py build
 
-      - name: Probe isolated macOS Release lighting checkpoints
+      - name: Compare serial and parallel macOS Release lighting
         if: always() && runner.os == 'macOS' && matrix.config == 'Release'
         shell: bash
-        run: python3 .github/scripts/diagnose-metal.py build --config Release --isolated-only
+        run: python3 .github/scripts/diagnose-metal.py build --config Release --concurrency-only
 
       - name: Headless smoke test
         shell: bash
