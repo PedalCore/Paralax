@@ -179,10 +179,14 @@ endif()
 
 # --- Jolt Physics (rigid body physics) ----------------------------------------------------------
 # Cross-platform determinism is required: simulation must reproduce exactly on every platform (AGENTS.md rule 6).
+# Patched with upstream commit 1b2e77e (2026-10-14, "Changed Mutex::mLockedThreadID to an atomic"), which is in no
+# release yet: in debug builds Jolt's mutexes track their owner for asserts, and v5.6.0 reads that field while another
+# thread writes it, which ThreadSanitizer rightly reports. Drop the patch when upgrading to a release that has it.
 CPMAddPackage(
 	NAME JoltPhysics
 	GITHUB_REPOSITORY jrouwe/JoltPhysics
 	GIT_TAG v5.6.0
+	PATCHES "${CMAKE_CURRENT_LIST_DIR}/patches/jolt-v5.6.0-atomic-mutex-owner.patch"
 	SOURCE_SUBDIR Build
 	OPTIONS
 		"CROSS_PLATFORM_DETERMINISTIC ON"
@@ -215,6 +219,12 @@ CPMAddPackage(
 		"USE_LZCNT OFF"
 		"USE_TZCNT OFF")
 if(TARGET Jolt)
+	# A build tree configured before the patch was added keeps using the unpatched sources; say so instead of
+	# building them.
+	file(READ "${JoltPhysics_SOURCE_DIR}/Jolt/Core/Mutex.h" PX_JOLT_MUTEX)
+	if(NOT PX_JOLT_MUTEX MATCHES "atomic<thread::id>")
+		message(FATAL_ERROR "Jolt in ${JoltPhysics_SOURCE_DIR} lacks cmake/patches/jolt-v5.6.0-atomic-mutex-owner.patch; reconfigure this build tree with cmake --fresh")
+	endif()
 	# Jolt's headers are third-party: keep our warnings-as-errors policy away from them.
 	get_target_property(PX_JOLT_INCLUDES Jolt INTERFACE_INCLUDE_DIRECTORIES)
 	set_target_properties(Jolt PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${PX_JOLT_INCLUDES}" FOLDER "Dependencies")
