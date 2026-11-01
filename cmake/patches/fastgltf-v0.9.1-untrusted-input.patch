@@ -71,3 +71,207 @@
  	if (config.mapCallback != nullptr) {
  		// If a map callback is specified, we use a pointer to memory specified by it.
  		auto padding = base64::getPadding(encodedData);
+@@ -1839,9 +1860,9 @@
+ 			dom::object extrasObject;
+ 			if (auto extrasError = accessorObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
+ 				config.extrasCallback(&extrasObject, asset.accessors.size(), Category::Accessors, config.userPointer);
+-			} else if (extrasError != NO_SUCH_FIELD) {
+-				return Error::InvalidGltf;
+ 			}
++			// Paralax patch: glTF allows extras of any type; ones that are not objects are ignored instead of failing
++			// the whole file (callbacks only receive objects).
+ 		}
+ 
+ 		std::string_view name;
+@@ -1969,9 +1990,9 @@
+ 			dom::object extrasObject;
+ 			if (auto extrasError = animationObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
+ 				config.extrasCallback(&extrasObject, asset.animations.size(), Category::Animations, config.userPointer);
+-			} else if (extrasError != NO_SUCH_FIELD) {
+-				return Error::InvalidGltf;
+ 			}
++			// Paralax patch: glTF allows extras of any type; ones that are not objects are ignored instead of failing
++			// the whole file (callbacks only receive objects).
+ 		}
+ 
+ 
+@@ -2066,9 +2087,9 @@
+ 			dom::object extrasObject;
+ 			if (auto extrasError = bufferObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
+ 				config.extrasCallback(&extrasObject, asset.buffers.size(), Category::Buffers, config.userPointer);
+-			} else if (extrasError != NO_SUCH_FIELD) {
+-				return Error::InvalidGltf;
+ 			}
++			// Paralax patch: glTF allows extras of any type; ones that are not objects are ignored instead of failing
++			// the whole file (callbacks only receive objects).
+ 		}
+ 
+ 		std::string_view name;
+@@ -2243,9 +2264,9 @@
+ 			dom::object extrasObject;
+ 			if (auto extrasError = bufferViewObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
+ 				config.extrasCallback(&extrasObject, asset.bufferViews.size(), Category::BufferViews, config.userPointer);
+-			} else if (extrasError != NO_SUCH_FIELD) {
+-				return Error::InvalidGltf;
+ 			}
++			// Paralax patch: glTF allows extras of any type; ones that are not objects are ignored instead of failing
++			// the whole file (callbacks only receive objects).
+ 		}
+ 
+ 		asset.bufferViews.emplace_back(std::move(view));
+@@ -2349,9 +2370,9 @@
+ 			dom::object extrasObject;
+ 			if (auto extrasError = cameraObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
+ 				config.extrasCallback(&extrasObject, asset.cameras.size(), Category::Cameras, config.userPointer);
+-			} else if (extrasError != NO_SUCH_FIELD) {
+-				return Error::InvalidGltf;
+ 			}
++			// Paralax patch: glTF allows extras of any type; ones that are not objects are ignored instead of failing
++			// the whole file (callbacks only receive objects).
+ 		}
+ 
+ 		asset.cameras.emplace_back(std::move(camera));
+@@ -2551,9 +2572,9 @@
+ 			dom::object extrasObject;
+ 			if (auto extrasError = imageObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
+ 				config.extrasCallback(&extrasObject, asset.images.size(), Category::Images, config.userPointer);
+-			} else if (extrasError != NO_SUCH_FIELD) {
+-				return Error::InvalidGltf;
+ 			}
++			// Paralax patch: glTF allows extras of any type; ones that are not objects are ignored instead of failing
++			// the whole file (callbacks only receive objects).
+ 		}
+ 
+ 		// name is optional.
+@@ -3421,9 +3442,9 @@
+ 			dom::object extrasObject;
+ 			if (auto extrasError = materialObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
+ 				config.extrasCallback(&extrasObject, asset.materials.size(), Category::Materials, config.userPointer);
+-			} else if (extrasError != NO_SUCH_FIELD) {
+-				return Error::InvalidGltf;
+ 			}
++			// Paralax patch: glTF allows extras of any type; ones that are not objects are ignored instead of failing
++			// the whole file (callbacks only receive objects).
+ 		}
+ 
+ 		asset.materials.emplace_back(std::move(material));
+@@ -3614,9 +3635,9 @@
+ 			dom::object extrasObject;
+ 			if (auto extrasError = meshObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
+ 				config.extrasCallback(&extrasObject, asset.meshes.size(), Category::Meshes, config.userPointer);
+-			} else if (extrasError != NO_SUCH_FIELD) {
+-				return Error::InvalidGltf;
+ 			}
++			// Paralax patch: glTF allows extras of any type; ones that are not objects are ignored instead of failing
++			// the whole file (callbacks only receive objects).
+ 		}
+ 
+ 		std::string_view name;
+@@ -3860,9 +3881,9 @@
+ 			dom::object extrasObject;
+ 			if (auto extrasError = nodeObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
+ 				config.extrasCallback(&extrasObject, asset.nodes.size(), Category::Nodes, config.userPointer);
+-			} else if (extrasError != NO_SUCH_FIELD) {
+-				return Error::InvalidGltf;
+ 			}
++			// Paralax patch: glTF allows extras of any type; ones that are not objects are ignored instead of failing
++			// the whole file (callbacks only receive objects).
+ 		}
+ 
+ 		std::string_view name;
+@@ -3914,9 +3935,9 @@
+ 			dom::object extrasObject;
+ 			if (auto extrasError = samplerObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
+ 				config.extrasCallback(&extrasObject, asset.samplers.size(), Category::Samplers, config.userPointer);
+-			} else if (extrasError != NO_SUCH_FIELD) {
+-				return Error::InvalidGltf;
+ 			}
++			// Paralax patch: glTF allows extras of any type; ones that are not objects are ignored instead of failing
++			// the whole file (callbacks only receive objects).
+ 		}
+ 
+ 		std::string_view name;
+@@ -3951,9 +3972,9 @@
+ 			dom::object extrasObject;
+ 			if (auto extrasError = sceneObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
+ 				config.extrasCallback(&extrasObject, asset.scenes.size(), Category::Scenes, config.userPointer);
+-			} else if (extrasError != NO_SUCH_FIELD) {
+-				return Error::InvalidGltf;
+ 			}
++			// Paralax patch: glTF allows extras of any type; ones that are not objects are ignored instead of failing
++			// the whole file (callbacks only receive objects).
+ 		}
+ 
+ 		// Parse the array of nodes.
+@@ -4020,9 +4041,9 @@
+ 			dom::object extrasObject;
+ 			if (auto extrasError = skinObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
+ 				config.extrasCallback(&extrasObject, asset.skins.size(), Category::Skins, config.userPointer);
+-			} else if (extrasError != NO_SUCH_FIELD) {
+-				return Error::InvalidGltf;
+ 			}
++			// Paralax patch: glTF allows extras of any type; ones that are not objects are ignored instead of failing
++			// the whole file (callbacks only receive objects).
+ 		}
+ 
+ 		std::string_view name;
+@@ -4075,9 +4096,9 @@
+ 			dom::object extrasObject;
+ 			if (auto extrasError = textureObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
+ 				config.extrasCallback(&extrasObject, asset.textures.size(), Category::Textures, config.userPointer);
+-			} else if (extrasError != NO_SUCH_FIELD) {
+-				return Error::InvalidGltf;
+ 			}
++			// Paralax patch: glTF allows extras of any type; ones that are not objects are ignored instead of failing
++			// the whole file (callbacks only receive objects).
+ 		}
+ 
+ 		std::string_view name;
+@@ -4258,9 +4279,9 @@
+ 			dom::object extrasObject;
+ 			if (auto extrasError = shapeObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
+ 				config.extrasCallback(&extrasObject, asset.shapes.size() - 1, Category::Shapes, config.userPointer);
+-			} else if (extrasError != NO_SUCH_FIELD) FASTGLTF_UNLIKELY {
+-				return Error::InvalidGltf;
+ 			}
++			// Paralax patch: glTF allows extras of any type; ones that are not objects are ignored instead of failing
++			// the whole file (callbacks only receive objects).
+ 		}
+ 	}
+ 
+@@ -4319,9 +4340,9 @@
+ 			dom::object extrasObject;
+ 			if (auto extrasError = materialObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
+ 				config.extrasCallback(&extrasObject, asset.physicsMaterials.size() - 1, Category::PhysicsMaterials, config.userPointer);
+-			} else if (extrasError != NO_SUCH_FIELD) FASTGLTF_UNLIKELY {
+-				return Error::InvalidGltf;
+ 			}
++			// Paralax patch: glTF allows extras of any type; ones that are not objects are ignored instead of failing
++			// the whole file (callbacks only receive objects).
+ 		}
+ 	}
+ 
+@@ -4394,9 +4415,9 @@
+ 			dom::object extrasObject;
+ 			if (auto extrasError = collisionFilterObject["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
+ 				config.extrasCallback(&extrasObject, asset.collisionFilters.size() - 1, Category::CollisionFilters, config.userPointer);
+-			} else if (extrasError != NO_SUCH_FIELD) FASTGLTF_UNLIKELY {
+-				return Error::InvalidGltf;
+ 			}
++			// Paralax patch: glTF allows extras of any type; ones that are not objects are ignored instead of failing
++			// the whole file (callbacks only receive objects).
+ 		}
+ 	}
+ 
+@@ -4597,9 +4618,9 @@
+ 			dom::object extrasObject;
+ 			if (auto extrasError = physicsJointValue["extras"].get_object().get(extrasObject); extrasError == SUCCESS) {
+ 				config.extrasCallback(&extrasObject, asset.physicsJoints.size() - 1, Category::PhysicsJoints, config.userPointer);
+-			} else if (extrasError != NO_SUCH_FIELD) FASTGLTF_UNLIKELY {
+-				return Error::InvalidGltf;
+ 			}
++			// Paralax patch: glTF allows extras of any type; ones that are not objects are ignored instead of failing
++			// the whole file (callbacks only receive objects).
+ 		}
+ 	}
+ 

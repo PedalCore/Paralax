@@ -7,6 +7,7 @@
 #include <fastgltf/core.hpp>
 #include <fastgltf/glm_element_traits.hpp>
 #include <fastgltf/tools.hpp>
+#include <simdjson.h>
 
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -64,6 +65,76 @@ namespace Paralax {
 							  buffer.data);
 		}
 
+		// Reads a file the model refers to, which must stay inside the model's directory (no "../" or absolute escapes).
+		// Returns an empty vector (with outProblem set) if it does not exist or would leave the directory.
+		std::vector<uint8_t> ReadModelFile(const std::filesystem::path& directory, const std::filesystem::path& relativePath, std::string& outProblem)
+		{
+			std::error_code error;
+			const std::filesystem::path base = std::filesystem::weakly_canonical(directory, error);
+			const std::filesystem::path target = std::filesystem::weakly_canonical(directory / relativePath, error);
+			const std::filesystem::path relative = target.lexically_relative(base);
+			if (error || relative.empty() || *relative.begin() == ".." || relativePath.is_absolute())
+			{
+				outProblem = fmt::format("path '{}' leaves the model's directory", relativePath.string());
+				return {};
+			}
+			std::ifstream file(target, std::ios::binary);
+			if (!file)
+			{
+				outProblem = fmt::format("file '{}' not found", relativePath.string());
+				return {};
+			}
+			// Images are refused beyond this size anyway; don't read a huge file to find out.
+			const uintmax_t size = std::filesystem::file_size(target, error);
+			if (error || size > TextureAsset::MaxEncodedBytes)
+			{
+				outProblem = fmt::format("file '{}' is too large", relativePath.string());
+				return {};
+			}
+			return std::vector<uint8_t>(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+		}
+
+		// Parallax settings some exporters put in a material's extras (glTF has no height maps): "pom" (or
+		// "parallax_mode": "POM") enables it, "height_map" names the height image (a file beside the model or beside the
+		// material's other textures; 1 = surface), "height_depth_m" is the relief depth and "texture_repeat_m" the size
+		// of one texture repeat, both in metres.
+		struct MaterialExtras
+		{
+			bool Parallax = false;
+			std::string HeightMap;
+			double DepthMeters = 0.0;
+			double RepeatMeters = 0.0;
+		};
+
+		// fastgltf extras callback: records the parallax settings of each material (userPointer: std::vector<MaterialExtras>).
+		void ReadMaterialExtras(simdjson::dom::object* extras, std::size_t objectIndex, fastgltf::Category objectType, void* userPointer)
+		{
+			constexpr size_t MaxMaterials = size_t(1) << 20;
+			if (!extras || !userPointer || objectType != fastgltf::Category::Materials || objectIndex >= MaxMaterials)
+				return;
+			auto& all = *static_cast<std::vector<MaterialExtras>*>(userPointer);
+			if (all.size() <= objectIndex)
+				all.resize(objectIndex + 1);
+			MaterialExtras& material = all[objectIndex];
+			bool pom = false;
+			std::string_view mode;
+			std::string_view heightMap;
+			double depth = 0.0;
+			double repeat = 0.0;
+			// Any field of the wrong type is simply absent.
+			if (extras->at_key("pom").get_bool().get(pom) != simdjson::SUCCESS)
+				pom = false;
+			if (extras->at_key("parallax_mode").get_string().get(mode) != simdjson::SUCCESS)
+				mode = {};
+			if (extras->at_key("height_map").get_string().get(heightMap) == simdjson::SUCCESS && heightMap.size() <= 1024)
+				material.HeightMap = std::string(heightMap);
+			if (extras->at_key("height_depth_m").get_double().get(depth) == simdjson::SUCCESS)
+				material.DepthMeters = depth;
+			if (extras->at_key("texture_repeat_m").get_double().get(repeat) == simdjson::SUCCESS)
+				material.RepeatMeters = repeat;
+			material.Parallax = pom || mode == "POM";
+		}
+
 		// Returns the encoded bytes of an image, or an empty vector if the source is unsupported.
 		std::vector<uint8_t> GetImageBytes(const fastgltf::Asset& asset, const fastgltf::Image& image, const std::filesystem::path& directory, std::string& outProblem)
 		{
@@ -100,23 +171,7 @@ namespace Paralax {
 								   outProblem = "image URI is not a local file";
 								   return;
 							   }
-							   // Image files must stay inside the model's directory (no "../" or absolute escapes).
-							   std::error_code error;
-							   const std::filesystem::path base = std::filesystem::weakly_canonical(directory, error);
-							   const std::filesystem::path target = std::filesystem::weakly_canonical(directory / uri.uri.fspath(), error);
-							   const std::filesystem::path relative = target.lexically_relative(base);
-							   if (error || relative.empty() || *relative.begin() == ".." || uri.uri.fspath().is_absolute())
-							   {
-								   outProblem = fmt::format("image path '{}' leaves the model's directory", uri.uri.fspath().string());
-								   return;
-							   }
-							   std::ifstream file(target, std::ios::binary);
-							   if (!file)
-							   {
-								   outProblem = fmt::format("image file '{}' not found", uri.uri.fspath().string());
-								   return;
-							   }
-							   bytes.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+							   bytes = ReadModelFile(directory, uri.uri.fspath(), outProblem);
 						   },
 						   [&](const auto&) { outProblem = "unsupported image source"; },
 					   },
@@ -346,7 +401,10 @@ namespace Paralax {
 		// fastgltf only validates on export; structurally invalid documents are rejected before any data is touched.
 		const auto options = fastgltf::Options::LoadExternalBuffers | fastgltf::Options::GenerateMeshIndices;
 		const auto extensions = fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_texture_transform;
+		std::vector<MaterialExtras> materialExtras;
 		fastgltf::Parser parser(extensions | fastgltf::Extensions::KHR_lights_punctual);
+		parser.setExtrasParseCallback(&ReadMaterialExtras);
+		parser.setUserPointer(&materialExtras);
 		auto loaded = parser.loadGltf(data.get(), path.parent_path(), options);
 		fastgltf::Error validation = loaded.error() == fastgltf::Error::None ? fastgltf::validate(loaded.get()) : fastgltf::Error::None;
 		if (loaded.error() != fastgltf::Error::None || validation != fastgltf::Error::None)
@@ -354,6 +412,9 @@ namespace Paralax {
 			// fastgltf rejects a whole file over malformed light data (an unknown type, a zero range...), which the
 			// meshes do not need: try once more without lights.
 			fastgltf::Parser withoutLights(extensions);
+			withoutLights.setExtrasParseCallback(&ReadMaterialExtras);
+			materialExtras.clear();
+			withoutLights.setUserPointer(&materialExtras);
 			data.get().reset();
 			auto retry = withoutLights.loadGltf(data.get(), path.parent_path(), options);
 			const fastgltf::Error retryValidation = retry.error() == fastgltf::Error::None ? fastgltf::validate(retry.get()) : fastgltf::Error::None;
@@ -409,6 +470,76 @@ namespace Paralax {
 			return handle;
 		};
 
+		// Parallax from a material's extras; each height map is loaded once (as linear data, keeping 16 bits), however
+		// many materials share it.
+		struct HeightTexture
+		{
+			AssetHandle Handle = 0;
+			std::string Problem; // Why there is no texture, reported for every material that names it.
+		};
+		std::unordered_map<std::string, HeightTexture> heightTextures;
+		auto ApplyParallax = [&](size_t materialIndex, const fastgltf::Material& source, MaterialAsset& material) {
+			const MaterialExtras& extras = materialExtras[materialIndex];
+			const double scale = extras.RepeatMeters > 0.0 ? extras.DepthMeters / extras.RepeatMeters : 0.0;
+			if (extras.HeightMap.empty() || !std::isfinite(scale) || scale <= 0.0)
+			{
+				outResult.Warnings.push_back(fmt::format("material '{}': parallax needs height_map, height_depth_m and texture_repeat_m", source.name.c_str()));
+				return;
+			}
+			auto found = heightTextures.find(extras.HeightMap);
+			if (found == heightTextures.end())
+			{
+				// Beside the model, in its "textures" folder (where Blender's exporter puts external images), then beside the
+				// material's base color image.
+				std::vector<std::filesystem::path> candidates{std::filesystem::path(extras.HeightMap), std::filesystem::path("textures") / extras.HeightMap};
+				if (source.pbrData.baseColorTexture && source.pbrData.baseColorTexture->textureIndex < asset.textures.size())
+				{
+					const auto& texture = asset.textures[source.pbrData.baseColorTexture->textureIndex];
+					if (texture.imageIndex && *texture.imageIndex < asset.images.size())
+					{
+						if (const auto* uri = std::get_if<fastgltf::sources::URI>(&asset.images[*texture.imageIndex].data); uri && uri->uri.isLocalPath())
+							candidates.push_back(uri->uri.fspath().parent_path() / extras.HeightMap);
+					}
+				}
+				AssetHandle handle = 0;
+				std::string problem; // The first problem other than a missing file, if any.
+				for (const std::filesystem::path& candidate : candidates)
+				{
+					std::string candidateProblem;
+					const std::vector<uint8_t> bytes = ReadModelFile(directory, candidate, candidateProblem);
+					if (bytes.empty())
+					{
+						if (problem.empty() && candidateProblem.find("not found") == std::string::npos)
+							problem = candidateProblem;
+						continue;
+					}
+					if (Ref<TextureAsset> texture = TextureAsset::LoadFromMemory(bytes.data(), bytes.size(), false, true, AssetType::Texture, true))
+					{
+						handle = DeriveSubAssetHandle(meshHandle, SubAssetKind::HeightTexture, HashName(extras.HeightMap));
+						texture->Handle = handle;
+						outResult.Textures.push_back(texture);
+						problem.clear();
+					}
+					else
+					{
+						problem = fmt::format("height map '{}' could not be decoded", candidate.string());
+					}
+					break;
+				}
+				if (!handle.IsValid() && problem.empty())
+					problem = fmt::format("height map '{}' not found beside the model, in its textures folder or beside its base color image", extras.HeightMap);
+				found = heightTextures.emplace(extras.HeightMap, HeightTexture{handle, problem}).first;
+			}
+			if (!found->second.Handle.IsValid())
+			{
+				outResult.Warnings.push_back(fmt::format("material '{}': {}", source.name.c_str(), found->second.Problem));
+				return;
+			}
+			material.HeightTexture = found->second.Handle;
+			// The shader's height scale is a depth in UV units; one texture repeat is one UV unit.
+			material.HeightScale = static_cast<float>(std::clamp(scale, 0.0, 0.5));
+		};
+
 		// Materials (one slot per glTF material, plus a default slot for primitives without one).
 		for (size_t i = 0; i < asset.materials.size(); i++)
 		{
@@ -443,6 +574,8 @@ namespace Paralax {
 																			  : AlphaMode::Opaque;
 			material->AlphaCutoff = source.alphaCutoff;
 			material->DoubleSided = source.doubleSided;
+			if (i < materialExtras.size() && materialExtras[i].Parallax)
+				ApplyParallax(i, source, *material);
 			outResult.Materials.push_back(material);
 		}
 

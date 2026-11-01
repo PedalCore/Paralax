@@ -283,6 +283,115 @@ TEST_CASE("MeshImporter: malformed lights are skipped with a warning; the meshes
 	}
 }
 
+TEST_CASE("MeshImporter: parallax settings come from material extras, with 16-bit height maps")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfParallax");
+	std::filesystem::create_directories(directory / "textures");
+	const std::vector<uint8_t> height = Paralax::Testing::MakePng16(2, 2, {65535, 30000, 30001, 0});
+	std::ofstream(directory / "textures" / "stone_height.png", std::ios::binary).write(reinterpret_cast<const char*>(height.data()), static_cast<std::streamsize>(height.size()));
+
+	// Three materials as Blender writes them for a POM / no-POM / geometry test strip; the first two share a map.
+	json document = Paralax::Testing::MakeTriangleDocument(directory);
+	const json base = document["materials"][0];
+	document["materials"] = json::array();
+	for (const auto& [name, pom] : {std::pair{"stone_POM", true}, std::pair{"stone_POM_too", true}, std::pair{"stone_noPOM", false}})
+	{
+		json material = base;
+		material["name"] = name;
+		material["extras"] = {{"pom", pom}, {"parallax_mode", pom ? "POM" : "normal_map_only"}, {"height_map", "stone_height.png"}, {"height_depth_m", 0.02}, {"texture_repeat_m", 1.2}};
+		document["materials"].push_back(material);
+	}
+	MeshImportResult result;
+	std::string error;
+	REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), result, error), error);
+	CHECK(result.Warnings.empty());
+	REQUIRE(result.Materials.size() == 3);
+	const MaterialAsset& pom = *result.Materials[0];
+	REQUIRE(pom.HeightTexture.IsValid());
+	CHECK(pom.HeightScale == doctest::Approx(0.02 / 1.2));          // Depth in UV units: one repeat is one UV unit.
+	CHECK(result.Materials[1]->HeightTexture == pom.HeightTexture); // Loaded once.
+	CHECK_FALSE(result.Materials[2]->HeightTexture.IsValid());      // Parallax off.
+
+	const auto texture = std::find_if(result.Textures.begin(), result.Textures.end(), [&](const Ref<TextureAsset>& t) { return t->Handle == pom.HeightTexture; });
+	REQUIRE(texture != result.Textures.end());
+	CHECK((*texture)->Format == TextureFormat::RGBA32F); // 16 bits kept, linear.
+	const auto* texels = reinterpret_cast<const float*>((*texture)->Mips[0].data());
+	CHECK(texels[4] != texels[8]); // 30000 and 30001 stay apart.
+	CHECK(std::count_if(result.Textures.begin(), result.Textures.end(), [](const Ref<TextureAsset>& t) { return t->Format == TextureFormat::RGBA32F; }) == 1);
+}
+
+TEST_CASE("MeshImporter: unusable parallax extras are skipped with a warning")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfParallaxBad") / "model";
+	std::filesystem::create_directories(directory);
+	const std::vector<uint8_t> height = Paralax::Testing::MakePng16(1, 1, {40000});
+	std::ofstream(directory.parent_path() / "outside.png", std::ios::binary).write(reinterpret_cast<const char*>(height.data()), static_cast<std::streamsize>(height.size()));
+	std::ofstream(directory / "inside.png", std::ios::binary).write(reinterpret_cast<const char*>(height.data()), static_cast<std::streamsize>(height.size()));
+	std::ofstream(directory / "garbage.png") << "not an image";
+
+	for (const json& extras : {json{{"pom", true}, {"height_map", "missing.png"}, {"height_depth_m", 0.02}, {"texture_repeat_m", 1.0}},
+							   json{{"pom", true}, {"height_map", "../outside.png"}, {"height_depth_m", 0.02}, {"texture_repeat_m", 1.0}},
+							   json{{"pom", true}, {"height_map", "garbage.png"}, {"height_depth_m", 0.02}, {"texture_repeat_m", 1.0}},
+							   json{{"pom", true}, {"height_map", "inside.png"}, {"height_depth_m", 0.02}, {"texture_repeat_m", 0.0}},
+							   json{{"pom", true}, {"height_map", "inside.png"}, {"height_depth_m", -1.0}, {"texture_repeat_m", 1.0}},
+							   json{{"pom", true}, {"height_depth_m", 0.02}, {"texture_repeat_m", 1.0}},
+							   json{{"pom", "yes"}, {"height_map", 5}, {"height_depth_m", "deep"}, {"texture_repeat_m", 1.0}}})
+	{
+		CAPTURE(extras.dump());
+		json document = Paralax::Testing::MakeTriangleDocument(directory);
+		document["materials"][0]["extras"] = extras;
+		Paralax::Testing::ScopedLogCapture capture;
+		MeshImportResult result;
+		std::string error;
+		REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), result, error), error);
+		CHECK_FALSE(result.Materials[0]->HeightTexture.IsValid());
+		const bool parallaxRequested = extras["pom"].is_boolean();
+		CHECK(std::any_of(result.Warnings.begin(), result.Warnings.end(), [](const std::string& w) { return w.find("material") != std::string::npos; }) == parallaxRequested);
+	}
+
+	// Every material naming a missing map is told so (the map is looked for once).
+	{
+		json document = Paralax::Testing::MakeTriangleDocument(directory);
+		document["materials"].push_back(document["materials"][0]);
+		for (json& material : document["materials"])
+			material["extras"] = {{"pom", true}, {"height_map", "missing.png"}, {"height_depth_m", 0.02}, {"texture_repeat_m", 1.0}};
+		Paralax::Testing::ScopedLogCapture capture;
+		MeshImportResult result;
+		std::string error;
+		REQUIRE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), result, error));
+		CHECK(std::count_if(result.Warnings.begin(), result.Warnings.end(), [](const std::string& w) { return w.find("missing.png") != std::string::npos; }) == 2);
+	}
+
+	// A large depth is clamped to what the material allows.
+	json document = Paralax::Testing::MakeTriangleDocument(directory);
+	document["materials"][0]["extras"] = {{"pom", true}, {"height_map", "inside.png"}, {"height_depth_m", 5.0}, {"texture_repeat_m", 1.0}};
+	MeshImportResult result;
+	std::string error;
+	REQUIRE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), result, error));
+	CHECK(result.Materials[0]->HeightScale == doctest::Approx(0.5));
+}
+
+TEST_CASE("MeshImporter: extras of any type are accepted")
+{
+	// glTF allows extras to be any JSON value; with the material extras reader on, fastgltf v0.9.1 rejected files with
+	// extras that were not objects (patched, see cmake/patches).
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfExtrasTypes");
+	for (const json& value : {json("blender"), json::array({1, 2}), json(nullptr), json(3.5), json(true)})
+	{
+		CAPTURE(value.dump());
+		json document = Paralax::Testing::MakeTriangleDocument(directory);
+		Paralax::Testing::AddCamerasAndLights(document);
+		for (const char* category : {"nodes", "meshes", "materials", "accessors", "bufferViews", "buffers", "cameras", "textures", "images", "scenes"})
+			document[category][0]["extras"] = value;
+		document["extensions"]["KHR_lights_punctual"]["lights"][0]["extras"] = value;
+		MeshImportResult result;
+		std::string error;
+		REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), result, error), error);
+		CHECK(result.Nodes.size() == 7);
+		CHECK(result.Nodes[4].Light); // Lights still come through.
+	}
+}
+
 TEST_CASE("MeshImporter: computes normals when missing and warns about missing images")
 {
 	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfNoNormals");

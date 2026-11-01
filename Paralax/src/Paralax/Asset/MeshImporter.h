@@ -78,8 +78,9 @@ namespace Paralax {
 	{
 		Material = 1,
 		Texture = 2,
-		Mesh = 3,       // A per-node mesh, keyed by its (unique) name.
-		MeshByIndex = 4 // A per-node mesh without a unique name, keyed by its index in the file.
+		Mesh = 3,         // A per-node mesh, keyed by its (unique) name.
+		MeshByIndex = 4,  // A per-node mesh without a unique name, keyed by its index in the file.
+		HeightTexture = 5 // A parallax height map named by a material's extras, keyed by its file name.
 	};
 
 	// Stable handle for the index-th sub-asset of a kind within a parent asset. Never returns 0.
@@ -98,6 +99,12 @@ namespace Paralax {
 		// and a 1000 W point light (1000 / 4 pi before the conversion) one of about 80. A point or spot light without
 		// a range reaches as far as its light stays above 0.01 (10 * sqrt(Intensity) metres). Values are clamped to
 		// the components' ranges. Malformed light data is ignored with a warning rather than failing the import.
+		//
+		// Parallax occlusion mapping, which glTF cannot express, is read from material extras as Blender exporters can
+		// write them: "pom": true (or "parallax_mode": "POM"), "height_map" (1 = surface; looked up beside the model, in
+		// its "textures" folder, then beside the material's base color image, never outside the model's folder),
+		// "height_depth_m" and "texture_repeat_m"; HeightScale becomes depth / repeat (UV units). A 16-bit height map
+		// keeps its precision.
 		//
 		// Per-node meshes are keyed by mesh name (by index when unnamed or repeated), so re-exports that renumber
 		// meshes keep each entity's mesh. They are built whenever the file is loaded, which roughly doubles its

@@ -23,6 +23,7 @@ target_link_libraries(Paralax
 		Vulkan::Headers
 		stb::stb
 		fastgltf::fastgltf
+		simdjson::simdjson
 		sol2::sol2
 		Jolt
 		miniaudio)

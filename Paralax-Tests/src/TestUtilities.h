@@ -47,6 +47,80 @@ namespace Paralax::Testing {
 		return contents.str();
 	}
 
+	// A 16-bit PNG in memory (exported height maps are greyscale), written with uncompressed deflate blocks so no
+	// compressor is needed. channels is 1 (grey), 2 (grey and alpha), 3 (RGB) or 4 (RGBA); values holds width * height
+	// * channels samples, row by row from the top.
+	inline std::vector<uint8_t> MakePng16(uint32_t width, uint32_t height, const std::vector<uint16_t>& values, uint32_t channels = 1)
+	{
+		auto crc32 = [](const uint8_t* data, size_t size, uint32_t crc = 0xFFFFFFFFu) {
+			for (size_t i = 0; i < size; i++)
+			{
+				crc ^= data[i];
+				for (int bit = 0; bit < 8; bit++)
+					crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+			}
+			return crc;
+		};
+		auto put32 = [](std::vector<uint8_t>& out, uint32_t value) {
+			for (int shift = 24; shift >= 0; shift -= 8)
+				out.push_back(static_cast<uint8_t>(value >> shift));
+		};
+		auto chunk = [&](std::vector<uint8_t>& out, const char* type, const std::vector<uint8_t>& data) {
+			put32(out, static_cast<uint32_t>(data.size()));
+			std::vector<uint8_t> body(type, type + 4);
+			body.insert(body.end(), data.begin(), data.end());
+			out.insert(out.end(), body.begin(), body.end());
+			put32(out, crc32(body.data(), body.size()) ^ 0xFFFFFFFFu);
+		};
+
+		// Scanlines: filter byte 0, then big-endian 16-bit samples.
+		std::vector<uint8_t> raw;
+		for (uint32_t y = 0; y < height; y++)
+		{
+			raw.push_back(0);
+			for (uint32_t x = 0; x < width * channels; x++)
+			{
+				const uint16_t value = values[static_cast<size_t>(y) * width * channels + x];
+				raw.push_back(static_cast<uint8_t>(value >> 8));
+				raw.push_back(static_cast<uint8_t>(value & 0xFF));
+			}
+		}
+		// zlib stream of stored blocks (at most 65535 bytes each), then Adler-32.
+		std::vector<uint8_t> zlib{0x78, 0x01};
+		for (size_t offset = 0; offset < raw.size() || offset == 0; offset += 65535)
+		{
+			const size_t length = std::min<size_t>(65535, raw.size() - offset);
+			zlib.push_back(offset + length >= raw.size() ? 1 : 0);
+			zlib.push_back(static_cast<uint8_t>(length & 0xFF));
+			zlib.push_back(static_cast<uint8_t>(length >> 8));
+			zlib.push_back(static_cast<uint8_t>(~length & 0xFF));
+			zlib.push_back(static_cast<uint8_t>((~length >> 8) & 0xFF));
+			zlib.insert(zlib.end(), raw.begin() + static_cast<std::ptrdiff_t>(offset), raw.begin() + static_cast<std::ptrdiff_t>(offset + length));
+			if (raw.empty())
+				break;
+		}
+		uint32_t a = 1, b = 0;
+		for (uint8_t byte : raw)
+		{
+			a = (a + byte) % 65521;
+			b = (b + a) % 65521;
+		}
+		put32(zlib, (b << 16) | a);
+
+		std::vector<uint8_t> png{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
+		std::vector<uint8_t> header;
+		put32(header, width);
+		put32(header, height);
+		const uint8_t colourType = channels == 1 ? 0 : channels == 2 ? 4
+												   : channels == 3   ? 2
+																	 : 6;
+		header.insert(header.end(), {16, colourType, 0, 0, 0}); // 16-bit, deflate, no filter, no interlace.
+		chunk(png, "IHDR", header);
+		chunk(png, "IDAT", zlib);
+		chunk(png, "IEND", {});
+		return png;
+	}
+
 	// A RIFF WAVE file in memory: 16-bit PCM or (bitsPerSample 32) IEEE float, from interleaved samples in [-1, 1].
 	inline std::vector<uint8_t> MakeWav(uint16_t channels, uint32_t sampleRate, const std::vector<float>& samples, uint16_t bitsPerSample = 16)
 	{

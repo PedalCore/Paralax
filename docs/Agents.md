@@ -50,7 +50,10 @@ windowed one.
    `model.create_prefab { model: "Models/Bay.glb" }` (importing it if needed) instead makes a prefab with one entity
    per Blender object, nested as in Blender, each with its name, local transform and mesh, plus its camera (never
    primary) or light; `prefab.instantiate` places it. The result reports counts and any warnings (animations and
-   skins are not imported; malformed light data is skipped). It is refused during play mode. Light strengths come
+   skins are not imported; malformed light data is skipped). It is refused during play mode. Parallax occlusion
+   mapping, which glTF cannot express, comes from material extras as a Blender export script can write them
+   (`"pom": true`, `"height_map": "stone_height.png"`, `"height_depth_m"`, `"texture_repeat_m"`; the height map is
+   found beside the model or in its `textures` folder, and 16-bit maps keep their precision). Light strengths come
    through as in Blender with its default "Standard" lighting mode (sun strength 3 becomes Intensity 3; a 1000 W
    point light about 80), though the renderer's lighting is not physically calibrated, so check them with
    `render.capture`. Re-exporting to the same file updates the meshes in place (they are matched by mesh name, so
