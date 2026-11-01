@@ -140,10 +140,10 @@ jobs:
         shell: bash
         run: python3 .github/scripts/diagnose-metal.py build
 
-      - name: Compare CPU and GPU contention in macOS Release lighting
-        if: always() && runner.os == 'macOS' && matrix.config == 'Release'
+      - name: Compare CPU and GPU contention in macOS lighting
+        if: always() && runner.os == 'macOS'
         shell: bash
-        run: python3 .github/scripts/diagnose-metal.py build --config Release --contention-only
+        run: python3 .github/scripts/diagnose-metal.py build --config ${{ matrix.config }} --contention-only
 
       - name: Headless smoke test
         shell: bash
