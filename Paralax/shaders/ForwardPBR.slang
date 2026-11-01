@@ -2,6 +2,7 @@
 // point/spot lights and image-based lighting. Writes linear HDR radiance.
 import Common.SceneData;
 import Common.PBR;
+import Common.ProbeGI;
 
 // Set 0: per view.
 ConstantBuffer<ViewConstants> g_View : register(b0, space0);
@@ -22,6 +23,10 @@ Texture2D<float4> g_NormalTexture : register(t2, space1);
 Texture2D<float4> g_OcclusionTexture : register(t3, space1);
 Texture2D<float4> g_EmissiveTexture : register(t4, space1);
 Texture2D<float4> g_HeightTexture : register(t5, space1);
+
+ConstantBuffer<ProbeGIConstants> g_Probe : register(b0, space2);
+Texture2DArray<float4> g_ProbeIrradiance : register(t0, space2);
+Texture2DArray<float4> g_ProbeDistance : register(t1, space2);
 
 [[vk::push_constant]] ConstantBuffer<DrawConstants> g_Draw;
 
@@ -185,7 +190,7 @@ float3 RotateY(float3 v, float angle)
 float3 EvaluateEnvironment(SurfaceData surface)
 {
 	float intensity = g_View.EnvironmentParams.x;
-	if (intensity <= 0.0)
+	if (intensity <= 0.0 && g_Probe.Origin.w == 0.0)
 		return float3(0.0);
 
 	float3 N = surface.Normal;
@@ -210,6 +215,9 @@ float3 EvaluateEnvironment(SurfaceData surface)
 	float specularOcclusion = saturate(pow(NdotV + surface.Occlusion, exp2(-16.0 * surface.Roughness - 1.0)) - 1.0 + surface.Occlusion);
 	float3 kd = (1.0 - F) * (1.0 - surface.Metallic);
 	float3 diffuse = kd * irradiance * surface.BaseColor;
+	float4 indirect = SampleProbeGI(surface.Position, N, V, g_Probe, g_ProbeIrradiance, g_ProbeDistance);
+	if (indirect.a > 0.5)
+		return kd * indirect.rgb * surface.BaseColor * surface.Occlusion + specular * specularOcclusion * intensity;
 	return (diffuse * surface.Occlusion + specular * specularOcclusion) * intensity;
 }
 
@@ -311,6 +319,11 @@ float4 MainPS(VertexOutput input, bool isFrontFace: SV_IsFrontFace) : SV_Target
 		color = N * 0.5 + 0.5;
 	else if (g_View.DebugView == 2)
 		color = surface.BaseColor;
+	else if (g_View.DebugView == 3 || g_View.DebugView == 4)
+	{
+		float4 indirect = SampleProbeGI(surface.Position, N, V, g_Probe, g_ProbeIrradiance, g_ProbeDistance);
+		color = g_View.DebugView == 3 ? indirect.rgb * surface.BaseColor * (1.0 - surface.Metallic) : float3(indirect.a);
+	}
 
 	return float4(color, g_Material.AlphaMode == 2 ? surface.Alpha : 1.0);
 }

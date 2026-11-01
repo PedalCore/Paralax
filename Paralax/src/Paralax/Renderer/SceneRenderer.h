@@ -7,6 +7,7 @@
 #include "Paralax/Renderer/EnvironmentLighting.h"
 #include "Paralax/Renderer/GPUResourceCache.h"
 #include "Paralax/Renderer/TextRenderer.h"
+#include "Paralax/Renderer/ProbeGI.h"
 #include "Paralax/Renderer/SceneRendererTypes.h"
 
 #include <glm/glm.hpp>
@@ -37,7 +38,9 @@ namespace Paralax {
 	{
 		None = 0,
 		Normals = 1,
-		BaseColor = 2
+		BaseColor = 2,
+		Indirect = 3,
+		GICoverage = 4
 	};
 
 	enum class ShadowQuality
@@ -61,6 +64,12 @@ namespace Paralax {
 		float ShadowCascadeBlend = 0.1f;
 		// Environment intensity when the scene has no SkyLight (procedural sky lit by the sun).
 		float DefaultEnvironmentIntensity = 0.65f;
+		bool GIEnabled = true;
+		int GIRaysPerProbe = 64;
+		int GIProbesPerFrame = 32;
+		float GIHysteresis = 0.85f;
+		float GINormalBias = 0.05f;
+		float GIViewBias = 0.02f;
 		RenderDebugView DebugView = RenderDebugView::None;
 
 		uint32_t GetShadowMapSize() const { return 1024u << std::clamp(static_cast<int>(ShadowResolution), 0, 2); }
@@ -174,9 +183,12 @@ namespace Paralax {
 		GPUResourceCache m_Resources;
 		EnvironmentLighting m_Environment;
 		TextRenderer m_Text;
+		ProbeGI m_ProbeGI;
 		EnvironmentMaps m_EnvironmentMaps;
 		bool m_Initialized = false;
 		uint64_t m_FrameIndex = 0;
+		bool m_ReportedMultipleGIVolumes = false;
+		bool m_ReportedGIFailure = false;
 
 		nvrhi::CommandListHandle m_CommandList;
 

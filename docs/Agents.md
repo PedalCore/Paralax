@@ -115,6 +115,56 @@ windowed one.
 6. **Ship.** `project.export { output }` writes a standalone game folder: the runtime, its resources and the project.
    Run that folder's executable with `--headless --frames N --fail-on-script-error` to check it on its own.
 
+## Diffuse global illumination
+
+Add an enabled `GIVolume` component to cover the surfaces that need indirect lighting. Its entity's world
+translation is the minimum probe centre. The grid is world aligned: rotation and scale do not affect it.
+`ProbeSpacing` is in metres (0.1–100), and `ProbeCountX`, `ProbeCountY`, `ProbeCountZ` are integers (2–12).
+Coverage extends from the origin to `origin + spacing * (counts - 1)`. Include the room's surfaces within those
+bounds, and place enough probes in free space: probes classified inside solid geometry do not contribute.
+If several volumes are enabled, the lowest entity UUID wins and the renderer reports a warning.
+
+```python
+editor.call("entity.create", name="Room GI", components={
+    "Transform": {"Translation": [-5.0, 0.5, -5.0]},
+    "GIVolume": {"ProbeSpacing": 2.0, "ProbeCountX": 6, "ProbeCountY": 3, "ProbeCountZ": 6}
+})
+editor.call("render.settings.set", settings={
+    "GIEnabled": True, "GIRaysPerProbe": 64, "GIProbesPerFrame": 32, "GIHysteresis": 0.85
+})
+editor.call("render.settings.set", settings={"DebugView": "Indirect"})
+editor.call("render.capture", path="Captures/Indirect.png", width=1280, height=720, camera="scene")
+editor.call("render.settings.set", settings={"DebugView": "Lit"})
+```
+
+`render.settings.get` reports the active controls. Rays per probe range from 32 to 256, probes updated per rendered
+frame from 1 to 1728, and hysteresis from 0 to 0.99. Higher ray counts reduce noise at greater tracing cost;
+higher hysteresis smooths noise but delays changes. `GINormalBias` (default 0.05 m) and `GIViewBias` (0.02 m) each
+range from 0 to 0.05 m and offset visibility lookups away from the receiving surface. `Indirect` shows diffuse
+probe lighting multiplied by the surface colour; `GICoverage` shows where a volume replaces environment diffuse.
+Both views still use the exposure and tonemapper. Coverage does not certify probe validity or lighting quality.
+
+The first rendered frame fills the volume. Later frames update probes in a deterministic round-robin order;
+multiple diffuse bounces converge over time. Geometry/material edits, volume placement/count/spacing changes,
+scene changes and disabling GI reset history. Camera movement and viewport resizing preserve it. Simulation
+steps and rendered frames are distinct: editor rendering between agent requests can also update GI. Record
+warmup conditions when comparing captures; a count of capture requests is not an exact GI frame count.
+
+This implementation traces the whole opaque/masked scene through a portable compute BVH, including surfaces
+outside the camera view. It samples emissive, base-colour and metallic textures, shadows hit lighting, and stores
+irradiance and directional distance moments. Diffuse material textures use existing mips up to 512 pixels per
+axis when available; alpha-cutout base textures retain full resolution. POM and normal maps remain raster shading
+detail, and blended/transmissive surfaces do not participate. Limits are 1,048,576 triangles and 16,777,216 cached
+texels. Invalid data or unavailable resources disable GI and report an error; retrying after a repair is supported.
+The adapter's storage-buffer range and texture-array layer limits may impose smaller budgets. Adapters with fewer
+than six compute storage-buffer descriptors retain normal forward rendering with GI unavailable. Probe sampling
+uses explicit bilinear loads, so optional 32-bit-float linear filtering is not required.
+
+Within the volume, GI replaces environment diffuse. Outside it, the existing environment lighting remains.
+An interior with no valid visible probes stays dark. Environment specular is still separate and unoccluded;
+this is diffuse GI, not ray-traced reflections, SSAO, SSR or a visibility-buffer renderer. Hardware ray tracing
+is not required. Software Vulkan tests establish correctness, not hardware frame-rate performance.
+
 ## Rules that keep runs reproducible
 
 - Prefer `play.start { paused: true }` and `play.step` over letting the game run with the editor's frames. Simulation

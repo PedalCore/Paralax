@@ -31,7 +31,13 @@ namespace Paralax {
 			MakeField<&SceneRendererSettings::ShadowSoftness>("ShadowSoftness", FieldOptions().Range(0.0f, 0.5f).Describe("Penumbra size in meters.")),
 			MakeField<&SceneRendererSettings::ShadowCascadeBlend>("ShadowCascadeBlend", FieldOptions().Range(0.0f, 0.3f).Describe("Fraction of each shadow cascade blended into the next; zero disables blending.")),
 			MakeField<&SceneRendererSettings::DefaultEnvironmentIntensity>("SkyIntensity", FieldOptions().Range(0.0f, 3.0f).Describe("Environment intensity when the scene has no SkyLight.")),
-			MakeField<&SceneRendererSettings::DebugView>("DebugView", FieldOptions().Enum({"Lit", "Normals", "BaseColor"})),
+			MakeField<&SceneRendererSettings::GIEnabled>("GIEnabled", FieldOptions().Describe("Enable diffuse probe lighting in scenes with a GI volume.")),
+			MakeField<&SceneRendererSettings::GIRaysPerProbe>("GIRaysPerProbe", FieldOptions().Range(32, 256)),
+			MakeField<&SceneRendererSettings::GIProbesPerFrame>("GIProbesPerFrame", FieldOptions().Range(1, 1728)),
+			MakeField<&SceneRendererSettings::GIHysteresis>("GIHysteresis", FieldOptions().Range(0.0f, 0.99f).Describe("Previous lighting retained on each probe update.")),
+			MakeField<&SceneRendererSettings::GINormalBias>("GINormalBias", FieldOptions().Range(0.0f, 0.05f)),
+			MakeField<&SceneRendererSettings::GIViewBias>("GIViewBias", FieldOptions().Range(0.0f, 0.05f)),
+			MakeField<&SceneRendererSettings::DebugView>("DebugView", FieldOptions().Enum({"Lit", "Normals", "BaseColor", "Indirect", "GICoverage"})),
 		};
 		return s_Fields;
 	}
@@ -140,6 +146,7 @@ namespace Paralax {
 		, m_Resources(device.GetDevice())
 		, m_Environment(device.GetDevice())
 		, m_Text(device.GetDevice())
+		, m_ProbeGI(device.GetDevice(), device.GetInfo().Limits)
 	{
 	}
 
@@ -183,9 +190,10 @@ namespace Paralax {
 		m_Resources.Initialize(m_CommandList);
 		const bool environmentReady = m_Environment.Initialize(m_CommandList);
 		const bool textReady = m_Text.Initialize(m_CommandList);
+		const bool probeReady = m_ProbeGI.Initialize(m_CommandList);
 		m_CommandList->close();
 		m_Device->executeCommandList(m_CommandList);
-		if (!environmentReady || !textReady)
+		if (!environmentReady || !textReady || !probeReady)
 			return false;
 
 		if (!CreatePipelines())
@@ -339,7 +347,7 @@ namespace Paralax {
 			forward.inputLayout = m_InputLayout;
 			forward.VS = m_ForwardVS;
 			forward.PS = m_ForwardPS;
-			forward.bindingLayouts = {m_ViewLayout, m_MaterialLayout};
+			forward.bindingLayouts = {m_ViewLayout, m_MaterialLayout, m_ProbeGI.GetLayout()};
 			forward.renderState.rasterState.setFrontCounterClockwise(true).setCullBack();
 			forward.renderState.depthStencilState.enableDepthTest().enableDepthWrite().setDepthFunc(nvrhi::ComparisonFunc::GreaterOrEqual);
 			m_OpaquePipeline = m_Device->createGraphicsPipeline(forward, m_HDRFramebuffer->getFramebufferInfo());
@@ -741,7 +749,7 @@ namespace Paralax {
 								 : draw.Mirrored    ? m_OpaqueMirroredPipeline
 													: m_OpaquePipeline;
 				state.framebuffer = m_HDRFramebuffer;
-				state.bindings = {m_ViewBindings, draw.Material};
+				state.bindings = {m_ViewBindings, draw.Material, m_ProbeGI.GetBindings()};
 				state.vertexBuffers = {nvrhi::VertexBufferBinding().setBuffer(draw.Mesh->VertexBuffer)};
 				state.indexBuffer = nvrhi::IndexBufferBinding().setBuffer(draw.Mesh->IndexBuffer).setFormat(nvrhi::Format::R32_UINT);
 				state.viewport.addViewportAndScissorRect(viewport);
@@ -870,6 +878,49 @@ namespace Paralax {
 		if (sunShadows)
 			ComputeCascades(camera, sunDirection, view);
 		m_CommandList->writeBuffer(m_ViewConstants, &view, sizeof(view));
+
+		Entity volume;
+		uint32_t enabledVolumes = 0;
+		if (m_Settings.GIEnabled)
+			for (auto handle : scene.GetAllEntitiesWith<GIVolumeComponent>())
+			{
+				Entity candidate(handle, &scene);
+				if (candidate.GetComponent<GIVolumeComponent>().Enabled)
+				{
+					++enabledVolumes;
+					if (!volume || uint64_t(candidate.GetUUID()) < uint64_t(volume.GetUUID()))
+						volume = candidate;
+				}
+			}
+		if (enabledVolumes > 1 && !m_ReportedMultipleGIVolumes)
+		{
+			PX_CORE_WARN("Only one GI volume is supported; using the enabled volume with the lowest UUID");
+			m_ReportedMultipleGIVolumes = true;
+		}
+		if (volume)
+		{
+			const auto& component = volume.GetComponent<GIVolumeComponent>();
+			ProbeGISpecification specification;
+			specification.Origin = glm::vec3(scene.GetWorldTransform(volume)[3]);
+			specification.Spacing = component.ProbeSpacing;
+			specification.Counts = {static_cast<uint32_t>(component.ProbeCountX), static_cast<uint32_t>(component.ProbeCountY), static_cast<uint32_t>(component.ProbeCountZ)};
+			specification.RaysPerProbe = static_cast<uint32_t>(m_Settings.GIRaysPerProbe);
+			specification.ProbesPerFrame = static_cast<uint32_t>(m_Settings.GIProbesPerFrame);
+			specification.Hysteresis = m_Settings.GIHysteresis;
+			specification.NormalBias = m_Settings.GINormalBias;
+			specification.ViewBias = m_Settings.GIViewBias;
+			if (!m_ProbeGI.Update(scene, m_Assets, specification, m_CommandList, m_ViewConstants, m_LightBuffer, m_EnvironmentMaps.Radiance, view.LightCount))
+			{
+				m_ProbeGI.Disable(m_CommandList);
+				if (!m_ReportedGIFailure)
+					PX_CORE_ERROR("Probe GI update failed: invalid volume, scene data or unavailable GPU resources");
+				m_ReportedGIFailure = true;
+			}
+			else
+				m_ReportedGIFailure = false;
+		}
+		else
+			m_ProbeGI.Disable(m_CommandList);
 
 		if (!m_ViewBindings || m_ViewBindings->getDesc()->bindings[3].resourceHandle != m_ShadowMap.Get() || m_ViewBindings->getDesc()->bindings[4].resourceHandle != m_EnvironmentMaps.Specular.Get())
 		{
