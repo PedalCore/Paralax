@@ -10,9 +10,11 @@
 #include <glm/gtc/packing.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <utility>
 #include <vector>
 
 using namespace Paralax;
@@ -175,6 +177,113 @@ TEST_CASE("EnvironmentLighting: packaged HDR environments generate finite radian
 					CAPTURE(minimumAlpha);
 					CAPTURE(maximumAlpha);
 					CHECK(totalEnergy > 0.01);
+				}
+			}
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == initialErrors);
+}
+
+TEST_CASE("EnvironmentLighting: filtered HDR texels survive submission and later readbacks")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto initialErrors = graphics.GetValidationErrorCount();
+	{
+		struct Checkpoint
+		{
+			nvrhi::TextureHandle Source;
+			nvrhi::StagingTextureHandle AfterGeneration;
+			uint32_t Mip = 0;
+			std::array<float, 4> Early{}, Later{};
+		};
+
+		auto* device = graphics.GetDevice();
+		AssetManager assets;
+		GPUResourceCache resources(device);
+		EnvironmentLighting lighting(device);
+		auto commands = device->createCommandList();
+		REQUIRE(commands);
+		commands->open();
+		REQUIRE(lighting.Initialize(commands));
+		commands->close();
+		device->executeCommandList(commands);
+
+		for (uint64_t handle : {AssetManager::BuiltinSkyEnvironment, AssetManager::BuiltinStudioEnvironment})
+		{
+			CAPTURE(handle);
+			auto source = assets.GetAsset<TextureAsset>(AssetHandle(handle));
+			REQUIRE(source);
+			EnvironmentMaps maps;
+			commands->open();
+			auto* uploaded = resources.GetTexture(*source, commands);
+			REQUIRE(uploaded);
+			lighting.GenerateFromEquirect(commands, maps, uploaded, 1.0f);
+
+			// Snapshot a texel per filtered mip in the generating command list, before later readback commands.
+			std::vector<Checkpoint> checkpoints;
+			for (const auto& texture : {maps.Diffuse, maps.Specular})
+			{
+				REQUIRE(texture);
+				for (uint32_t mip = 0; mip < texture->getDesc().mipLevels; mip++)
+				{
+					Checkpoint checkpoint;
+					checkpoint.Source = texture;
+					checkpoint.Mip = mip;
+					nvrhi::TextureDesc desc;
+					desc.width = desc.height = 1;
+					desc.format = texture->getDesc().format;
+					desc.initialState = nvrhi::ResourceStates::CopyDest;
+					desc.keepInitialState = true;
+					checkpoint.AfterGeneration = device->createStagingTexture(desc, nvrhi::CpuAccessMode::Read);
+					REQUIRE(checkpoint.AfterGeneration);
+					commands->copyTexture(checkpoint.AfterGeneration, nvrhi::TextureSlice().setSize(1, 1, 1), texture,
+										  nvrhi::TextureSlice().setSize(1, 1, 1).setMipLevel(mip).setArraySlice(0));
+					checkpoints.push_back(std::move(checkpoint));
+				}
+			}
+			commands->close();
+			device->executeCommandList(commands);
+
+			// Match the ordinary HDR test's intervening radiance readbacks before checking filtered output.
+			REQUIRE(maps.Radiance);
+			for (uint32_t mip = 0; mip < maps.Radiance->getDesc().mipLevels; mip++)
+				for (uint32_t face = 0; face < 6; face++)
+					static_cast<void>(ReadHalfTexture(device, maps.Radiance, mip, face, 4));
+
+			for (auto& checkpoint : checkpoints)
+			{
+				const auto later = ReadHalfTexture(device, checkpoint.Source, checkpoint.Mip, 0, 4);
+				REQUIRE(later.size() >= checkpoint.Later.size());
+				std::copy_n(later.begin(), checkpoint.Later.size(), checkpoint.Later.begin());
+				size_t pitch = 0;
+				const void* mapped = device->mapStagingTexture(checkpoint.AfterGeneration, nvrhi::TextureSlice(), nvrhi::CpuAccessMode::Read, &pitch);
+				REQUIRE(mapped);
+				std::array<uint16_t, 4> bits{};
+				const bool validPitch = pitch >= sizeof(bits);
+				if (validPitch)
+					std::memcpy(bits.data(), mapped, sizeof(bits));
+				device->unmapStagingTexture(checkpoint.AfterGeneration);
+				REQUIRE(validPitch);
+				for (size_t channel = 0; channel < bits.size(); channel++)
+					checkpoint.Early[channel] = glm::unpackHalf1x16(bits[channel]);
+			}
+
+			// Report only after collecting every checkpoint, so diagnostics cannot delay the remaining readbacks.
+			for (const auto& checkpoint : checkpoints)
+			{
+				INFO("texture: ", checkpoint.Source->getDesc().debugName, ", mip: ", checkpoint.Mip, ", face: 0, texel: (0, 0)");
+				INFO("after generation RGBA: ", checkpoint.Early[0], ", ", checkpoint.Early[1], ", ", checkpoint.Early[2], ", ", checkpoint.Early[3]);
+				INFO("later RGBA: ", checkpoint.Later[0], ", ", checkpoint.Later[1], ", ", checkpoint.Later[2], ", ", checkpoint.Later[3]);
+				CHECK(checkpoint.Early[3] == 1.0f);
+				CHECK(checkpoint.Later[3] == 1.0f);
+				for (size_t channel = 0; channel < checkpoint.Early.size(); channel++)
+				{
+					CAPTURE(channel);
+					CHECK(std::isfinite(checkpoint.Early[channel]));
+					CHECK(std::isfinite(checkpoint.Later[channel]));
+					CHECK(checkpoint.Early[channel] == checkpoint.Later[channel]);
 				}
 			}
 		}
