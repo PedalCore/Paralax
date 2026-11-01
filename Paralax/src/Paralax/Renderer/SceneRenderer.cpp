@@ -149,6 +149,25 @@ namespace Paralax {
 
 	bool SceneRenderer::Initialize()
 	{
+		return InitializeInternal(0, 0);
+	}
+
+	bool SceneRenderer::InitializeWithTargetsForDiagnostics(uint32_t width, uint32_t height)
+	{
+		PX_CORE_VERIFY(!m_Initialized, "Diagnostic target ordering requires an uninitialized renderer");
+		PX_CORE_VERIFY(width > 0 && height > 0, "Diagnostic targets require positive dimensions");
+		return InitializeInternal(width, height);
+	}
+
+	void SceneRenderer::PrepareTargetsForDiagnostics(uint32_t width, uint32_t height)
+	{
+		PX_CORE_VERIFY(m_Initialized, "Diagnostic target preparation requires an initialized renderer");
+		PX_CORE_VERIFY(width > 0 && height > 0, "Diagnostic targets require positive dimensions");
+		EnsureTargets(width, height);
+	}
+
+	bool SceneRenderer::InitializeInternal(uint32_t diagnosticTargetWidth, uint32_t diagnosticTargetHeight)
+	{
 		m_CommandList = m_Device->createCommandList();
 
 		nvrhi::SamplerDesc linear;
@@ -178,6 +197,15 @@ namespace Paralax {
 												   .setKeepInitialState(true)
 												   .setDebugName("Lights"));
 
+		const bool prepareTargetsFirst = diagnosticTargetWidth != 0;
+		if (prepareTargetsFirst)
+		{
+			// Move the complete preparation group before LUT generation; this also changes shader creation timing.
+			if (!CreatePipelines())
+				return false;
+			EnsureTargets(diagnosticTargetWidth, diagnosticTargetHeight);
+		}
+
 		m_CommandList->open();
 		m_Resources.Initialize(m_CommandList);
 		const bool environmentReady = m_Environment.Initialize(m_CommandList);
@@ -196,7 +224,7 @@ namespace Paralax {
 			return false;
 		}
 
-		if (!CreatePipelines())
+		if (!prepareTargetsFirst && !CreatePipelines())
 			return false;
 
 		m_Initialized = true;

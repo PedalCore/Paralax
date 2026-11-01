@@ -106,6 +106,12 @@ namespace Paralax {
 		// Creates pipelines, the BRDF LUT and default resources. Returns false (with an error logged) on failure.
 		bool Initialize();
 
+		// Temporary main-thread ordering control. Owns the prepared targets; returns false on initialization failure.
+		// Verifies that the renderer is not initialized and that both dimensions are positive.
+		bool InitializeWithTargetsForDiagnostics(uint32_t width, uint32_t height);
+		// Temporary main-thread allocation checkpoint. Verifies initialization and positive dimensions.
+		void PrepareTargetsForDiagnostics(uint32_t width, uint32_t height);
+
 		// Renders the scene into output (a framebuffer with one 8-bit color attachment, e.g. a swapchain image).
 		// Internal targets are resized to the output's size as needed.
 		void Render(Scene& scene, const CameraView& camera, nvrhi::IFramebuffer* output);
@@ -129,6 +135,8 @@ namespace Paralax {
 		GPUResourceCache& GetResourceCache() { return m_Resources; }
 
 	private:
+		bool InitializeInternal(uint32_t diagnosticTargetWidth, uint32_t diagnosticTargetHeight);
+
 		struct DrawItem
 		{
 			const GPUMesh* Mesh = nullptr;
