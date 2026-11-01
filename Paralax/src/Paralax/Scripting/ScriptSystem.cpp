@@ -2,6 +2,7 @@
 #include "Paralax/Scripting/ScriptSystem.h"
 
 #include "Paralax/Asset/AssetManager.h"
+#include "Paralax/Audio/AudioSystem.h"
 #include "Paralax/Core/Input.h"
 #include "Paralax/Math/Math.h"
 #include "Paralax/Physics/PhysicsSystem.h"
@@ -393,6 +394,8 @@ namespace Paralax {
 		Scene* ActiveScene = nullptr;
 		// The running scene's physics, if it simulates any (for the Physics API and collision callbacks).
 		PhysicsSystem* Physics = nullptr;
+		// The running scene's audio, if it plays any (for the Audio API).
+		AudioSystem* Audio = nullptr;
 
 		LuaMemory Memory;
 		std::optional<sol::state> Lua;
@@ -891,6 +894,7 @@ namespace Paralax {
 			BindScene(lua);
 			BindInput(lua);
 			BindPhysics(lua);
+			BindAudio(lua);
 
 			TimeTable = lua.create_table_with("delta", 0.0, "elapsed", 0.0, "frame", 0);
 			lua["Time"] = TimeTable;
@@ -1217,6 +1221,56 @@ namespace Paralax {
 			});
 		}
 
+		AudioSystem& GetAudio() const
+		{
+			if (!Audio)
+				ScriptError("audio is not running in this scene");
+			return *Audio;
+		}
+
+		void BindAudio(sol::state& lua)
+		{
+			sol::table audio = lua.create_named_table("Audio");
+			// Source controls return false when the entity has no AudioSource with a playable clip; not an error.
+			audio.set_function("Play", [this](const ScriptEntity& entity) { return GetAudio().Play(Resolve(entity).GetUUID()); });
+			audio.set_function("Pause", [this](const ScriptEntity& entity) { return GetAudio().Pause(Resolve(entity).GetUUID()); });
+			audio.set_function("Stop", [this](const ScriptEntity& entity) { return GetAudio().Stop(Resolve(entity).GetUUID()); });
+			audio.set_function("IsPlaying", [this](const ScriptEntity& entity) { return GetAudio().IsPlaying(Resolve(entity).GetUUID()); });
+			// Plain objects (not optionals) for the optional arguments: each binds to its own position even when nil.
+			audio.set_function("PlayOneShot", [this](const sol::object& clip, const sol::object& position, const sol::object& volume) {
+				AssetHandle handle = 0;
+				if (std::optional<uint64_t> id = ParseId(clip))
+					handle = UUID(*id);
+				else if (clip.get_type() == sol::type::string)
+					handle = Assets.GetHandleForPath(clip.as<std::string>());
+				if (!handle.IsValid() || Assets.GetAssetType(handle) != AssetType::Audio)
+					ScriptError("Audio.PlayOneShot: no audio clip with that handle or path");
+				std::optional<glm::vec3> where;
+				if (position.valid() && position.get_type() != sol::type::lua_nil)
+				{
+					if (!position.is<glm::vec3>())
+						ScriptError("Audio.PlayOneShot: position must be a vec3 or nil");
+					where = position.as<glm::vec3>();
+				}
+				double gain = 1.0;
+				if (volume.valid() && volume.get_type() != sol::type::lua_nil)
+				{
+					if (volume.get_type() != sol::type::number)
+						ScriptError("Audio.PlayOneShot: volume must be a number");
+					gain = volume.as<double>();
+				}
+				if (!std::isfinite(gain) || gain < 0.0)
+					ScriptError("Audio.PlayOneShot: volume must be a non-negative number");
+				return GetAudio().PlayOneShot(handle, where, static_cast<float>(gain));
+			});
+			audio.set_function("GetMasterVolume", [this] { return GetAudio().GetMasterVolume(); });
+			audio.set_function("SetMasterVolume", [this](double volume) {
+				if (!std::isfinite(volume) || volume < 0.0)
+					ScriptError("Audio.SetMasterVolume: volume must be a non-negative number");
+				GetAudio().SetMasterVolume(static_cast<float>(volume));
+			});
+		}
+
 		void BindInput(sol::state& lua)
 		{
 			sol::table keys = lua.create_named_table("Key");
@@ -1251,6 +1305,7 @@ namespace Paralax {
 			// Detach from the scene first: nothing that runs while the state closes may reach it.
 			ActiveScene = nullptr;
 			Physics = nullptr;
+			Audio = nullptr;
 			Instances.clear();
 			Classes.clear();
 			Modules.clear();
@@ -1281,6 +1336,7 @@ namespace Paralax {
 		m_Impl->Shutdown();
 		m_Impl->ActiveScene = &scene;
 		m_Impl->Physics = scene.GetSystem<PhysicsSystem>();
+		m_Impl->Audio = scene.GetSystem<AudioSystem>();
 		m_Impl->Rng.Seed(m_Impl->Specification.RandomSeed);
 		m_Impl->Elapsed = 0.0;
 		m_Impl->Frame = 0;
@@ -1413,7 +1469,7 @@ namespace Paralax {
 					lua_pop(L, 1);
 				}
 			};
-			for (const char* table : {"Scene", "Input", "Log", "Time", "Physics"})
+			for (const char* table : {"Scene", "Input", "Log", "Time", "Physics", "Audio"})
 			{
 				lua_getglobal(L, table);
 				if (lua_istable(L, -1))

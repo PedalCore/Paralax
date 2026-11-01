@@ -64,6 +64,8 @@ local function TestComponents(self)
 	assert(probe:AddComponent("Script").Script == "0")
 	assert(probe:AddComponent("Collider", { Shape = "Sphere", Size = vec3(2) }).Shape == "Sphere")
 	assert(probe:AddComponent("Rigidbody", { Type = "Kinematic", Mass = 3 }).Mass == 3)
+	assert(probe:AddComponent("AudioSource", { Volume = 0.5, Loop = true }).Loop == true)
+	assert(probe:AddComponent("AudioListener", { Active = false }).Active == false)
 	assert(probe:RemoveComponent("PointLight") and not probe:HasComponent("PointLight") and not probe:RemoveComponent("PointLight"))
 	-- Invalid values raise errors and change nothing.
 	assert(not pcall(function() transform.Translation = "up" end))
@@ -71,7 +73,7 @@ local function TestComponents(self)
 	assert(not pcall(function() probe:GetComponent("NoSuchComponent") end))
 	-- Every component type in the engine appears in the authored scene.
 	for _, name in ipairs({ "Tag", "Transform", "Camera", "DirectionalLight", "PointLight", "SpotLight", "SkyLight", "Mesh", "Rigidbody",
-		"Collider", "Script", "PrefabInstance" }) do
+		"Collider", "AudioSource", "AudioListener", "Script", "PrefabInstance" }) do
 		local found = false
 		for _, entity in ipairs(Scene.FindEntitiesByTag("Feature")) do
 			found = found or entity:HasComponent(name)
@@ -129,6 +131,22 @@ local function TestPhysics()
 	assert(Physics.Raycast(vec3(0, 50, 0), vec3(0, 1, 0), 10) == nil)
 end
 
+local function TestAudio()
+	-- The speaker loops its beep from the start (PlayOnStart); scripts control it like a media player.
+	local speaker = Scene.FindEntityByName("Speaker")
+	assert(Audio.IsPlaying(speaker), "the speaker should play from the start")
+	assert(Audio.Pause(speaker) and not Audio.IsPlaying(speaker))
+	assert(Audio.Play(speaker) and Audio.IsPlaying(speaker))
+	assert(Audio.Stop(speaker) and not Audio.IsPlaying(speaker))
+	assert(Audio.Play(speaker))
+	assert(Audio.PlayOneShot("Audio/Beep.wav", vec3(0, 1, 0), 0.5) and Audio.PlayOneShot(speaker:GetComponent("AudioSource").Clip))
+	assert(not pcall(Audio.PlayOneShot, "Audio/Missing.wav"))
+	assert(not Audio.Play(Scene.FindEntityByName("Ground")), "an entity without an AudioSource cannot play")
+	Audio.SetMasterVolume(0.8)
+	assert(near(Audio.GetMasterVolume(), 0.8))
+	Audio.SetMasterVolume(1)
+end
+
 local function TestInputAndLog()
 	-- Headless runs have no input; the API must still answer consistently.
 	assert(Input.IsKeyDown(Key.W) == false and Input.WasKeyPressed(Key.Space) == false and Input.WasKeyReleased(Key.Escape) == false)
@@ -156,6 +174,7 @@ function FeatureTest:OnCreate()
 	TestComponents(self)
 	TestScene(self)
 	TestPhysics()
+	TestAudio()
 	TestInputAndLog()
 end
 
@@ -175,6 +194,7 @@ function FeatureTest:OnUpdate(dt)
 		assert(BallTriggered and BallPassedTrigger, "the ball should have passed through the trigger zone")
 		assert(BallLanded, "the ball should have landed on the ground")
 		assert(Scene.FindEntityByName("PhysicsBall"):GetWorldPosition().y < 1, "gravity should have pulled the ball down")
+		assert(Audio.IsPlaying(Scene.FindEntityByName("Speaker")), "the looping speaker should still be playing")
 		self.done = true
 		Log.Info("FeatureTest: all checks passed at frame " .. Time.frame)
 	end

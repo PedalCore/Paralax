@@ -8,10 +8,10 @@ and an editor that AI agents can drive end to end.
 > - a PBR renderer (NVRHI/Vulkan) with shadows and image-based lighting
 > - an ECS scene with prefabs
 > - the editor and agent control
-> - Lua scripting and Jolt physics
+> - Lua scripting, Jolt physics and miniaudio sound
 > - the runtime and project export
 >
-> Audio and further renderer features are next.
+> Further renderer features are next.
 
 ## Tech stack
 
@@ -19,7 +19,7 @@ and an editor that AI agents can drive end to end.
 - [GLFW](https://github.com/glfw/glfw) windowing, [NVRHI](https://github.com/NVIDIA-RTX/NVRHI) over Vulkan for rendering
 - [glm](https://github.com/g-truc/glm) math, [spdlog](https://github.com/gabime/spdlog) logging, [doctest](https://github.com/doctest/doctest) tests
 - [EnTT](https://github.com/skypjack/entt) scenes, [Jolt Physics](https://github.com/jrouwe/JoltPhysics), [Lua](https://www.lua.org) 5.4 scripting via [sol2](https://github.com/ThePhD/sol2), [fastgltf](https://github.com/spnda/fastgltf) import, [Dear ImGui](https://github.com/ocornut/imgui) editor UI
-- Planned: [miniaudio](https://github.com/mackron/miniaudio)
+- [miniaudio](https://github.com/mackron/miniaudio) audio
 
 ## Building
 

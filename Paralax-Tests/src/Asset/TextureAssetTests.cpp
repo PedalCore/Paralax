@@ -25,6 +25,9 @@ TEST_CASE("Asset: types map to and from names and file extensions")
 	CHECK(AssetTypeFromExtension("level.pxscene") == AssetType::Scene);
 	CHECK(AssetTypeFromExtension("player.lua") == AssetType::Script);
 	CHECK(AssetTypeFromExtension("jump.wav") == AssetType::Audio);
+	CHECK(AssetTypeFromExtension("theme.MP3") == AssetType::Audio);
+	CHECK(AssetTypeFromExtension("hit.flac") == AssetType::Audio);
+	CHECK(AssetTypeFromExtension("music.ogg") == AssetType::None); // Not decoded, so not importable.
 	CHECK(AssetTypeFromExtension("notes.txt") == AssetType::None);
 	CHECK(AssetTypeFromExtension("no_extension") == AssetType::None);
 }

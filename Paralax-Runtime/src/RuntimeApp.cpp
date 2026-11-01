@@ -1,4 +1,5 @@
 #include <Paralax.h>
+#include <Paralax/Audio/AudioSystem.h>
 #include <Paralax/Core/EngineResources.h>
 #include <Paralax/Core/EntryPoint.h>
 #include <Paralax/Physics/PhysicsSystem.h>
@@ -36,6 +37,10 @@ namespace Paralax {
 				// Scripts first: forces they apply in OnUpdate act in the same update's physics step.
 				m_Scripts = static_cast<ScriptSystem*>(m_Scene->AddSystem(CreateScope<ScriptSystem>(m_Project->GetAssetManager())));
 				m_Scene->AddSystem(CreateScope<PhysicsSystem>());
+				// Audio last, so it hears where scripts and physics left things this frame. Headless runs mix silently.
+				AudioSystemSpecification audio;
+				audio.Output = app.GetSpecification().Window.Headless ? AudioOutput::Offline : AudioOutput::Device;
+				m_Scene->AddSystem(CreateScope<AudioSystem>(m_Project->GetAssetManager(), audio));
 				if (app.HasGraphics())
 				{
 					m_Renderer = CreateScope<SceneRenderer>(app.GetGraphicsDevice(), m_Project->GetAssetManager());

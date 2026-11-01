@@ -235,6 +235,42 @@ if(TARGET Jolt)
 	endif()
 endif()
 
+# --- miniaudio (audio playback and decoding) -------------------------------------------------------
+# A single-file library: its implementation (miniaudio.c) is compiled once here, and only Paralax/src/Paralax/Audio
+# includes its header.
+# 0.11.26 (2026-10-31) is too new; 0.11.25 was released 2026-03-03.
+CPMAddPackage(
+	NAME miniaudio
+	GITHUB_REPOSITORY mackron/miniaudio
+	GIT_TAG 0.11.25
+	DOWNLOAD_ONLY YES)
+if(miniaudio_ADDED AND NOT TARGET miniaudio)
+	add_library(miniaudio STATIC "${miniaudio_SOURCE_DIR}/miniaudio.c")
+	target_include_directories(miniaudio SYSTEM PUBLIC "${miniaudio_SOURCE_DIR}")
+	# Paralax only decodes and plays. Encoders are left out, and so is the resource manager: clips are decoded by
+	# AudioClip, and the manager would start a job thread. Backends are loaded at run time (no audio SDK is linked),
+	# so a machine without an audio device or server still runs (the engine then mixes offline).
+	target_compile_definitions(miniaudio PUBLIC MA_NO_ENCODING MA_NO_RESOURCE_MANAGER)
+	if(MSVC)
+		target_compile_options(miniaudio PRIVATE /w)
+	else()
+		target_compile_options(miniaudio PRIVATE -w)
+	endif()
+	find_package(Threads REQUIRED)
+	target_link_libraries(miniaudio PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+	if(UNIX AND NOT APPLE)
+		target_link_libraries(miniaudio PUBLIC m)
+	endif()
+	if(APPLE)
+		target_link_libraries(miniaudio PUBLIC "-framework CoreFoundation" "-framework CoreAudio" "-framework AudioToolbox")
+	endif()
+	# In TSan builds miniaudio's mixing thread must be instrumented too (see Jolt above).
+	if(PX_SANITIZERS MATCHES "thread")
+		target_compile_options(miniaudio PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
+	endif()
+	set_target_properties(miniaudio PROPERTIES FOLDER "Dependencies")
+endif()
+
 # --- Lua (scripting language) --------------------------------------------------------------------
 # Lua's repository has no CMake build; the library is built here from its C sources. It is compiled as C++
 # so a Lua error raised inside a C++ binding unwinds with destructors run (luai_throw uses C++ exceptions),

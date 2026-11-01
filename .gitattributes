@@ -6,3 +6,6 @@
 *.exr binary
 *.glb binary
 *.ktx2 binary
+*.wav binary
+*.flac binary
+*.mp3 binary

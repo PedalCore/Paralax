@@ -3,6 +3,7 @@
 #include "EditorCore/CommandRegistry.h"
 
 #include <Paralax/Asset/AssetManager.h>
+#include <Paralax/Audio/AudioSystem.h>
 #include <Paralax/Core/Base.h>
 #include <Paralax/Core/Timestep.h>
 #include <Paralax/Core/UUID.h>
@@ -72,7 +73,12 @@ namespace Paralax::Editor {
 
 		// --- Play mode ---
 		bool IsPlaying() const { return m_RuntimeScene != nullptr; }
-		// Copies the editor scene and starts simulating the copy (with scripting). Returns false if already playing.
+		// How play mode sounds: Offline (the default: headless runs, agents and tests mix silently and
+		// deterministically) or Device. Applies from the next StartPlaying.
+		void SetAudioOutput(AudioOutput output) { m_AudioOutput = output; }
+		AudioOutput GetAudioOutput() const { return m_AudioOutput; }
+		// Copies the editor scene and starts simulating the copy (with scripting, physics and audio). Returns false if
+		// already playing.
 		// A paused session only advances through explicit steps (play.step), which keeps agent-driven runs
 		// deterministic.
 		bool StartPlaying(bool paused = false);
@@ -84,9 +90,11 @@ namespace Paralax::Editor {
 		void TickRuntime(Timestep ts);
 		bool IsPaused() const { return m_Paused; }
 		// Pausing outside play mode is ignored.
-		void SetPaused(bool paused) { m_Paused = paused && IsPlaying(); }
+		// Pausing also silences the game's audio device (sounds resume where they were).
+		void SetPaused(bool paused);
 		// The running scene's script system, or nullptr when not playing.
 		ScriptSystem* GetScriptSystem() const { return m_RuntimeScene ? m_RuntimeScene->GetSystem<ScriptSystem>() : nullptr; }
+		AudioSystem* GetAudioSystem() const { return m_RuntimeScene ? m_RuntimeScene->GetSystem<AudioSystem>() : nullptr; }
 
 		// --- Undo (scene snapshots) ---
 		// Brackets a scene change. Nested pairs are merged into the outermost; every Begin must be matched by an End.
@@ -154,6 +162,7 @@ namespace Paralax::Editor {
 		Ref<Scene> m_EditorScene;
 		Ref<Scene> m_RuntimeScene;
 		bool m_Paused = false;
+		AudioOutput m_AudioOutput = AudioOutput::Offline;
 		std::filesystem::path m_ScenePath;
 		bool m_SceneDirty = false;
 

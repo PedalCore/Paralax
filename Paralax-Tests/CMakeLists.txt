@@ -16,7 +16,9 @@ if(TARGET Paralax-EditorCore)
 	# project.export copies the runtime from beside the running executable.
 	add_dependencies(Paralax-Tests Paralax-Runtime)
 endif()
-target_compile_definitions(Paralax-Tests PRIVATE DOCTEST_CONFIG_SUPER_FAST_ASSERTS)
+target_compile_definitions(Paralax-Tests PRIVATE DOCTEST_CONFIG_SUPER_FAST_ASSERTS
+	# A FLAC sample from the pinned miniaudio sources, for the decoder tests (not copied into this repository).
+	PX_TEST_FLAC_FILE="${miniaudio_SOURCE_DIR}/data/16-44100-stereo.flac")
 px_configure_target(Paralax-Tests)
 
 # Register each doctest test case as its own CTest test so failures are reported individually.

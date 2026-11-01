@@ -13,8 +13,11 @@ together they hold every component type.
 
 from __future__ import annotations
 
+import math
 import shutil
+import struct
 import sys
+import wave
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent"))
@@ -35,8 +38,24 @@ def clean() -> None:
     assets = PROJECT / "Assets"
     for name in ("AssetRegistry.json",):
         (assets / name).unlink(missing_ok=True)
-    for folder in ("Scenes", "Prefabs", "Materials"):
+    for folder in ("Scenes", "Prefabs", "Materials", "Audio"):
         shutil.rmtree(assets / folder, ignore_errors=True)
+
+
+def write_beep(path: Path) -> None:
+    """A quarter-second 660 Hz tone (16-bit mono, 22050 Hz), faded in and out so it loops without clicks."""
+    rate, seconds = 22050, 0.25
+    frames = int(rate * seconds)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as file:
+        file.setnchannels(1)
+        file.setsampwidth(2)
+        file.setframerate(rate)
+        samples = []
+        for i in range(frames):
+            fade = min(1.0, i / 400, (frames - 1 - i) / 400)
+            samples.append(int(0.3 * fade * 32767 * math.sin(2 * math.pi * 660 * i / rate)))
+        file.writeframes(struct.pack(f"<{frames}h", *samples))
 
 
 def entity(editor: EditorSession, name: str, components: dict, parent: str | None = None) -> str:
@@ -50,6 +69,8 @@ def entity(editor: EditorSession, name: str, components: dict, parent: str | Non
 def build(editor: EditorSession) -> None:
     editor.call("scene.new", name="FeatureTest")
     scripts = {name: editor.call("asset.import", path=f"Scripts/{name}.lua")["handle"] for name in ("FeatureTest", "Spinner", "Util", "Ball")}
+    write_beep(PROJECT / "Assets" / "Audio" / "Beep.wav")
+    beep = editor.call("asset.import", path="Audio/Beep.wav")["handle"]
     gold = editor.call("material.create", path="Materials/Gold.pxmat",
                        fields={"BaseColor": [1.0, 0.77, 0.34, 1.0], "Metallic": 1.0, "Roughness": 0.3})["handle"]
 
@@ -60,7 +81,7 @@ def build(editor: EditorSession) -> None:
     crate_prefab = editor.call("prefab.create", id=crate, path="Prefabs/Crate.pxprefab")["handle"]
     editor.call("entity.destroy", id=crate)
 
-    entity(editor, "Camera", {"Camera": {"Primary": True},
+    entity(editor, "Camera", {"Camera": {"Primary": True}, "AudioListener": {"Active": True},
                               "Transform": {"Translation": [0, 3.5, 9], "Rotation": [-0.17, 0, 0, 0.985]}})
     entity(editor, "Sun", {"DirectionalLight": {"Intensity": 3.0}, "Transform": {"Rotation": [-0.40, 0.30, 0.14, 0.85]}})
     entity(editor, "Sky", {"SkyLight": {"Environment": SKY_ENVIRONMENT, "Intensity": 1.0}})
@@ -83,6 +104,9 @@ def build(editor: EditorSession) -> None:
     entity(editor, "Capsule", {"Mesh": {"Mesh": CAPSULE, "CastShadows": False}, "Transform": {"Translation": [0, 1, -2.5]}})
     instance = editor.call("prefab.instantiate", prefab=crate_prefab, position=[3.5, 0.5, -1.5])["id"]
     editor.call("component.set", id=instance, components={"Tag": {"Tag": "Feature"}})
+    entity(editor, "Speaker", {"AudioSource": {"Clip": beep, "Volume": 0.5, "Loop": True, "PlayOnStart": True, "Spatial": True,
+                                               "MinDistance": 1.0, "MaxDistance": 30.0},
+                               "Transform": {"Translation": [2.2, 1.0, 2.5]}})
     entity(editor, "FeatureTest", {"Script": {"Script": scripts["FeatureTest"]}})
 
     editor.call("scene.save", path="Scenes/FeatureTest.pxscene")

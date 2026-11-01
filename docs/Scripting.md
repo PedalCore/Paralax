@@ -123,6 +123,27 @@ Scripts on either entity of a contact receive callbacks before their next `OnUpd
 and `OnTriggerExit(self, other)` when a trigger is involved. Bodies at rest stay in contact; no exit is reported when
 they fall asleep. `other` may already be destroyed in an exit (check `other:IsValid()`).
 
+## Audio
+
+Add an **AudioSource** to play a clip (a `.wav`, `.flac` or `.mp3` asset) from an entity:
+- `Volume` (linear gain) and `Pitch` (playback speed; 2 is an octave up).
+- `Loop`, and `PlayOnStart`: start when the scene starts, or when the source is created while it runs.
+- `Spatial`: heard from the entity's position, fading between `MinDistance` and `MaxDistance` from the listener and
+  panned to its side. A non-spatial source (music, interface sounds) plays as is.
+
+The scene is heard from the first active **AudioListener**, or from the primary camera if there is none. When a sound
+ends follows the game's simulated time (scaled by pitch), so `Audio.IsPlaying` gives the same answers in a headless run
+(CI, agents), which mixes sound silently, as in one you can hear. Changing a playing or paused source's `Clip` carries
+on with the new clip from its start; pausing play mode in the editor pauses sound too.
+
+| Function | Description |
+|---|---|
+| `Audio.Play(entity)` | Starts the entity's source from the beginning, or resumes it if paused. Returns false if the entity has no AudioSource with a playable clip, or too many sounds are playing. Controlling a source before its first frame stops `PlayOnStart` from starting it again. |
+| `Audio.Pause(entity)` / `Audio.Stop(entity)` | Pauses (keeping the position) or stops (rewinding) the source. Return false without a source. |
+| `Audio.IsPlaying(entity)` | Whether the source is playing (false once a non-looping clip has ended). |
+| `Audio.PlayOneShot(clip [, position [, volume]])` | Plays a clip once, given by handle or asset path (e.g. `"Audio/Hit.wav"`): at a world position (`vec3`), or as is without one. Returns false if the clip cannot be decoded or too many sounds are playing (64 by default); a path or handle that is not an audio clip, a non-vec3 position or a negative volume is an error. |
+| `Audio.GetMasterVolume()` / `Audio.SetMasterVolume(volume)` | Overall gain, 0 to 10 (default 1). |
+
 ## Input, time and logging
 
 - `Input.IsKeyDown(Key.W)`, `Input.WasKeyPressed(key)`, `Input.WasKeyReleased(key)`. "Pressed" and "Released" mean

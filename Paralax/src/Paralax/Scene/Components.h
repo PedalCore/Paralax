@@ -141,6 +141,26 @@ namespace Paralax {
 		bool IsTrigger = false;
 	};
 
+	// Plays an audio clip from the entity while the scene is running (see AudioSystem). A spatial source is heard from
+	// its world position, fading with distance from the listener; a non-spatial one (music, UI) plays as is.
+	struct AudioSourceComponent
+	{
+		AssetHandle Clip = 0;
+		float Volume = 1.0f; // Linear gain.
+		float Pitch = 1.0f;  // Playback speed (2 = an octave up, twice as fast).
+		bool Loop = false;
+		bool PlayOnStart = true; // Start when the scene starts running, or when the source is created while running.
+		bool Spatial = true;
+		float MinDistance = 1.0f;  // Full volume up to this distance from the listener.
+		float MaxDistance = 50.0f; // No further fading beyond this distance.
+	};
+
+	// Where the scene is heard from (position and facing). Without one, the primary camera listens.
+	struct AudioListenerComponent
+	{
+		bool Active = true;
+	};
+
 	// Runs a Lua script on the entity while the scene is running (see ScriptSystem).
 	struct ScriptComponent
 	{

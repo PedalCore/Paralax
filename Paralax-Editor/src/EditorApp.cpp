@@ -146,6 +146,9 @@ namespace Paralax {
 			if (m_Context.GetEditorScene().GetEntityCount() == 0)
 				Editor::EditorLayer::CreateDemoScene(m_Context);
 
+			// A windowed editor plays sound; headless ones (agents, CI) mix silently and deterministically.
+			if (!specification.Window.Headless)
+				m_Context.SetAudioOutput(AudioOutput::Device);
 			m_EditorLayer = PushLayer<Editor::EditorLayer>(m_Context, m_ConsoleSink);
 
 			m_Context.GetCommands().Register({"editor.quit", "Closes the editor at the end of the current frame. Unsaved changes are lost.", {}, false, [](Editor::EditorContext&, const nlohmann::json&) {

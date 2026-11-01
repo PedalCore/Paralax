@@ -6,9 +6,13 @@
 #include <spdlog/sinks/base_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <cstdlib>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -40,6 +44,44 @@ namespace Paralax::Testing {
 		std::ostringstream contents;
 		contents << file.rdbuf();
 		return contents.str();
+	}
+
+	// A RIFF WAVE file in memory: 16-bit PCM or (bitsPerSample 32) IEEE float, from interleaved samples in [-1, 1].
+	inline std::vector<uint8_t> MakeWav(uint16_t channels, uint32_t sampleRate, const std::vector<float>& samples, uint16_t bitsPerSample = 16)
+	{
+		std::vector<uint8_t> bytes;
+		auto put = [&](uint64_t value, int size) {
+			for (int i = 0; i < size; i++)
+				bytes.push_back(static_cast<uint8_t>((value >> (8 * i)) & 0xFF));
+		};
+		auto tag = [&](const char* text) { bytes.insert(bytes.end(), text, text + 4); };
+		const uint32_t bytesPerSample = bitsPerSample / 8u;
+		const uint32_t dataBytes = static_cast<uint32_t>(samples.size()) * bytesPerSample;
+		tag("RIFF");
+		put(36u + dataBytes, 4);
+		tag("WAVE");
+		tag("fmt ");
+		put(16, 4);
+		put(bitsPerSample == 32 ? 3 : 1, 2); // IEEE float or PCM.
+		put(channels, 2);
+		put(sampleRate, 4);
+		put(sampleRate * channels * bytesPerSample, 4);
+		put(channels * bytesPerSample, 2);
+		put(bitsPerSample, 2);
+		tag("data");
+		put(dataBytes, 4);
+		for (float sample : samples)
+		{
+			if (bitsPerSample == 32)
+			{
+				uint32_t bits = 0;
+				std::memcpy(&bits, &sample, sizeof(bits));
+				put(bits, 4);
+			}
+			else
+				put(static_cast<uint16_t>(static_cast<int16_t>(std::lround(std::clamp(sample, -1.0f, 1.0f) * 32767.0f))), 2);
+		}
+		return bytes;
 	}
 
 	// Returns a fresh, empty per-test scratch directory under the system temp directory.

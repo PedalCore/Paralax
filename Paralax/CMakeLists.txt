@@ -24,7 +24,8 @@ target_link_libraries(Paralax
 		stb::stb
 		fastgltf::fastgltf
 		sol2::sol2
-		Jolt)
+		Jolt
+		miniaudio)
 if(WIN32)
 	# Winsock, for the loopback agent server (Network/TcpSocket).
 	target_link_libraries(Paralax PRIVATE ws2_32)

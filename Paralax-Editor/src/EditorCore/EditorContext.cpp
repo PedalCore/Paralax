@@ -199,9 +199,20 @@ namespace Paralax::Editor {
 		// Scripts first: forces they apply in OnUpdate act in the same update's physics step.
 		m_RuntimeScene->AddSystem(CreateScope<ScriptSystem>(GetAssets()));
 		m_RuntimeScene->AddSystem(CreateScope<PhysicsSystem>());
+		// Audio last, so it hears where scripts and physics left things this frame.
+		AudioSystemSpecification audio;
+		audio.Output = m_AudioOutput;
+		m_RuntimeScene->AddSystem(CreateScope<AudioSystem>(GetAssets(), audio));
 		m_RuntimeScene->OnRuntimeStart();
-		m_Paused = paused;
+		SetPaused(paused);
 		return true;
+	}
+
+	void EditorContext::SetPaused(bool paused)
+	{
+		m_Paused = paused && IsPlaying();
+		if (AudioSystem* audio = GetAudioSystem())
+			audio->SetPaused(m_Paused);
 	}
 
 	bool EditorContext::StopPlaying()

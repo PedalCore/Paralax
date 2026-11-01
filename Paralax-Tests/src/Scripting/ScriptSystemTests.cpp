@@ -3,6 +3,7 @@
 #include "TestUtilities.h"
 
 #include <Paralax/Asset/AssetManager.h>
+#include <Paralax/Audio/AudioSystem.h>
 #include <Paralax/Core/Input.h>
 #include <Paralax/Events/KeyEvent.h>
 #include <Paralax/Physics/PhysicsSystem.h>
@@ -891,6 +892,69 @@ TEST_CASE("ScriptSystem: collisions and triggers call both entities' scripts")
 	CHECK(events.find("Ground:enter:Box") != std::string::npos);
 	// The trigger is passed before the ground is hit.
 	CHECK(events.find("Box:trigger:Zone") < events.find("Box:enter:Ground"));
+}
+
+TEST_CASE("ScriptSystem: scripts control sound through the Audio API")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("ScriptAudio");
+	{
+		const std::vector<uint8_t> wav = Paralax::Testing::MakeWav(1, 48000, std::vector<float>(4800, 0.25f));
+		std::filesystem::create_directories(directory / "Audio");
+		std::ofstream(directory / "Audio" / "Beep.wav", std::ios::binary).write(reinterpret_cast<const char*>(wav.data()), static_cast<std::streamsize>(wav.size()));
+	}
+	ScriptFixture fixture({}, directory);
+	const AssetHandle beep = fixture.Assets.ImportAsset("Audio/Beep.wav");
+	REQUIRE(beep.IsValid());
+	AudioSystem* audio = static_cast<AudioSystem*>(fixture.World.AddSystem(CreateScope<AudioSystem>(fixture.Assets)));
+	Entity speaker = fixture.CreateScripted(R"(
+		local S = {}
+		function S:OnCreate()
+			StartedPlaying = Audio.IsPlaying(self.entity)
+			Paused = Audio.Pause(self.entity)
+			PausedPlaying = Audio.IsPlaying(self.entity)
+			Resumed = Audio.Play(self.entity)
+			Stopped = Audio.Stop(self.entity)
+			StoppedPlaying = Audio.IsPlaying(self.entity)
+			Audio.Play(self.entity)
+			ByPath = Audio.PlayOneShot("Audio/Beep.wav")
+			Placed = Audio.PlayOneShot("Audio/Beep.wav", vec3(1, 2, 3), 0.5)
+			Audio.SetMasterVolume(0.5)
+			Master = Audio.GetMasterVolume()
+			Silent = Audio.Play(Scene.CreateEntity("Silent"))
+		end
+		return S
+	)",
+											"Speaker");
+	auto& source = speaker.AddComponent<AudioSourceComponent>();
+	source.Clip = beep;
+	source.Loop = true;
+	fixture.Start();
+	fixture.Update(2);
+	REQUIRE(fixture.System->GetErrors().empty());
+	CHECK(fixture.Eval("StartedPlaying, Paused, PausedPlaying, Resumed, Stopped, StoppedPlaying") == "true\ttrue\tfalse\ttrue\ttrue\tfalse");
+	CHECK(fixture.Eval("ByPath, Placed, Master, Silent") == "true\ttrue\t0.5\tfalse");
+	CHECK(audio->IsPlaying(speaker.GetUUID()));
+	CHECK(fixture.Eval(fmt::format("Audio.PlayOneShot('{}')", static_cast<uint64_t>(beep))) == "true"); // By handle.
+
+	std::string error;
+	CHECK_FALSE(fixture.System->Evaluate("Audio.PlayOneShot('Audio/Missing.wav')", error));
+	CHECK(error.find("no audio clip") != std::string::npos);
+	CHECK_FALSE(fixture.System->Evaluate("Audio.PlayOneShot('Audio/Beep.wav', 'here')", error));
+	CHECK_FALSE(fixture.System->Evaluate("Audio.PlayOneShot('Audio/Beep.wav', nil, -1)", error));
+	CHECK(error.find("non-negative") != std::string::npos);
+	CHECK_FALSE(fixture.System->Evaluate("Audio.PlayOneShot('Audio/Beep.wav', nil, 'loud')", error));
+	CHECK(fixture.Eval("Audio.PlayOneShot('Audio/Beep.wav', nil, 0.25)") == "true");
+	CHECK_FALSE(fixture.System->Evaluate("Audio.SetMasterVolume(0/0)", error));
+	CHECK_FALSE(fixture.System->Evaluate("Audio.Play(Scene.GetEntity('1'))", error)); // Not an entity.
+}
+
+TEST_CASE("ScriptSystem: the Audio API reports when the scene has no audio")
+{
+	ScriptFixture fixture;
+	fixture.Start();
+	std::string error;
+	CHECK_FALSE(fixture.System->Evaluate("Audio.GetMasterVolume()", error));
+	CHECK(error.find("audio is not running") != std::string::npos);
 }
 
 TEST_CASE("ScriptSystem: the Physics API reports when the scene has no physics")

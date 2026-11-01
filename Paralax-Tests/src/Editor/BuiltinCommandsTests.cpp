@@ -5,6 +5,7 @@
 #include <EditorCore/EditorContext.h>
 
 #include <Paralax/Asset/MaterialAsset.h>
+#include <Paralax/Audio/AudioSystem.h>
 #include <Paralax/Scene/Entity.h>
 #include <Paralax/Scripting/ScriptAsset.h>
 
@@ -357,4 +358,39 @@ TEST_CASE("BuiltinCommands: TickRuntime runs scripts unless paused")
 	context.TickRuntime(Timestep(0.1f));
 	CHECK(context.Execute("script.eval", {{"code", "Ticks"}}).Result["result"] == "2");
 	context.Execute("play.stop");
+}
+
+TEST_CASE("BuiltinCommands: audio output is chosen and inspected through commands, and pausing play pauses sound")
+{
+	EditorContext context;
+	CHECK(context.GetAudioOutput() == AudioOutput::Offline); // Headless and agent sessions are silent by default.
+	CHECK_FALSE(context.Execute("audio.set_output", {{"output", "Speakers"}}).Success);
+	json status = context.Execute("audio.status").Result;
+	CHECK(status["playing"] == false);
+	CHECK(status["chosenOutput"] == "Offline");
+
+	REQUIRE(context.Execute("play.start", {{"paused", true}}).Success);
+	REQUIRE(context.GetAudioSystem());
+	CHECK(context.GetAudioSystem()->IsPaused());
+	status = context.Execute("audio.status").Result;
+	CHECK(status["playing"] == true);
+	CHECK(status["output"] == "Offline");
+	CHECK(status["paused"] == true);
+	CHECK(status["voices"] == 0);
+	CHECK(status["masterVolume"] == 1.0);
+	REQUIRE(context.Execute("play.resume").Success);
+	CHECK_FALSE(context.GetAudioSystem()->IsPaused());
+	REQUIRE(context.Execute("play.pause").Success);
+	CHECK(context.GetAudioSystem()->IsPaused());
+	REQUIRE(context.Execute("play.stop").Success);
+	CHECK(context.GetAudioSystem() == nullptr);
+
+	// The choice applies from the next play session; without a device it falls back to offline mixing.
+	CHECK(context.Execute("audio.set_output", {{"output", "Device"}}).Result["output"] == "Device");
+	CHECK(context.GetAudioOutput() == AudioOutput::Device);
+	REQUIRE(context.Execute("play.start").Success);
+	status = context.Execute("audio.status").Result;
+	CHECK(status["chosenOutput"] == "Device");
+	CHECK((status["output"] == "Device" || status["output"] == "Offline"));
+	REQUIRE(context.Execute("play.stop").Success);
 }

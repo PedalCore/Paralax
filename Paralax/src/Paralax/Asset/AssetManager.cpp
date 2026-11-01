@@ -6,6 +6,7 @@
 #include "Paralax/Asset/MeshAsset.h"
 #include "Paralax/Asset/MeshImporter.h"
 #include "Paralax/Asset/TextureAsset.h"
+#include "Paralax/Audio/AudioClip.h"
 #include "Paralax/Core/EngineResources.h"
 #include "Paralax/Scene/Prefab.h"
 #include "Paralax/Scene/SceneSerializer.h"
@@ -367,6 +368,9 @@ namespace Paralax {
 				asset = script;
 				break;
 			}
+			case AssetType::Audio:
+				asset = AudioClip::LoadFromFile(path);
+				break;
 			default:
 				PX_CORE_ERROR("Assets of type {} are not loaded by the AssetManager ('{}')", AssetTypeToString(metadata.Type), metadata.FilePath.generic_string());
 				return nullptr;

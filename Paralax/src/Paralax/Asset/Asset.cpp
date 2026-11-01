@@ -68,7 +68,8 @@ namespace Paralax {
 			return AssetType::Prefab;
 		if (extension == ".lua")
 			return AssetType::Script;
-		if (extension == ".wav" || extension == ".mp3" || extension == ".flac" || extension == ".ogg")
+		// Formats AudioClip decodes (Ogg Vorbis is not among them).
+		if (extension == ".wav" || extension == ".mp3" || extension == ".flac")
 			return AssetType::Audio;
 		return AssetType::None;
 	}

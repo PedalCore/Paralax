@@ -317,6 +317,27 @@ namespace Paralax::Editor {
 							   return CommandResult::Ok();
 						   }});
 
+		registry.Register({"audio.set_output", "Chooses how play mode sounds from the next play.start: Device (heard) or Offline (silent and deterministic; the default for headless editors).", {{"output", "string", "Device or Offline.", true}}, false, [](EditorContext& context, const json& params) {
+							   const std::string output = params["output"].get<std::string>();
+							   if (output != "Device" && output != "Offline")
+								   return CommandResult::Fail("output must be Device or Offline");
+							   context.SetAudioOutput(output == "Device" ? AudioOutput::Device : AudioOutput::Offline);
+							   return CommandResult::Ok({{"output", output}});
+						   }});
+
+		registry.Register({"audio.status", "The audio of the running game: the output in use (Device may have fallen back to Offline), sounds playing, master volume and paused state.", {}, false, [](EditorContext& context, const json&) {
+							   const char* chosen = context.GetAudioOutput() == AudioOutput::Device ? "Device" : "Offline";
+							   AudioSystem* audio = context.GetAudioSystem();
+							   if (!audio)
+								   return CommandResult::Ok({{"playing", false}, {"chosenOutput", chosen}});
+							   return CommandResult::Ok({{"playing", true},
+														 {"chosenOutput", chosen},
+														 {"output", audio->GetOutput() == AudioOutput::Device ? "Device" : "Offline"},
+														 {"voices", audio->GetVoiceCount()},
+														 {"masterVolume", audio->GetMasterVolume()},
+														 {"paused", audio->IsPaused()}});
+						   }});
+
 		registry.Register({"play.stop", "Stops play mode, discarding runtime changes.", {}, false, [](EditorContext& context, const json&) {
 							   if (!context.StopPlaying())
 								   return CommandResult::Fail("Not playing");

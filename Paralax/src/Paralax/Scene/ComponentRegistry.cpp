@@ -134,6 +134,23 @@ namespace Paralax {
 																	  MakeField<&ColliderComponent::IsTrigger>("IsTrigger", FieldOptions().Describe("Detect overlaps without colliding.")),
 																  }));
 
+			components.push_back(MakeComponent<AudioSourceComponent>("AudioSource", "Plays an audio clip from the entity while the scene is running.",
+																	 {
+																		 MakeField<&AudioSourceComponent::Clip>("Clip", FieldOptions().Describe("Audio asset (.wav, .flac or .mp3).")),
+																		 MakeField<&AudioSourceComponent::Volume>("Volume", FieldOptions().Range(0.0f, 10.0f).Describe("Linear gain.")),
+																		 MakeField<&AudioSourceComponent::Pitch>("Pitch", FieldOptions().Range(0.1f, 4.0f).Describe("Playback speed; 2 is an octave up.")),
+																		 MakeField<&AudioSourceComponent::Loop>("Loop"),
+																		 MakeField<&AudioSourceComponent::PlayOnStart>("PlayOnStart", FieldOptions().Describe("Start playing when the scene starts (or when created while running).")),
+																		 MakeField<&AudioSourceComponent::Spatial>("Spatial", FieldOptions().Describe("Heard from the entity's position, fading with distance.")),
+																		 MakeField<&AudioSourceComponent::MinDistance>("MinDistance", FieldOptions().Range(0.01f, 100000.0f).Describe("Full volume up to this distance.")),
+																		 MakeField<&AudioSourceComponent::MaxDistance>("MaxDistance", FieldOptions().Range(0.01f, 100000.0f).Describe("No further fading beyond this distance.")),
+																	 }));
+
+			components.push_back(MakeComponent<AudioListenerComponent>("AudioListener", "Hears the scene from this entity (otherwise from the primary camera).",
+																	   {
+																		   MakeField<&AudioListenerComponent::Active>("Active"),
+																	   }));
+
 			components.push_back(MakeComponent<ScriptComponent>("Script", "Runs a Lua script (OnCreate, OnUpdate, OnDestroy) while the scene is running.",
 																{
 																	MakeField<&ScriptComponent::Script>("Script", FieldOptions().Describe("Script asset (.lua) returning a table with the callbacks.")),

@@ -90,6 +90,12 @@ cmake --preset debug && cmake --build build/debug && ctest --preset debug -j8
   - Never step Jolt or touch bodies elsewhere: scripts use the `Physics` table, and the engine uses `PhysicsSystem`'s methods.
   - Contact events are derived from per-step contact sets, which keeps them deterministic and stable across sleep.
   - Physics tests run real simulations in fixed steps and check results against analytic expectations within tolerances.
+- **Audio:**
+  - miniaudio lives only in `Audio/` (`AudioClip.cpp`, `AudioSystem.cpp`), behind a pimpl. Clips are decoded in full when loaded.
+  - `AudioSystem` mixes on a device, or offline in step with simulated time. Offline is used for headless runs and tests, and when there is no device.
+  - When a sound ends follows simulated time, never the mixer, so scripts behave the same with or without a device.
+  - Agents choose play mode's output with `audio.set_output` and inspect it with `audio.status`.
+  - Audio tests run offline and check the mixed samples (`AudioSystemSpecification::MaxCapturedFrames`); they never depend on a sound card.
 - **Prefabs** (`.pxprefab`) are scene documents with type "Prefab" and exactly one root. Instantiate them through `PrefabAsset::Instantiate`, never by copying JSON by hand.
 
 ## Editor and agent control
