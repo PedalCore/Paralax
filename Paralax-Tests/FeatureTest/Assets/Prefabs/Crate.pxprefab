@@ -2,12 +2,37 @@
 	"Entities": [
 		{
 			"Components": {
+				"Collider": {
+					"Friction": 0.5,
+					"IsTrigger": false,
+					"Offset": [
+						0.0,
+						0.0,
+						0.0
+					],
+					"Restitution": 0.0,
+					"Shape": "Box",
+					"Size": [
+						1.0,
+						1.0,
+						1.0
+					]
+				},
 				"Mesh": {
 					"CastShadows": true,
 					"Materials": [
-						"11486109012477058227"
+						"5623606358985902181"
 					],
 					"Mesh": "1"
+				},
+				"Rigidbody": {
+					"AngularDamping": 0.05000000074505806,
+					"ContinuousCollision": false,
+					"GravityScale": 1.0,
+					"LinearDamping": 0.05000000074505806,
+					"LockRotation": false,
+					"Mass": 5.0,
+					"Type": "Dynamic"
 				},
 				"Tag": {
 					"Name": "Crate",
@@ -32,11 +57,27 @@
 					]
 				}
 			},
-			"ID": "10697366021490254238",
+			"ID": "321189172053692586",
 			"Parent": "0"
 		},
 		{
 			"Components": {
+				"Collider": {
+					"Friction": 0.5,
+					"IsTrigger": false,
+					"Offset": [
+						0.0,
+						0.0,
+						0.0
+					],
+					"Restitution": 0.0,
+					"Shape": "Cylinder",
+					"Size": [
+						1.0,
+						1.0,
+						1.0
+					]
+				},
 				"Mesh": {
 					"CastShadows": true,
 					"Materials": [],
@@ -65,8 +106,8 @@
 					]
 				}
 			},
-			"ID": "487843547048072931",
-			"Parent": "10697366021490254238"
+			"ID": "1895546195610039278",
+			"Parent": "321189172053692586"
 		}
 	],
 	"Name": "Prefab",

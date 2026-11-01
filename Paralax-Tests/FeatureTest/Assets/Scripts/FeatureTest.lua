@@ -129,6 +129,13 @@ local function TestPhysics()
 	local hit = Physics.Raycast(vec3(4, 5, 4), vec3(0, -1, 0), 20)
 	assert(hit and hit.entity.name == "Ground" and near(hit.distance, 5) and hit.normal.y > 0.99 and near(hit.point.y, 0), "raycast should hit the ground")
 	assert(Physics.Raycast(vec3(0, 50, 0), vec3(0, 1, 0), 10) == nil)
+	-- The crate prefab is one compound body: the lid's collider is part of the crate's Rigidbody.
+	local crate
+	for _, entity in ipairs(Scene.FindEntitiesByTag("Feature")) do
+		if entity.name == "Crate" then crate = entity end -- The authored instance, not one spawned this frame.
+	end
+	assert(Physics.GetLinearVelocity(crate) ~= nil, "the crate should be a body")
+	assert(Physics.GetLinearVelocity(crate:GetChildren()[1]) == nil, "the lid should be part of the crate's body")
 end
 
 local function TestAudio()

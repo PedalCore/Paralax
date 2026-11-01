@@ -104,8 +104,10 @@ an entity solid. Add a **Rigidbody** as well to simulate it:
 A collider with `IsTrigger = true` detects overlaps without colliding. The simulation runs in fixed 1/60 s steps and is
 deterministic. Setting a body's Transform from a script teleports it (kinematic bodies move there smoothly).
 
-Colliders belong to their own entity: a collider on a child entity is a separate body, not part of its parent's
-Rigidbody, so put a moving object's collider on the entity with the Rigidbody. An entity whose world scale is zero
+A collider on a child entity without a Rigidbody of its own is part of the body of its nearest ancestor with a
+Rigidbody: build a car from a body and wheel children, and it moves as one. Such a body takes its friction and
+bounciness from its first collider, and collisions, raycasts and the `Physics` functions refer to the entity with the
+Rigidbody. Triggers always stay separate (a trigger child of a moving body follows it, sensing what it passes). An entity whose world scale is zero
 (for example, under a parent scaled to 0) has no body until its scale is restored. Changing a Collider or Rigidbody
 field while playing rebuilds the body; a dynamic body keeps its velocity.
 

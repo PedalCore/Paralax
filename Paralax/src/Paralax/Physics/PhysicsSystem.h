@@ -23,6 +23,8 @@ namespace Paralax {
 		uint32_t MaxBodies = 65536;
 		// Worker threads for the simulation (0 = single-threaded). The result is identical for any count.
 		uint32_t WorkerThreads = 2;
+		// Colliders one body may combine (its own and its children's); further ones are left out with a warning.
+		uint32_t MaxCollidersPerBody = 1024;
 		// Contact events kept until TakeContactEvents; further ones are dropped with a warning.
 		uint32_t MaxPendingContactEvents = 65536;
 	};
@@ -54,8 +56,11 @@ namespace Paralax {
 
 	// Rigid body simulation (Jolt Physics) for a running scene. Add it to a scene before Scene::OnRuntimeStart.
 	//
-	// Every entity with a ColliderComponent becomes a body: static without a RigidbodyComponent, otherwise of the
-	// rigidbody's type. Colliders are per entity: a collider on a child is its own body, not part of its parent's.
+	// Every entity with a RigidbodyComponent is a body of the rigidbody's type. Its shape is its own ColliderComponent
+	// plus those of descendants without a Rigidbody of their own (a compound; the body's friction and restitution come
+	// from its first collider). A collider with no Rigidbody at or above it is a static body of its own; trigger
+	// colliders always are bodies of their own (kinematic sensors following the body above them, if it moves). Events,
+	// raycasts and the body controls refer to the body's entity.
 	// Bodies follow the scene each update: added, removed, rebuilt when their collider or rigidbody settings (or world
 	// scale) change (a dynamic body keeps its velocity), and teleported when something else moves them; kinematic
 	// bodies are moved smoothly to their entity's transform during the next step. Entities whose world transform has
@@ -106,6 +111,10 @@ namespace Paralax {
 
 		glm::vec3 GetGravity() const;
 		void SetGravity(const glm::vec3& gravity);
+
+		// Bodies created since the scene started running, rebuilds included (a diagnostic: a body rebuilt every update
+		// loses its contacts' history and its sleep).
+		uint64_t GetBodiesCreated() const;
 
 		// Number of simulation steps taken since the scene started running.
 		uint64_t GetStepCount() const;

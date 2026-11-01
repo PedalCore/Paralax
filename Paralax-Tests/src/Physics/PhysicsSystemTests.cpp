@@ -653,9 +653,9 @@ TEST_CASE("PhysicsSystem: misconfigured entities are reported once")
 	fixture.Run(0.5f);
 
 	CHECK_FALSE(fixture.Physics->HasBody(loose.GetUUID()));
-	CHECK(CountLogs(log, "has a Rigidbody but no Collider") == 1);
-	CHECK(CountLogs(log, "Colliders are not combined") == 1);
-	CHECK(CountLogs(log, "body limit") == 4); // 20 bodies wanted, 16 allowed: one report each for the other 4.
+	CHECK(CountLogs(log, "has a Rigidbody but no solid Collider") == 1);
+	CHECK_FALSE(fixture.Physics->HasBody(wheel.GetUUID())); // Part of the car's body.
+	CHECK(CountLogs(log, "body limit") == 3);               // 19 bodies wanted (the wheel is no body), 16 allowed: one report each.
 }
 
 TEST_CASE("PhysicsSystem: contact events beyond the limit are dropped with a warning")
@@ -671,4 +671,250 @@ TEST_CASE("PhysicsSystem: contact events beyond the limit are dropped with a war
 	fixture.Run(0.5f);
 	CHECK(fixture.Physics->TakeContactEvents().size() == 2);
 	CHECK(CountLogs(log, "contact events are waiting") == 1);
+}
+
+TEST_CASE("PhysicsSystem: colliders on children without a Rigidbody become parts of the body above them")
+{
+	PhysicsFixture fixture;
+	fixture.Ground();
+	// A dynamic body with a box of its own and a sphere 1 m below it on a child: it rests on the sphere.
+	Entity cart = fixture.Body("Cart", glm::vec3(0.0f, 3.0f, 0.0f));
+	Entity wheel = fixture.World.CreateEntity("Wheel");
+	wheel.AddComponent<ColliderComponent>().Shape = ColliderShape::Sphere;
+	wheel.GetComponent<TransformComponent>().Translation = glm::vec3(0.0f, -1.0f, 0.0f);
+	fixture.World.SetParent(wheel, cart, false);
+	// A Rigidbody whose only colliders are on its children (two boxes side by side, scaled through the child).
+	Entity frame = fixture.World.CreateEntity("Frame");
+	frame.AddComponent<RigidbodyComponent>();
+	frame.GetComponent<TransformComponent>().Translation = glm::vec3(6.0f, 3.0f, 0.0f);
+	for (float x : {-1.0f, 1.0f})
+	{
+		Entity side = fixture.World.CreateEntity("Side");
+		side.AddComponent<ColliderComponent>();
+		side.GetComponent<TransformComponent>().Translation = glm::vec3(x, 0.0f, 0.0f);
+		side.GetComponent<TransformComponent>().Scale = glm::vec3(1.0f, 2.0f, 1.0f);
+		fixture.World.SetParent(side, frame, false);
+	}
+	// A trigger child stays a separate (sensor) body.
+	Entity sensor = fixture.World.CreateEntity("Sensor");
+	sensor.AddComponent<ColliderComponent>().IsTrigger = true;
+	fixture.World.SetParent(sensor, cart, false);
+	fixture.World.OnRuntimeStart();
+	CHECK(fixture.Physics->HasBody(cart.GetUUID()));
+	CHECK_FALSE(fixture.Physics->HasBody(wheel.GetUUID()));
+	CHECK(fixture.Physics->HasBody(frame.GetUUID()));
+	CHECK(fixture.Physics->HasBody(sensor.GetUUID()));
+	fixture.Run(3.0f);
+
+	// The wheel (radius 0.5, 1 m below the cart's centre) holds the cart 1.5 m up; it did not collide with its own
+	// body, so the cart stayed put sideways.
+	CHECK(PositionOf(cart).y == doctest::Approx(1.5).epsilon(0.02));
+	CHECK(std::abs(PositionOf(cart).x) < 0.01f);
+	// The frame rests on its 2 m tall sides.
+	CHECK(PositionOf(frame).y == doctest::Approx(1.0).epsilon(0.02));
+	// Raycasts and contacts report the body's entity.
+	std::optional<RaycastHit> hit = fixture.Physics->Raycast(glm::vec3(0.0f, 0.2f, 5.0f), glm::vec3(0.0f, 0.0f, -1.0f), 10.0f);
+	REQUIRE(hit);
+	CHECK(hit->Entity == cart.GetUUID());
+
+	// Moving a part relative to its body reshapes the body: with the wheel 2 m down, the cart rests 2.5 m up. (Lifted
+	// first: a part reshaped into the ground would be pushed out through it.)
+	wheel.GetComponent<TransformComponent>().Translation.y = -2.0f;
+	cart.GetComponent<TransformComponent>().Translation.y = 4.0f;
+	fixture.Run(3.0f);
+	CHECK(PositionOf(cart).y == doctest::Approx(2.5).epsilon(0.02));
+	// Removing the wheel's collider leaves the cart on its own box.
+	wheel.RemoveComponent<ColliderComponent>();
+	fixture.Run(3.0f);
+	CHECK(PositionOf(cart).y == doctest::Approx(0.5).epsilon(0.02));
+	// A child given its own Rigidbody becomes a body of its own.
+	Entity side = *fixture.World.FindEntityByName("Side");
+	side.AddComponent<RigidbodyComponent>();
+	fixture.Run(Step);
+	CHECK(fixture.Physics->HasBody(side.GetUUID()));
+}
+
+TEST_CASE("PhysicsSystem: a part with an unusable transform is left out of its body")
+{
+	PhysicsFixture fixture;
+	fixture.Ground();
+	Entity cart = fixture.Body("Cart", glm::vec3(0.0f, 3.0f, 0.0f));
+	Entity wheel = fixture.World.CreateEntity("Wheel");
+	wheel.AddComponent<ColliderComponent>().Shape = ColliderShape::Sphere;
+	wheel.GetComponent<TransformComponent>().Translation = glm::vec3(0.0f, -1.0f, 0.0f);
+	wheel.GetComponent<TransformComponent>().Scale = glm::vec3(0.0f);
+	fixture.World.SetParent(wheel, cart, false);
+	Paralax::Testing::ScopedLogCapture log;
+	fixture.World.OnRuntimeStart();
+	fixture.Run(3.0f);
+	CHECK(PositionOf(cart).y == doctest::Approx(0.5).epsilon(0.02)); // On its own box only.
+	CHECK(CountLogs(log, "zero-scale or non-finite") == 1);
+	wheel.GetComponent<TransformComponent>().Scale = glm::vec3(1.0f);
+	cart.GetComponent<TransformComponent>().Translation.y = 3.0f;
+	fixture.Run(3.0f);
+	CHECK(PositionOf(cart).y == doctest::Approx(1.5).epsilon(0.02));
+}
+
+TEST_CASE("PhysicsSystem: rotated and offset parts are placed in the body's frame")
+{
+	PhysicsSystemSpecification specification;
+	specification.Gravity = glm::vec3(0.0f);
+	PhysicsFixture fixture(specification);
+	// The body is turned a quarter about Y; its part sits 2 m along the body's local +X (world -Z after the turn), is
+	// itself turned, and has a collider offset of 1 m along its own local +X.
+	Entity body = fixture.Body("Body", glm::vec3(10.0f, 0.0f, 0.0f), ColliderShape::Sphere, RigidbodyType::Static);
+	body.GetComponent<TransformComponent>().Rotation = glm::angleAxis(glm::half_pi<float>(), glm::vec3(0.0f, 1.0f, 0.0f));
+	body.GetComponent<ColliderComponent>().Size = glm::vec3(0.2f);
+	Entity part = fixture.World.CreateEntity("Part");
+	auto& collider = part.AddComponent<ColliderComponent>();
+	collider.Size = glm::vec3(0.5f);
+	collider.Offset = glm::vec3(1.0f, 0.0f, 0.0f);
+	part.GetComponent<TransformComponent>().Translation = glm::vec3(2.0f, 0.0f, 0.0f);
+	part.GetComponent<TransformComponent>().Rotation = glm::angleAxis(glm::half_pi<float>(), glm::vec3(0.0f, 1.0f, 0.0f));
+	fixture.World.SetParent(part, body, false);
+	fixture.World.OnRuntimeStart();
+
+	// Where the part's box should be: the scene's own world transform of the collider's offset point.
+	const glm::vec3 expected = glm::vec3(fixture.World.GetWorldTransform(part) * glm::vec4(1.0f, 0.0f, 0.0f, 1.0f));
+	std::optional<RaycastHit> hit = fixture.Physics->Raycast(expected + glm::vec3(0.0f, 5.0f, 0.0f), glm::vec3(0.0f, -1.0f, 0.0f), 10.0f);
+	REQUIRE(hit);
+	CHECK(hit->Entity == body.GetUUID());
+	CHECK(hit->Distance == doctest::Approx(4.75).epsilon(0.001));                                             // Top of the 0.5 m box.
+	CHECK_FALSE(fixture.Physics->Raycast(glm::vec3(12.0f, 5.0f, 0.0f), glm::vec3(0.0f, -1.0f, 0.0f), 10.0f)); // Not unrotated.
+}
+
+TEST_CASE("PhysicsSystem: a compound body far from the origin keeps its shape and is not rebuilt")
+{
+	PhysicsSystemSpecification specification;
+	specification.Gravity = glm::vec3(0.0f);
+	PhysicsFixture fixture(specification);
+	Entity body = fixture.Body("Far", glm::vec3(5000.0f, 300.0f, -2000.0f));
+	body.GetComponent<RigidbodyComponent>().AngularDamping = 0.0f;
+	body.GetComponent<RigidbodyComponent>().LinearDamping = 0.0f;
+	for (float x : {-1.5f, 1.5f})
+	{
+		Entity arm = fixture.World.CreateEntity("Arm");
+		arm.AddComponent<ColliderComponent>().Size = glm::vec3(1.0f, 0.2f, 0.2f);
+		arm.GetComponent<TransformComponent>().Translation = glm::vec3(x, 0.0f, 0.0f);
+		fixture.World.SetParent(arm, body, false);
+	}
+	fixture.World.OnRuntimeStart();
+	REQUIRE(fixture.Physics->SetAngularVelocity(body.GetUUID(), glm::vec3(0.3f, 1.0f, 0.2f)));
+	REQUIRE(fixture.Physics->SetLinearVelocity(body.GetUUID(), glm::vec3(3.0f, 0.0f, 0.0f)));
+	const uint64_t created = fixture.Physics->GetBodiesCreated();
+	fixture.Run(2.0f);
+	CHECK(fixture.Physics->GetBodiesCreated() == created); // Spinning and moving, yet the same body throughout.
+	CHECK(glm::length(*fixture.Physics->GetAngularVelocity(body.GetUUID()) - glm::vec3(0.3f, 1.0f, 0.2f)) < 0.2f);
+}
+
+TEST_CASE("PhysicsSystem: an off-centre compound writes back its entity's origin, and keeps its motion when reshaped")
+{
+	PhysicsSystemSpecification specification;
+	specification.Gravity = glm::vec3(0.0f);
+	PhysicsFixture fixture(specification);
+	// The only part sits 2 m to the side, so the centre of mass is not at the entity's origin.
+	Entity body = fixture.World.CreateEntity("Lopsided");
+	body.AddComponent<RigidbodyComponent>().LinearDamping = 0.0f;
+	body.GetComponent<RigidbodyComponent>().AngularDamping = 0.0f;
+	Entity weight = fixture.World.CreateEntity("Weight");
+	weight.AddComponent<ColliderComponent>();
+	weight.GetComponent<TransformComponent>().Translation = glm::vec3(2.0f, 0.0f, 0.0f);
+	fixture.World.SetParent(weight, body, false);
+	Entity balance = fixture.World.CreateEntity("Balance");
+	balance.AddComponent<ColliderComponent>();
+	balance.GetComponent<TransformComponent>().Translation = glm::vec3(-2.0f, 0.0f, 0.0f);
+	fixture.World.SetParent(balance, body, false);
+	fixture.World.OnRuntimeStart();
+
+	// Moving without spin, the entity's origin travels with the body: write-back is the origin, not the centre of mass.
+	REQUIRE(fixture.Physics->SetLinearVelocity(body.GetUUID(), glm::vec3(0.0f, 0.0f, 1.0f)));
+	fixture.Run(1.0f);
+	CHECK(glm::all(glm::epsilonEqual(PositionOf(body), glm::vec3(0.0f, 0.0f, 1.0f), 2e-3f)));
+
+	// Spinning about its centre (the origin, while balanced), then losing one side: the centre of mass jumps to the
+	// remaining part, but every point of the body keeps its velocity, so the entity's origin keeps circling it.
+	REQUIRE(fixture.Physics->SetLinearVelocity(body.GetUUID(), glm::vec3(0.0f)));
+	REQUIRE(fixture.Physics->SetAngularVelocity(body.GetUUID(), glm::vec3(0.0f, 1.0f, 0.0f)));
+	fixture.Run(Step);
+	balance.RemoveComponent<ColliderComponent>();
+	fixture.Run(Step);
+	const glm::vec3 before = PositionOf(body);
+	fixture.Run(Step);
+	const glm::vec3 after = PositionOf(body);
+	// Without the correction the origin would freeze (the new centre of mass at rest, the origin on its rim moving
+	// at |w| * 2 m = 2 m/s). With it the origin stays where it was, since it was the old centre and at rest.
+	CHECK(glm::length(after - before) < 1e-3f);
+}
+
+TEST_CASE("PhysicsSystem: kinematic compounds carry bodies, and trigger children follow moving bodies")
+{
+	PhysicsFixture fixture;
+	// A kinematic platform of two boards (no collider of its own), moved by its transform.
+	Entity platform = fixture.World.CreateEntity("Platform");
+	platform.AddComponent<RigidbodyComponent>().Type = RigidbodyType::Kinematic;
+	platform.GetComponent<TransformComponent>().Translation = glm::vec3(0.0f, 1.0f, 0.0f);
+	for (float x : {-1.0f, 1.0f})
+	{
+		Entity board = fixture.World.CreateEntity("Board");
+		auto& collider = board.AddComponent<ColliderComponent>();
+		collider.Size = glm::vec3(2.0f, 0.2f, 4.0f);
+		collider.Friction = 5.0f;
+		board.GetComponent<TransformComponent>().Translation = glm::vec3(x, 0.0f, 0.0f);
+		fixture.World.SetParent(board, platform, false);
+	}
+	// A trigger child on the platform: a sensor that follows it.
+	Entity sensor = fixture.World.CreateEntity("Sensor");
+	sensor.AddComponent<ColliderComponent>().IsTrigger = true;
+	sensor.GetComponent<TransformComponent>().Translation = glm::vec3(0.0f, -1.0f, 0.0f);
+	fixture.World.SetParent(sensor, platform, false);
+	Entity post = fixture.World.CreateEntity("Post"); // Static, in the sensor's path.
+	post.AddComponent<ColliderComponent>().Size = glm::vec3(0.5f);
+	post.GetComponent<TransformComponent>().Translation = glm::vec3(3.0f, 0.0f, 0.0f);
+	Entity rider = fixture.Body("Rider", glm::vec3(0.0f, 1.6f, 0.0f));
+	rider.GetComponent<ColliderComponent>().Friction = 5.0f;
+	fixture.World.OnRuntimeStart();
+	fixture.Run(1.0f);
+	fixture.Physics->TakeContactEvents();
+
+	for (int i = 0; i < 60; i++)
+	{
+		platform.GetComponent<TransformComponent>().Translation.x += 1.0f / 20.0f; // 3 m in a second.
+		fixture.World.OnUpdateRuntime(Timestep(Step));
+	}
+	CHECK(PositionOf(rider).x == doctest::Approx(3.0).epsilon(0.05));
+	CHECK(PositionOf(rider).y == doctest::Approx(1.6).epsilon(0.02));
+	CHECK(HasEvent(fixture.Physics->TakeContactEvents(), ContactEventType::TriggerEnter, sensor.GetUUID(), post.GetUUID()));
+}
+
+TEST_CASE("PhysicsSystem: colliders per body are capped, and colliders that cannot join a body say why")
+{
+	PhysicsSystemSpecification specification;
+	specification.MaxCollidersPerBody = 2;
+	PhysicsFixture fixture(specification);
+	Paralax::Testing::ScopedLogCapture log;
+	Entity body = fixture.Body("Many", glm::vec3(0.0f, 5.0f, 0.0f));
+	for (int i = 0; i < 3; i++)
+	{
+		Entity child = fixture.World.CreateEntity("Child");
+		child.AddComponent<ColliderComponent>();
+		child.GetComponent<TransformComponent>().Translation = glm::vec3(static_cast<float>(i + 1), 0.0f, 0.0f);
+		fixture.World.SetParent(child, body, false);
+	}
+	// A body whose own collider is a trigger cannot take solid parts.
+	Entity zone = fixture.Body("Zone", glm::vec3(10.0f, 5.0f, 0.0f));
+	zone.GetComponent<ColliderComponent>().IsTrigger = true;
+	Entity solid = fixture.World.CreateEntity("Solid");
+	solid.AddComponent<ColliderComponent>();
+	fixture.World.SetParent(solid, zone, false);
+	fixture.World.OnRuntimeStart();
+	fixture.Run(0.5f);
+	CHECK(fixture.Physics->HasBody(body.GetUUID()));
+	CHECK(CountLogs(log, "has more than 2 colliders") == 1);
+	CHECK(fixture.Physics->HasBody(solid.GetUUID()));
+	CHECK(CountLogs(log, "whose own collider is a trigger") == 1);
+
+	Paralax::Testing::ScopedAssertionCapture capture;
+	PhysicsSystemSpecification none;
+	none.MaxCollidersPerBody = 0;
+	CHECK_THROWS_AS(PhysicsSystem{none}, Paralax::Testing::AssertionFailedError);
 }

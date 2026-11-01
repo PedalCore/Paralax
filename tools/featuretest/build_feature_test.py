@@ -75,9 +75,12 @@ def build(editor: EditorSession) -> None:
                        fields={"BaseColor": [1.0, 0.77, 0.34, 1.0], "Metallic": 1.0, "Roughness": 0.3})["handle"]
 
     # A prefab (root with a child), made from temporary entities.
-    crate = editor.call("entity.create", name="Crate", components={"Mesh": {"Mesh": CUBE, "Materials": [gold]}})["id"]
+    # The crate is one compound body: a Rigidbody and box on the root, and the lid's cylinder collider on a child.
+    crate = editor.call("entity.create", name="Crate", components={"Mesh": {"Mesh": CUBE, "Materials": [gold]},
+                                                                 "Collider": {"Shape": "Box"}, "Rigidbody": {"Mass": 5}})["id"]
     editor.call("entity.create", name="CrateLid", parent=crate,
-                components={"Mesh": {"Mesh": CYLINDER}, "Transform": {"Translation": [0, 0.6, 0], "Scale": [0.4, 0.1, 0.4]}})
+                components={"Mesh": {"Mesh": CYLINDER}, "Collider": {"Shape": "Cylinder"},
+                            "Transform": {"Translation": [0, 0.6, 0], "Scale": [0.4, 0.1, 0.4]}})
     crate_prefab = editor.call("prefab.create", id=crate, path="Prefabs/Crate.pxprefab")["handle"]
     editor.call("entity.destroy", id=crate)
 

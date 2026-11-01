@@ -21,6 +21,7 @@
 #include <Jolt/Physics/Collision/Shape/CylinderShape.h>
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
+#include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
 #include <Jolt/Physics/Collision/TransformedShape.h>
 #include <Jolt/Physics/PhysicsSettings.h>
 #include <Jolt/Physics/PhysicsSystem.h>
@@ -140,35 +141,67 @@ namespace Paralax {
 			return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
 		}
 
+		// Values recovered from matrices every update are compared with a relative tolerance: rounding must not rebuild
+		// (and so stop) a rotating body.
+		bool SameVector(const glm::vec3& a, const glm::vec3& b)
+		{
+			const glm::vec3 tolerance = 1e-5f * glm::max(glm::vec3(1.0f), glm::max(glm::abs(a), glm::abs(b)));
+			return glm::all(glm::lessThanEqual(glm::abs(a - b), tolerance));
+		}
+
+		// q and -q are the same rotation. Component-wise, so small edits (about 0.001 degrees and up) are not lost.
+		bool SameRotation(const glm::quat& a, const glm::quat& b)
+		{
+			const glm::vec4 x(a.x, a.y, a.z, a.w);
+			const glm::vec4 y(b.x, b.y, b.z, b.w);
+			return glm::all(glm::lessThanEqual(glm::abs(x - y), glm::vec4(1e-5f))) || glm::all(glm::lessThanEqual(glm::abs(x + y), glm::vec4(1e-5f)));
+		}
+
+		// One collider of a body: the body entity's own, or a descendant's merged into it. Its placement is relative to
+		// the body (in the body's rotated, unscaled frame); its scale is the collider entity's world scale.
+		struct BodyPart
+		{
+			ColliderComponent Collider;
+			glm::vec3 Scale{1.0f};
+			glm::vec3 Position{0.0f};
+			glm::quat Rotation{1.0f, 0.0f, 0.0f, 0.0f};
+
+			bool operator==(const BodyPart& other) const
+			{
+				const ColliderComponent& c = Collider;
+				const ColliderComponent& d = other.Collider;
+				return c.Shape == d.Shape && c.Size == d.Size && c.Offset == d.Offset && c.Friction == d.Friction && c.Restitution == d.Restitution &&
+					   c.IsTrigger == d.IsTrigger && SameVector(Scale, other.Scale) && SameVector(Position, other.Position) && SameRotation(Rotation, other.Rotation);
+			}
+
+			bool IsAtOrigin() const { return glm::length(Position) < 1e-6f && std::abs(Rotation.w) > 1.0f - 1e-6f; }
+		};
+
 		// Everything that, when changed, requires rebuilding a body.
 		struct BodyConfiguration
 		{
 			RigidbodyComponent Rigidbody;
 			bool HasRigidbody = false;
-			ColliderComponent Collider;
+			// The body entity's world scale, to write its transform back.
 			glm::vec3 WorldScale{1.0f};
+			// The body entity's own collider first (if it has one), then merged descendants in hierarchy order.
+			std::vector<BodyPart> Parts;
+			// A trigger collider under a moving body: a kinematic sensor that follows it.
+			bool FollowsBody = false;
 
 			bool operator==(const BodyConfiguration& other) const
 			{
 				const RigidbodyComponent& a = Rigidbody;
 				const RigidbodyComponent& b = other.Rigidbody;
-				const ColliderComponent& c = Collider;
-				const ColliderComponent& d = other.Collider;
 				return HasRigidbody == other.HasRigidbody && a.Type == b.Type && a.Mass == b.Mass && a.LinearDamping == b.LinearDamping &&
 					   a.AngularDamping == b.AngularDamping && a.GravityScale == b.GravityScale && a.LockRotation == b.LockRotation &&
-					   a.ContinuousCollision == b.ContinuousCollision && c.Shape == d.Shape && c.Size == d.Size && c.Offset == d.Offset &&
-					   c.Friction == d.Friction && c.Restitution == d.Restitution && c.IsTrigger == d.IsTrigger && SameScale(WorldScale, other.WorldScale);
+					   a.ContinuousCollision == b.ContinuousCollision && FollowsBody == other.FollowsBody && SameVector(WorldScale, other.WorldScale) &&
+					   Parts == other.Parts;
 			}
 
-			RigidbodyType Type() const { return HasRigidbody ? Rigidbody.Type : RigidbodyType::Static; }
-
-			// The world scale is recovered from a matrix every update, so it is compared with a relative tolerance:
-			// rounding must not rebuild (and so stop) a rotating body.
-			static bool SameScale(const glm::vec3& a, const glm::vec3& b)
-			{
-				const glm::vec3 tolerance = 1e-5f * glm::max(glm::vec3(1.0f), glm::max(glm::abs(a), glm::abs(b)));
-				return glm::all(glm::lessThanEqual(glm::abs(a - b), tolerance));
-			}
+			RigidbodyType Type() const { return HasRigidbody ? Rigidbody.Type : (FollowsBody ? RigidbodyType::Kinematic : RigidbodyType::Static); }
+			// Triggers never merge, so a trigger body has exactly one part.
+			bool IsTrigger() const { return !Parts.empty() && Parts.front().Collider.IsTrigger; }
 		};
 
 		// Builds the collision shape for a collider at a world scale. Returns null (with outError set) if Jolt rejects
@@ -232,6 +265,29 @@ namespace Paralax {
 				shape = offsetResult.Get();
 			}
 			return shape;
+		}
+
+		// A body's shape: its single collider, or a compound of all its parts. Returns null (with outError set) if Jolt
+		// rejects it.
+		JPH::ShapeRefC CreateBodyShape(const BodyConfiguration& configuration, std::string& outError)
+		{
+			if (configuration.Parts.size() == 1 && configuration.Parts.front().IsAtOrigin())
+				return CreateShape(configuration.Parts.front().Collider, configuration.Parts.front().Scale, outError);
+			JPH::StaticCompoundShapeSettings compound;
+			for (const BodyPart& part : configuration.Parts)
+			{
+				JPH::ShapeRefC shape = CreateShape(part.Collider, part.Scale, outError);
+				if (!shape)
+					return nullptr;
+				compound.AddShape(ToJolt(part.Position), ToJolt(glm::normalize(part.Rotation)), shape);
+			}
+			JPH::ShapeSettings::ShapeResult result = compound.Create();
+			if (result.HasError() || !result.IsValid())
+			{
+				outError = result.HasError() ? std::string(result.GetError().c_str()) : std::string("invalid compound shape");
+				return nullptr;
+			}
+			return result.Get();
 		}
 
 		// Simulation capacity beyond the body count (see PhysicsSystemSpecification::MaxBodies).
@@ -332,9 +388,12 @@ namespace Paralax {
 		std::map<uint64_t, glm::vec3> PendingMomentum;
 		// Entities whose current problem has been logged, so it is reported once rather than every update.
 		std::unordered_set<uint64_t> Reported;
+		// Entities whose configuration note (a capped or unjoinable collider) has been logged; unlike Reported, not
+		// cleared when a body is created, since the situation persists.
 		std::unordered_set<uint64_t> Advised;
 		float Accumulator = 0.0f;
 		uint64_t Steps = 0;
+		uint64_t BodiesCreated = 0;
 
 		JPH::BodyInterface& Bodies() const { return Physics->GetBodyInterface(); }
 
@@ -375,6 +434,7 @@ namespace Paralax {
 			Physics->SetContactListener(&Contacts);
 			Accumulator = 0.0f;
 			Steps = 0;
+			BodiesCreated = 0;
 			Sync(scene);
 			Physics->OptimizeBroadPhase();
 		}
@@ -422,29 +482,11 @@ namespace Paralax {
 			Records.erase(it);
 		}
 
-		// Colliders are not combined into an ancestor's rigid body; say so once, since it is a likely authoring mistake.
-		void AdviseIfUnderRigidbody(Scene& scene, Entity entity)
-		{
-			if (Advised.contains(entity.GetUUID()))
-				return;
-			for (std::optional<Entity> ancestor = scene.GetParent(entity); ancestor; ancestor = scene.GetParent(*ancestor))
-			{
-				const auto* rigidbody = ancestor->TryGetComponent<RigidbodyComponent>();
-				if (rigidbody && rigidbody->Type != RigidbodyType::Static)
-				{
-					Advised.insert(entity.GetUUID());
-					PX_CORE_WARN("Physics: '{}' has a Collider but no Rigidbody, under '{}' which has one. Colliders are not combined into a parent's body, so it is a separate static body that the parent collides with; put the collider on '{}' instead",
-								 entity.GetName(), ancestor->GetName(), ancestor->GetName());
-					return;
-				}
-			}
-		}
-
-		BodyRecord* CreateBody(Scene& scene, Entity entity, const BodyConfiguration& configuration, const glm::mat4& world, const glm::vec3& position, const glm::quat& rotation)
+		BodyRecord* CreateBody(Entity entity, const BodyConfiguration& configuration, const glm::mat4& world, const glm::vec3& position, const glm::quat& rotation)
 		{
 			const uint64_t id = entity.GetUUID();
 			std::string shapeError;
-			JPH::ShapeRefC shape = CreateShape(configuration.Collider, configuration.WorldScale, shapeError);
+			JPH::ShapeRefC shape = CreateBodyShape(configuration, shapeError);
 			if (!shape)
 			{
 				if (FirstReport(id))
@@ -459,11 +501,13 @@ namespace Paralax {
 			JPH::BodyCreationSettings settings(shape, JPH::RVec3(position.x, position.y, position.z), ToJolt(glm::normalize(rotation)), motion,
 											   type == RigidbodyType::Static ? Layers::Static : Layers::Moving);
 			settings.mUserData = id;
-			settings.mFriction = configuration.Collider.Friction;
-			settings.mRestitution = configuration.Collider.Restitution;
-			settings.mIsSensor = configuration.Collider.IsTrigger;
+			// One material per body: that of its first collider (its own, if it has one).
+			const ColliderComponent& material = configuration.Parts.front().Collider;
+			settings.mFriction = material.Friction;
+			settings.mRestitution = material.Restitution;
+			settings.mIsSensor = configuration.IsTrigger();
 			// Kinematic triggers (e.g. a moving pickup zone) should still see static and kinematic bodies.
-			settings.mCollideKinematicVsNonDynamic = configuration.Collider.IsTrigger;
+			settings.mCollideKinematicVsNonDynamic = configuration.IsTrigger();
 			if (configuration.HasRigidbody)
 			{
 				const RigidbodyComponent& body = configuration.Rigidbody;
@@ -491,83 +535,182 @@ namespace Paralax {
 			Bodies().AddBody(body, type == RigidbodyType::Static ? JPH::EActivation::DontActivate : JPH::EActivation::Activate);
 			// A static body that appears wakes what it now overlaps (moving bodies wake their neighbours themselves).
 			if (type == RigidbodyType::Static)
-			{
 				WakeAround(body);
-				AdviseIfUnderRigidbody(scene, entity);
-			}
 			Reported.erase(id);
+			BodiesCreated++;
 			BodyRecord& record = Records[id];
 			record = BodyRecord{body, configuration, world};
 			return &record;
 		}
 
-		// Brings the bodies in line with the scene. stepping is false only at the start, when moved bodies are simply
-		// placed; while running, kinematic bodies are moved smoothly over the coming steps (stepSeconds; they are
-		// listed in movedKinematic, to be stopped afterwards) and other bodies are teleported.
-		void Sync(Scene& scene, float stepSeconds = 0.0f, std::vector<JPH::BodyID>* movedKinematic = nullptr)
+		// A body the scene describes this update.
+		struct PendingBody
 		{
-			std::vector<uint64_t> seen;
+			Entity Owner;
+			BodyConfiguration Configuration;
+			glm::mat4 World{1.0f};
+			glm::vec3 Position{0.0f};
+			glm::quat Rotation{1.0f, 0.0f, 0.0f, 0.0f};
+			bool Usable = true; // False while the body entity's transform has zero scale or is not finite.
+		};
+
+		// The bodies the scene describes. Every entity with a Rigidbody is a body; a collider without one joins the body
+		// of its nearest ancestor that has one (as a compound part), or else is a static body of its own. Triggers stay
+		// separate bodies (Jolt senses per body); under a moving body they are kinematic sensors that follow it.
+		// Hierarchy order visits parents first, so a collider's body is known when the collider is reached.
+		std::vector<PendingBody> GatherBodies(Scene& scene)
+		{
+			// Per entity under a body: that body, and the entity's transform relative to the body entity, built from
+			// local transforms only. Unlike a difference of world positions it does not change as the body moves, so a
+			// body far from the origin is not rebuilt for rounding, and it costs O(1) per entity.
+			struct UnderBody
+			{
+				uint64_t Body = 0;
+				glm::mat4 Relative{1.0f};
+			};
+			std::vector<PendingBody> bodies;
+			std::unordered_map<uint64_t, size_t> bodyIndex;
+			std::unordered_map<uint64_t, UnderBody> under;
+			std::unordered_set<uint64_t> overflowed;
 			scene.ForEachEntity([&](Entity entity) {
 				const uint64_t id = entity.GetUUID();
-				const auto* collider = entity.TryGetComponent<ColliderComponent>();
 				const auto* rigidbody = entity.TryGetComponent<RigidbodyComponent>();
-				if (!collider)
-				{
-					if (rigidbody && FirstReport(id))
-						PX_CORE_WARN("Physics: '{}' has a Rigidbody but no Collider, so it is not simulated", entity.GetName());
-					return;
-				}
-				seen.push_back(id);
-				BodyConfiguration configuration;
-				configuration.Collider = *collider;
+				const auto* collider = entity.TryGetComponent<ColliderComponent>();
+				UnderBody place;
 				if (rigidbody)
+					place.Body = id;
+				else if (const UUID parent = entity.GetComponent<RelationshipComponent>().Parent; parent.IsValid())
 				{
-					configuration.Rigidbody = *rigidbody;
-					configuration.HasRigidbody = true;
+					if (auto it = under.find(parent); it != under.end())
+						place = {it->second.Body, it->second.Relative * entity.GetComponent<TransformComponent>().GetLocalMatrix()};
 				}
-				const glm::mat4 world = scene.GetWorldTransform(entity);
-				glm::vec3 translation{0.0f};
-				glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
-				if (!Math::DecomposeTransform(world, translation, rotation, configuration.WorldScale))
-				{
-					// Zero scale (say, a group hidden by scaling its parent to 0) or a non-finite transform: no body until
-					// the transform is usable again.
-					RemoveBody(id);
-					if (FirstReport(id))
-						PX_CORE_WARN("Physics: '{}' has a zero-scale or non-finite transform, so it is not simulated", entity.GetName());
+				if (place.Body)
+					under[id] = place;
+				if (!rigidbody && !collider)
 					return;
+
+				PendingBody* owner = place.Body && !rigidbody ? &bodies[bodyIndex.at(place.Body)] : nullptr;
+				if (owner && !collider->IsTrigger)
+				{
+					if (owner->Configuration.IsTrigger())
+					{
+						if (Advised.insert(id).second)
+							PX_CORE_WARN("Physics: '{}' is under '{}', whose own collider is a trigger, so it cannot join that body; it is a separate static collider",
+										 entity.GetName(), owner->Owner.GetName());
+					}
+					else
+					{
+						// Relative to the body's rotated, unscaled frame: the body entity's scale, then the chain below it.
+						glm::vec3 position{0.0f};
+						glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+						glm::vec3 scale{1.0f};
+						if (!owner->Usable)
+							return;
+						if (!Math::DecomposeTransform(glm::scale(glm::mat4(1.0f), owner->Configuration.WorldScale) * place.Relative, position, rotation, scale))
+						{
+							if (FirstReport(id))
+								PX_CORE_WARN("Physics: '{}' has a zero-scale or non-finite transform, so its collider is left out", entity.GetName());
+							return;
+						}
+						Reported.erase(id);
+						if (owner->Configuration.Parts.size() >= Specification.MaxCollidersPerBody)
+						{
+							if (overflowed.insert(place.Body).second && Advised.insert(place.Body).second)
+								PX_CORE_WARN("Physics: '{}' has more than {} colliders; the rest are left out", owner->Owner.GetName(), Specification.MaxCollidersPerBody);
+							return;
+						}
+						owner->Configuration.Parts.push_back(BodyPart{*collider, scale, position, rotation});
+						return;
+					}
 				}
 
+				const glm::mat4 world = scene.GetWorldTransform(entity);
+				PendingBody body;
+				body.Owner = entity;
+				body.World = world;
+				// Zero scale (say, a group hidden by scaling its parent to 0) or a non-finite transform: left out until
+				// the transform is usable again.
+				body.Usable = Math::DecomposeTransform(world, body.Position, body.Rotation, body.Configuration.WorldScale);
+				if (!body.Usable && FirstReport(id))
+					PX_CORE_WARN("Physics: '{}' has a zero-scale or non-finite transform, so it is not simulated", entity.GetName());
+				if (rigidbody)
+				{
+					body.Configuration.Rigidbody = *rigidbody;
+					body.Configuration.HasRigidbody = true;
+				}
+				body.Configuration.FollowsBody = owner && owner->Configuration.Type() != RigidbodyType::Static;
+				if (collider)
+					body.Configuration.Parts.push_back(BodyPart{*collider, body.Configuration.WorldScale});
+				bodyIndex[id] = bodies.size();
+				bodies.push_back(std::move(body));
+			});
+			return bodies;
+		}
+
+		// Brings the bodies in line with the scene. While running (movedKinematic set), kinematic bodies are moved
+		// smoothly over the coming steps (stepSeconds; they are listed in movedKinematic, to be stopped afterwards) and
+		// other bodies are teleported; at the start, moved bodies are simply placed.
+		void Sync(Scene& scene, float stepSeconds = 0.0f, std::vector<JPH::BodyID>* movedKinematic = nullptr)
+		{
+			std::unordered_set<uint64_t> kept;
+			for (PendingBody& body : GatherBodies(scene))
+			{
+				const uint64_t id = body.Owner.GetUUID();
+				if (!body.Usable)
+				{
+					RemoveBody(id);
+					continue;
+				}
+				if (body.Configuration.Parts.empty())
+				{
+					RemoveBody(id);
+					if (FirstReport(id))
+						PX_CORE_WARN("Physics: '{}' has a Rigidbody but no solid Collider (on it, or on a child without a Rigidbody of its own), so it is not simulated", body.Owner.GetName());
+					continue;
+				}
+				kept.insert(id);
+				const BodyConfiguration& configuration = body.Configuration;
+
 				auto it = Records.find(id);
-				std::optional<std::pair<JPH::Vec3, JPH::Vec3>> carriedVelocity;
+				// Rebuilt with new settings, a body that stays dynamic keeps its motion. Jolt's linear velocity is that of the
+				// centre of mass, which moves when parts are added or removed: v' = v + w x (c' - c).
+				struct CarriedMotion
+				{
+					JPH::Vec3 Linear;
+					JPH::Vec3 Angular;
+					JPH::RVec3 CenterOfMass;
+				};
+				std::optional<CarriedMotion> carried;
 				if (it != Records.end() && !(it->second.Configuration == configuration))
 				{
-					// Rebuilt with new settings; a body that stays dynamic keeps its motion.
 					if (it->second.Configuration.Type() == RigidbodyType::Dynamic && configuration.Type() == RigidbodyType::Dynamic)
-						carriedVelocity.emplace(Bodies().GetLinearVelocity(it->second.Body), Bodies().GetAngularVelocity(it->second.Body));
+						carried = CarriedMotion{Bodies().GetLinearVelocity(it->second.Body), Bodies().GetAngularVelocity(it->second.Body), Bodies().GetCenterOfMassPosition(it->second.Body)};
 					RemoveBody(id);
 					it = Records.end();
 				}
 				if (it == Records.end())
 				{
-					BodyRecord* created = CreateBody(scene, entity, configuration, world, translation, rotation);
-					if (created && carriedVelocity)
-						Bodies().SetLinearAndAngularVelocity(created->Body, carriedVelocity->first, carriedVelocity->second);
-					return;
+					BodyRecord* created = CreateBody(body.Owner, configuration, body.World, body.Position, body.Rotation);
+					if (created && carried)
+					{
+						const JPH::Vec3 shift(Bodies().GetCenterOfMassPosition(created->Body) - carried->CenterOfMass);
+						Bodies().SetLinearAndAngularVelocity(created->Body, carried->Linear + carried->Angular.Cross(shift), carried->Angular);
+					}
+					continue;
 				}
 				BodyRecord& record = it->second;
-				if (record.World == world)
-					return;
+				if (record.World == body.World)
+					continue;
 				// Moved by something other than the simulation (a script, the editor, a parent).
-				const JPH::RVec3 position(translation.x, translation.y, translation.z);
-				const JPH::Quat orientation = ToJolt(glm::normalize(rotation));
+				const JPH::RVec3 position(body.Position.x, body.Position.y, body.Position.z);
+				const JPH::Quat orientation = ToJolt(glm::normalize(body.Rotation));
 				const RigidbodyType type = configuration.Type();
 				if (type == RigidbodyType::Kinematic && movedKinematic)
 				{
 					// On an update without steps the move waits for the next one (record.World is kept, so it is seen
 					// again): teleporting instead would drop what the body carries.
 					if (stepSeconds <= 0.0f)
-						return;
+						continue;
 					Bodies().MoveKinematic(record.Body, position, orientation, stepSeconds);
 					movedKinematic->push_back(record.Body);
 				}
@@ -578,15 +721,14 @@ namespace Paralax {
 					if (type == RigidbodyType::Static)
 						WakeAround(record.Body); // What it now overlaps.
 				}
-				record.World = world;
-			});
+				record.World = body.World;
+			}
 
-			// Entities that lost their collider.
-			std::sort(seen.begin(), seen.end());
+			// Bodies the scene no longer describes (collider or rigidbody removed, entity gone).
 			std::vector<uint64_t> orphaned;
 			for (const auto& [entity, record] : Records)
 			{
-				if (!std::binary_search(seen.begin(), seen.end(), entity))
+				if (!kept.contains(entity))
 					orphaned.push_back(entity);
 			}
 			std::sort(orphaned.begin(), orphaned.end());
@@ -730,6 +872,7 @@ namespace Paralax {
 		PX_CORE_VERIFY(std::isfinite(specification.FixedTimestep) && specification.FixedTimestep > 0.0f && specification.FixedTimestep <= 1.0f, "The physics time step must be in (0, 1] seconds");
 		PX_CORE_VERIFY(specification.MaxStepsPerUpdate > 0 && specification.MaxStepsPerUpdate <= 1000, "MaxStepsPerUpdate must be in [1, 1000]");
 		PX_CORE_VERIFY(IsFinite(specification.Gravity), "Gravity must be finite");
+		PX_CORE_VERIFY(specification.MaxCollidersPerBody >= 1, "MaxCollidersPerBody must be at least 1");
 	}
 
 	PhysicsSystem::~PhysicsSystem()
@@ -868,6 +1011,11 @@ namespace Paralax {
 		m_Impl->Specification.Gravity = gravity;
 		if (m_Impl->Physics)
 			m_Impl->Physics->SetGravity(ToJolt(gravity));
+	}
+
+	uint64_t PhysicsSystem::GetBodiesCreated() const
+	{
+		return m_Impl->BodiesCreated;
 	}
 
 	uint64_t PhysicsSystem::GetStepCount() const
