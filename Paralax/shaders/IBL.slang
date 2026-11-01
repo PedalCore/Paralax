@@ -29,15 +29,16 @@ float3 ProceduralSky(float3 direction)
 	float height = direction.y;
 	float sunAmount = saturate(dot(direction, sun));
 
-	float3 zenith = float3(0.10, 0.25, 0.65);
-	float3 horizon = float3(0.62, 0.74, 0.92);
-	float3 ground = float3(0.20, 0.19, 0.17);
+	float3 zenith = float3(0.08, 0.28, 0.80);
+	float3 horizon = float3(0.75, 0.88, 1.10);
+	// Cool, low-albedo ground bounce keeps downward reflections neutral instead of tinting them brown.
+	float3 ground = float3(0.12, 0.16, 0.22);
 
 	float3 sky = lerp(horizon, zenith, pow(saturate(height), 0.45));
 	// Warm scattering around the sun, stronger near the horizon.
 	sky += g_IBL.SunColor.rgb * 0.35 * pow(sunAmount, 8.0) * (1.0 - 0.6 * saturate(height));
-	// Below the horizon fade from the horizon colour to the ground over a few degrees (no hard dark band).
-	float3 color = height >= 0.0 ? sky : lerp(horizon, ground, smoothstep(0.0, 0.12, -height));
+	// Below the horizon fade from the horizon colour to the ground smoothly (no hard dark band).
+	float3 color = height >= 0.0 ? sky : lerp(horizon, ground, smoothstep(0.0, 0.45, -height));
 
 	// Sun disk with soft edge (only above the horizon).
 	float disk = smoothstep(0.9995, 0.99985, sunAmount) * step(0.0, height);

@@ -49,16 +49,17 @@ namespace Paralax {
 	// Renderer settings. Reflected (GetFields) so the editor UI, scene tooling and agents share one description.
 	struct SceneRendererSettings
 	{
-		float Exposure = 1.2f;
+		float Exposure = 1.0f;
 		TonemapOperator Tonemapper = TonemapOperator::AgX;
 		bool Shadows = true;
 		ShadowQuality ShadowResolution = ShadowQuality::Medium;
 		float ShadowDistance = 80.0f;
-		// PCF filter radius in shadow-map texels (larger = softer).
 		// Penumbra size in world units (larger = softer shadows).
 		float ShadowSoftness = 0.06f;
+		// Fraction of each cascade blended into the next (0 disables blending).
+		float ShadowCascadeBlend = 0.1f;
 		// Environment intensity when the scene has no SkyLight (procedural sky lit by the sun).
-		float DefaultEnvironmentIntensity = 0.45f;
+		float DefaultEnvironmentIntensity = 0.65f;
 		RenderDebugView DebugView = RenderDebugView::None;
 
 		uint32_t GetShadowMapSize() const { return 1024u << std::clamp(static_cast<int>(ShadowResolution), 0, 2); }

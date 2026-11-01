@@ -5,10 +5,18 @@
 
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <unordered_map>
 #include <vector>
 
 namespace Paralax {
+
+	struct BuiltinAssetInfo
+	{
+		uint64_t Handle;
+		AssetType Type;
+		const char* Name;
+	};
 
 	// Owns the asset registry of a project and the cache of loaded assets. Main-thread-only.
 	//
@@ -25,7 +33,11 @@ namespace Paralax {
 		static constexpr uint64_t BuiltinCylinder = 4;
 		static constexpr uint64_t BuiltinCapsule = 5;
 		static constexpr uint64_t BuiltinDefaultMaterial = 16;
+		static constexpr uint64_t BuiltinGroundMaterial = 17;
 		static constexpr uint64_t FirstUserHandle = 1024; // Generated handles are never below this.
+
+		// Immutable, process-lifetime view; safe on any thread and never fails.
+		static std::span<const BuiltinAssetInfo> GetBuiltinAssets();
 
 		static constexpr const char* RegistryFileName = "AssetRegistry.json";
 

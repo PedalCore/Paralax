@@ -327,14 +327,9 @@ namespace Paralax::Editor {
 							   {
 								   assets.push_back({{"handle", IdString(metadata.Handle)}, {"type", std::string(AssetTypeToString(metadata.Type))}, {"path", metadata.FilePath.generic_string()}, {"parent", IdString(metadata.Parent)}});
 							   }
-							   const json builtins = {
-								   {{"handle", IdString(AssetHandle(AssetManager::BuiltinCube))}, {"type", "Mesh"}, {"name", "Cube"}},
-								   {{"handle", IdString(AssetHandle(AssetManager::BuiltinSphere))}, {"type", "Mesh"}, {"name", "Sphere"}},
-								   {{"handle", IdString(AssetHandle(AssetManager::BuiltinPlane))}, {"type", "Mesh"}, {"name", "Plane"}},
-								   {{"handle", IdString(AssetHandle(AssetManager::BuiltinCylinder))}, {"type", "Mesh"}, {"name", "Cylinder"}},
-								   {{"handle", IdString(AssetHandle(AssetManager::BuiltinCapsule))}, {"type", "Mesh"}, {"name", "Capsule"}},
-								   {{"handle", IdString(AssetHandle(AssetManager::BuiltinDefaultMaterial))}, {"type", "Material"}, {"name", "Default"}},
-							   };
+							   json builtins = json::array();
+							   for (const BuiltinAssetInfo& info : AssetManager::GetBuiltinAssets())
+								   builtins.push_back({{"handle", IdString(AssetHandle(info.Handle))}, {"type", std::string(AssetTypeToString(info.Type))}, {"name", info.Name}});
 							   return CommandResult::Ok({{"assets", assets}, {"builtins", builtins}});
 						   }});
 

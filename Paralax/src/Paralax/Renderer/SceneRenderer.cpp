@@ -29,6 +29,7 @@ namespace Paralax {
 			MakeField<&SceneRendererSettings::ShadowResolution>("ShadowResolution", FieldOptions().Enum({"Low", "Medium", "High"}).Describe("Shadow map size per cascade: 1024, 2048 or 4096.")),
 			MakeField<&SceneRendererSettings::ShadowDistance>("ShadowDistance", FieldOptions().Range(5.0f, 500.0f).Describe("Distance covered by the shadow cascades, in meters.")),
 			MakeField<&SceneRendererSettings::ShadowSoftness>("ShadowSoftness", FieldOptions().Range(0.0f, 0.5f).Describe("Penumbra size in meters.")),
+			MakeField<&SceneRendererSettings::ShadowCascadeBlend>("ShadowCascadeBlend", FieldOptions().Range(0.0f, 0.3f).Describe("Fraction of each shadow cascade blended into the next; zero disables blending.")),
 			MakeField<&SceneRendererSettings::DefaultEnvironmentIntensity>("SkyIntensity", FieldOptions().Range(0.0f, 3.0f).Describe("Environment intensity when the scene has no SkyLight.")),
 			MakeField<&SceneRendererSettings::DebugView>("DebugView", FieldOptions().Enum({"Lit", "Normals", "BaseColor"})),
 		};
@@ -630,7 +631,10 @@ namespace Paralax {
 		}
 		const float frustumDepth = std::max(camera.Far - camera.Near, 1e-3f);
 
+		view.CascadeBlend = std::isfinite(m_Settings.ShadowCascadeBlend) ? std::clamp(m_Settings.ShadowCascadeBlend, 0.0f, 0.3f) : 0.0f;
+		view.CascadeNear = nearPlane;
 		float previousSplit = nearPlane;
+		float previousStart = nearPlane;
 		for (uint32_t cascade = 0; cascade < GPU::MaxCascades; cascade++)
 		{
 			const float p = static_cast<float>(cascade + 1) / static_cast<float>(GPU::MaxCascades);
@@ -640,7 +644,9 @@ namespace Paralax {
 
 			// Slice corners by interpolating along the frustum edges (linear in view depth for both projections).
 			glm::vec3 corners[8];
-			const float t0 = (previousSplit - camera.Near) / frustumDepth;
+			// The next cascade must cover the preceding transition band, including its off-screen casters.
+			const float overlapStart = previousSplit - (previousSplit - previousStart) * view.CascadeBlend;
+			const float t0 = (overlapStart - camera.Near) / frustumDepth;
 			const float t1 = (split - camera.Near) / frustumDepth;
 			for (int i = 0; i < 4; i++)
 			{
@@ -674,6 +680,7 @@ namespace Paralax {
 			view.CascadeViewProjection[cascade] = lightProjection * lightView;
 			view.CascadeTexelWorldSize[static_cast<int>(cascade)] = 2.0f * radius / static_cast<float>(m_ShadowMapSize);
 			view.CascadeSplits[static_cast<int>(cascade)] = split;
+			previousStart = previousSplit;
 			previousSplit = split;
 		}
 

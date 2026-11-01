@@ -59,10 +59,8 @@ namespace Paralax::Editor {
 			ImGui::TableSetupScrollFreeze(0, 1);
 			ImGui::TableHeadersRow();
 
-			const char* builtinNames[] = {"Cube", "Sphere", "Plane", "Cylinder", "Capsule"};
-			for (uint64_t handle = AssetManager::BuiltinCube; handle <= AssetManager::BuiltinCapsule; handle++)
-				AssetRow("Mesh", fmt::format("{} (built-in)", builtinNames[handle - 1]), handle);
-			AssetRow("Material", "Default (built-in)", AssetManager::BuiltinDefaultMaterial);
+			for (const BuiltinAssetInfo& info : AssetManager::GetBuiltinAssets())
+				AssetRow(std::string(AssetTypeToString(info.Type)).c_str(), fmt::format("{} (built-in)", info.Name), info.Handle);
 
 			for (const AssetMetadata& metadata : context.GetAssets().GetRegisteredAssets())
 			{

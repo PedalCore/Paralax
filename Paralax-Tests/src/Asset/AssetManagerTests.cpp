@@ -9,6 +9,7 @@
 #include <Paralax/Asset/TextureAsset.h>
 #include <Paralax/Renderer/Image.h>
 
+#include <algorithm>
 #include <fstream>
 
 using namespace Paralax;
@@ -205,4 +206,56 @@ TEST_CASE("MaterialSerializer: wrongly typed headers fail without throwing")
 	CHECK_NOTHROW(CHECK_FALSE(MaterialSerializer::Deserialize(material, nlohmann::json{{"Paralax", {{"Type", "Material"}, {"Version", "x"}}}}, error)));
 	CHECK_NOTHROW(CHECK_FALSE(MaterialSerializer::Deserialize(material, nlohmann::json{{"Paralax", {{"Type", 3}}}}, error)));
 	CHECK_NOTHROW(CHECK_FALSE(MaterialSerializer::Deserialize(material, nlohmann::json{{"Paralax", "Material"}}, error)));
+}
+
+TEST_CASE("AssetManager: the built-in catalog loads unique handles with matching types")
+{
+	AssetManager assets;
+	std::vector<uint64_t> handles;
+	for (const BuiltinAssetInfo& info : AssetManager::GetBuiltinAssets())
+	{
+		CAPTURE(info.Name);
+		CHECK(info.Handle > 0);
+		CHECK(info.Handle < AssetManager::FirstUserHandle);
+		CHECK(std::find(handles.begin(), handles.end(), info.Handle) == handles.end());
+		handles.push_back(info.Handle);
+		CHECK(assets.IsBuiltin(AssetHandle(info.Handle)));
+		CHECK(assets.GetAssetType(AssetHandle(info.Handle)) == info.Type);
+		auto asset = assets.GetAsset(AssetHandle(info.Handle));
+		REQUIRE(asset);
+		CHECK(asset->GetType() == info.Type);
+		CHECK(static_cast<uint64_t>(asset->Handle) == info.Handle);
+		CHECK(assets.GetAsset(asset->Handle) == asset);
+	}
+	for (uint64_t handle : {0u, 6u, 15u, 18u, 1023u})
+	{
+		CHECK_FALSE(assets.IsBuiltin(AssetHandle(handle)));
+		CHECK(assets.GetAssetType(AssetHandle(handle)) == AssetType::None);
+	}
+}
+
+TEST_CASE("AssetManager: ground material is distinct, cached and protected from replacement")
+{
+	AssetManager assets;
+	const AssetHandle handle(AssetManager::BuiltinGroundMaterial);
+	auto ground = assets.GetAsset<MaterialAsset>(handle);
+	REQUIRE(ground);
+	CHECK(ground->BaseColorFactor == glm::vec4(0.22f, 0.24f, 0.27f, 1.0f));
+	CHECK(ground->RoughnessFactor == 0.4f);
+	CHECK(ground->MetallicFactor == 0.0f);
+	CHECK(assets.GetAsset<MaterialAsset>(handle) == ground);
+	CHECK_FALSE(assets.GetAsset<MeshAsset>(handle));
+	CHECK_FALSE(assets.RemoveAsset(handle));
+	CHECK_FALSE(assets.ReloadAsset(handle));
+	{
+		Paralax::Testing::ScopedAssertionCapture capture;
+		auto clash = CreateRef<MaterialAsset>();
+		clash->Handle = handle;
+		CHECK_THROWS_AS(assets.AddMemoryAsset(clash), Paralax::Testing::AssertionFailedError);
+	}
+	auto neutral = assets.GetAsset<MaterialAsset>(AssetHandle(AssetManager::BuiltinDefaultMaterial));
+	REQUIRE(neutral);
+	CHECK(neutral != ground);
+	CHECK(neutral->BaseColorFactor.r == neutral->BaseColorFactor.g);
+	CHECK(neutral->BaseColorFactor.g == neutral->BaseColorFactor.b);
 }

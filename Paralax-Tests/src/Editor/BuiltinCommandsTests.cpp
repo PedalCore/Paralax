@@ -296,3 +296,20 @@ TEST_CASE("BuiltinCommands: component.set cannot give an entity an empty name")
 	REQUIRE(child.Success);
 	CHECK(context.Execute("entity.get", {{"id", child.Result["id"]}}).Result["parent"] == id);
 }
+
+TEST_CASE("BuiltinCommands: asset list exposes the complete built-in catalog without a project")
+{
+	EditorContext context;
+	const auto result = context.Execute("asset.list");
+	REQUIRE(result.Success);
+	const auto& builtins = result.Result["builtins"];
+	REQUIRE(builtins.size() == AssetManager::GetBuiltinAssets().size());
+	size_t index = 0;
+	for (const BuiltinAssetInfo& info : AssetManager::GetBuiltinAssets())
+	{
+		CHECK(builtins[index]["handle"].get<std::string>() == std::to_string(info.Handle));
+		CHECK(builtins[index]["type"].get<std::string>() == std::string(AssetTypeToString(info.Type)));
+		CHECK(builtins[index]["name"].get<std::string>() == std::string(info.Name));
+		index++;
+	}
+}
