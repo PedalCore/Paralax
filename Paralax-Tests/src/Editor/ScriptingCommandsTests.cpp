@@ -1,13 +1,18 @@
 #include <doctest/doctest.h>
 
+#include "Asset/GltfTestDocument.h"
 #include "TestUtilities.h"
 
 #include <EditorCore/EditorContext.h>
 
+#include <Paralax/Asset/MeshAsset.h>
 #include <Paralax/Core/Input.h>
 #include <Paralax/Scene/Components.h>
 #include <Paralax/Scene/Entity.h>
 #include <Paralax/Scripting/ScriptAsset.h>
+
+#include <algorithm>
+#include <fstream>
 
 using namespace Paralax;
 using namespace Paralax::Editor;
@@ -124,6 +129,96 @@ TEST_CASE("ScriptingCommands: prefabs are created from entities and instantiated
 	CHECK_FALSE(fixture.Context.Execute("prefab.instantiate", {{"prefab", prefab["handle"]}, {"position", {1, 2}}}).Success);
 	CHECK_FALSE(fixture.Context.Execute("prefab.instantiate", {{"prefab", prefab["handle"]}, {"parent", "12345"}}).Success);
 	CHECK(fixture.Context.GetEditorScene().GetEntityCount() == before);
+}
+
+TEST_CASE("ScriptingCommands: model.create_prefab turns a glTF scene into entities")
+{
+	ProjectFixture fixture("ModelPrefabCommand");
+	const std::filesystem::path models = fixture.Directory / "Assets" / "Models";
+	std::filesystem::create_directories(models);
+	json document = Paralax::Testing::MakeTriangleDocument(models);
+	Paralax::Testing::AddCamerasAndLights(document);
+	Paralax::Testing::WriteGltf(models, document, "Bay.gltf");
+
+	// The model is imported on the way, by its path.
+	const json created = fixture.Run("model.create_prefab", {{"model", "Models/Bay.gltf"}});
+	CHECK(created["entities"] == 8);
+	CHECK(created["meshes"] == 2);
+	CHECK(created["cameras"] == 2);
+	CHECK(created["lights"] == 3);
+	CHECK(created["warnings"].empty());
+	CHECK(std::filesystem::exists(fixture.Directory / "Assets" / "Prefabs" / "Bay.pxprefab"));
+
+	// Instantiated, it shows the model piece by piece.
+	const std::string root = fixture.Run("prefab.instantiate", {{"prefab", created["handle"]}})["id"];
+	const json entity = fixture.Run("entity.get", {{"id", root}});
+	CHECK(entity["name"] == "Bay");
+	Scene& scene = fixture.Context.GetActiveScene();
+	std::optional<Entity> lamp = scene.FindEntityByName("Lamp");
+	REQUIRE(lamp);
+	CHECK(lamp->HasComponent<PointLightComponent>());
+	std::optional<Entity> node1 = scene.FindEntityByName("Node1");
+	REQUIRE(node1);
+	const AssetHandle nodeMesh = node1->GetComponent<MeshComponent>().Mesh;
+	CHECK(fixture.Context.GetAssets().GetAsset<MeshAsset>(nodeMesh));
+
+	// The per-node meshes are in the registry: a fresh asset manager (the project reopened) finds them.
+	{
+		AssetManager reopened(fixture.Directory / "Assets");
+		REQUIRE(reopened.LoadRegistry());
+		Ref<MeshAsset> mesh = reopened.GetAsset<MeshAsset>(nodeMesh);
+		REQUIRE(mesh);
+		CHECK(mesh->Submeshes.size() == 1);
+	}
+
+	// By handle, with a chosen path and root name; existing destinations and non-models are refused.
+	const json again = fixture.Run("model.create_prefab", {{"model", created["model"]}, {"path", "Prefabs/BayCopy"}, {"name", "Copy"}});
+	CHECK(again["entities"] == 8);
+	CHECK_FALSE(fixture.Context.Execute("model.create_prefab", {{"model", "Models/Bay.gltf"}}).Success); // Prefabs/Bay.pxprefab exists.
+	CHECK_FALSE(fixture.Context.Execute("model.create_prefab", {{"model", "Models/Missing.glb"}}).Success);
+	CHECK_FALSE(fixture.Context.Execute("model.create_prefab", {{"model", "../Outside.gltf"}}).Success);
+	CHECK_FALSE(fixture.Context.Execute("model.create_prefab", {{"model", created["handle"]}}).Success); // A prefab, not a model.
+	CHECK_FALSE(fixture.Context.Execute("model.create_prefab", {{"model", "1"}}).Success);               // The built-in cube.
+	CHECK_FALSE(fixture.Context.Execute("model.create_prefab", {{"model", 5}}).Success);
+	CHECK_FALSE(EditorContext().Execute("model.create_prefab", {{"model", "Models/Bay.gltf"}}).Success); // No project.
+	CHECK_FALSE(fixture.Context.Execute("model.create_prefab", {{"model", "Models/Bay.gltf"}, {"path", 3}}).Success);
+	CHECK_FALSE(fixture.Context.Execute("model.create_prefab", {{"model", "Models/Bay.gltf"}, {"name", false}}).Success);
+
+	// Refused while playing: reloading the model would change assets under the running game.
+	fixture.Run("play.start", {{"paused", true}});
+	CHECK_FALSE(fixture.Context.Execute("model.create_prefab", {{"model", "Models/Bay.gltf"}, {"path", "Prefabs/WhilePlaying"}}).Success);
+	fixture.Run("play.stop");
+	CHECK_FALSE(std::filesystem::exists(fixture.Directory / "Assets" / "Prefabs" / "WhilePlaying.pxprefab"));
+}
+
+TEST_CASE("ScriptingCommands: model.create_prefab registers per-node meshes for models imported before them")
+{
+	ProjectFixture fixture("ModelPrefabOldRegistry");
+	const std::filesystem::path models = fixture.Directory / "Assets" / "Models";
+	std::filesystem::create_directories(models);
+	json document = Paralax::Testing::MakeTriangleDocument(models);
+	Paralax::Testing::WriteGltf(models, document, "Old.GLTF"); // Extensions match in any case.
+	const std::string model = fixture.Run("asset.import", {{"path", "Models/Old.GLTF"}})["handle"];
+
+	// The registry as an older engine wrote it: the model's materials and textures, but no per-node meshes.
+	const std::filesystem::path registryFile = fixture.Directory / "Assets" / AssetManager::RegistryFileName;
+	json registry = json::parse(Paralax::Testing::ReadFileText(registryFile));
+	json& entries = registry["Assets"];
+	const size_t before = entries.size();
+	entries.erase(std::remove_if(entries.begin(), entries.end(), [&](const json& entry) { return entry.value("Parent", "") == model && entry["Type"] == "Mesh"; }), entries.end());
+	REQUIRE(entries.size() < before);
+	std::ofstream(registryFile) << registry.dump();
+
+	EditorContext reopened(Project::Load(fixture.Directory / "Game.pxproj"));
+	REQUIRE(reopened.GetProject());
+	const CommandResult created = reopened.Execute("model.create_prefab", {{"model", model}});
+	REQUIRE_MESSAGE(created.Success, created.Error);
+	CHECK(created.Result["meshes"] == 2);
+	REQUIRE(reopened.Execute("prefab.instantiate", {{"prefab", created.Result["handle"]}}).Success);
+	std::optional<Entity> node = reopened.GetActiveScene().FindEntityByName("Node1");
+	REQUIRE(node);
+	CHECK(reopened.GetAssets().IsRegistered(node->GetComponent<MeshComponent>().Mesh));
+	CHECK(reopened.GetAssets().GetAsset<MeshAsset>(node->GetComponent<MeshComponent>().Mesh));
 }
 
 TEST_CASE("ScriptingCommands: script.api lists the scripting API with or without play mode")

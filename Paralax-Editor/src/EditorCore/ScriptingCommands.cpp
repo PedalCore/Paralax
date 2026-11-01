@@ -1,11 +1,15 @@
 #include "EditorCore/EditorContext.h"
 
+#include <Paralax/Asset/MeshImporter.h>
 #include <Paralax/Scene/Entity.h>
+#include <Paralax/Scene/ModelPrefab.h>
 #include <Paralax/Scene/Prefab.h>
 #include <Paralax/Scene/SceneSerializer.h>
 #include <Paralax/Scripting/ScriptAsset.h>
 #include <Paralax/Scripting/ScriptSystem.h>
 
+#include <algorithm>
+#include <cctype>
 #include <charconv>
 
 namespace Paralax::Editor {
@@ -237,6 +241,102 @@ return {name}
 							   if (!handle.IsValid())
 								   return CommandResult::Fail("Import failed (see the log for details)");
 							   return CommandResult::Ok({{"handle", IdString(handle)}, {"entities", prefab->GetEntityCount()}});
+						   }});
+
+		registry.Register({"model.create_prefab",
+						   "Turns an imported glTF/GLB model into a prefab with one entity per node (its name, local transform, mesh, camera and light), so a scene exported from Blender can be edited piece by piece. Imports the model first if needed.",
+						   {{"model", "string", "Model handle, or path relative to Assets (e.g. Models/Bay.glb).", true},
+							{"path", "string", "Destination relative to Assets; default Prefabs/<model name>.pxprefab.", false},
+							{"name", "string", "Name of the prefab's root entity; default the model's file name.", false}},
+						   false,
+						   [](EditorContext& context, const json& params) {
+							   if (!context.GetProject())
+								   return CommandResult::Fail("No project is open");
+							   // Reloading the model while a game runs would change assets under it.
+							   if (context.IsPlaying())
+								   return CommandResult::Fail("Stop play mode first (play.stop)");
+							   for (const char* optional : {"path", "name"})
+							   {
+								   if (params.contains(optional) && !params[optional].is_string())
+									   return CommandResult::Fail(fmt::format("'{}' must be a string", optional));
+							   }
+							   if (!params["model"].is_string())
+								   return CommandResult::Fail("'model' must be a handle or a path, as a string");
+							   AssetManager& assets = context.GetAssets();
+							   std::string error;
+
+							   // Resolve everything that can fail cheaply before importing anything.
+							   const std::filesystem::path requested = params["model"].get<std::string>();
+							   AssetHandle handle = ResolveAsset(context, params["model"]);
+							   std::filesystem::path registryPath;
+							   if (const AssetMetadata* metadata = handle.IsValid() ? assets.GetMetadata(handle) : nullptr)
+								   registryPath = metadata->FilePath;
+							   else
+								   registryPath = requested;
+							   std::string extension = registryPath.extension().string();
+							   std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+							   if (extension != ".gltf" && extension != ".glb")
+								   return CommandResult::Fail("Not a model: expected a .gltf or .glb file in the project, or its handle");
+							   const std::string stem = registryPath.stem().string();
+							   const std::string destination = params.contains("path") ? params["path"].get<std::string>() : "Prefabs/" + stem + ".pxprefab";
+							   std::optional<std::filesystem::path> path = NewAssetPath(context, destination, ".pxprefab", error);
+							   if (!path)
+								   return CommandResult::Fail(error);
+
+							   // Not registered yet: import it, if it is a model file inside the project.
+							   if (!handle.IsValid())
+							   {
+								   std::optional<std::filesystem::path> file = context.ResolveProjectPath(requested, error);
+								   if (!file)
+									   return CommandResult::Fail(error);
+								   handle = assets.ImportAsset(*file);
+							   }
+							   const AssetMetadata* metadata = handle.IsValid() ? assets.GetMetadata(handle) : nullptr;
+							   if (!metadata || metadata->Type != AssetType::Mesh || metadata->Parent.IsValid() || metadata->FilePath.empty())
+								   return CommandResult::Fail("Not an imported model file (a .gltf or .glb in the project)");
+							   std::optional<std::filesystem::path> source = context.ResolveProjectPath(metadata->FilePath, error);
+							   if (!source)
+								   return CommandResult::Fail(error);
+							   MeshImportResult model;
+							   if (!MeshImporter::Import(*source, handle, model, error))
+								   return CommandResult::Fail(error);
+
+							   // A model imported before per-node meshes existed (or changed on disk since) lacks their registry
+							   // entries: reloading it registers what the file produces now.
+							   auto registered = [&] {
+								   return std::all_of(model.NodeMeshes.begin(), model.NodeMeshes.end(), [&](const Ref<MeshAsset>& mesh) { return assets.IsRegistered(mesh->Handle); });
+							   };
+							   if (!registered() && (!assets.ReloadAsset(handle) || !registered()))
+								   return CommandResult::Fail("The model's meshes could not be registered (did the file change while importing?)");
+
+							   const std::string rootName = params.contains("name") && !params["name"].get<std::string>().empty() ? params["name"].get<std::string>() : stem;
+							   Ref<PrefabAsset> prefab = BuildModelPrefab(model, rootName, error);
+							   if (!prefab)
+								   return CommandResult::Fail(error);
+							   if (prefab->ToJson().dump(1, '\t').size() + 1 > PrefabAsset::MaxFileBytes)
+								   return CommandResult::Fail(fmt::format("The model has too many objects for one prefab ({} entities)", prefab->GetEntityCount()));
+							   std::error_code directoryError;
+							   std::filesystem::create_directories(path->parent_path(), directoryError);
+							   if (!prefab->SaveToFile(*path))
+								   return CommandResult::Fail("Could not write the prefab file");
+							   const AssetHandle prefabHandle = assets.ImportAsset(*path);
+							   if (!prefabHandle.IsValid())
+								   return CommandResult::Fail("Import failed (see the log for details)");
+
+							   size_t meshes = 0, cameras = 0, lights = 0;
+							   for (const ImportedNode& node : model.Nodes)
+							   {
+								   meshes += node.Mesh.IsValid() ? 1 : 0;
+								   cameras += node.Camera ? 1 : 0;
+								   lights += node.Light ? 1 : 0;
+							   }
+							   return CommandResult::Ok({{"handle", IdString(prefabHandle)},
+														 {"model", IdString(handle)},
+														 {"entities", prefab->GetEntityCount()},
+														 {"meshes", meshes},
+														 {"cameras", cameras},
+														 {"lights", lights},
+														 {"warnings", model.Warnings}});
 						   }});
 
 		registry.Register({"prefab.instantiate", "Creates an instance of a prefab (by handle or asset path), optionally under a parent and at a position.", {{"prefab", "string", "Prefab handle or path relative to Assets.", true}, {"parent", "any", "Parent entity id.", false}, {"position", "array", "Local position [x, y, z].", false}}, true, [](EditorContext& context, const json& params) {

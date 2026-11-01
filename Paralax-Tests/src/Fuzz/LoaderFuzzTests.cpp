@@ -14,6 +14,7 @@
 #include <Paralax/Scene/ComponentRegistry.h>
 #include <Paralax/Scene/Components.h>
 #include <Paralax/Scene/Entity.h>
+#include <Paralax/Scene/ModelPrefab.h>
 #include <Paralax/Scene/Prefab.h>
 #include <Paralax/Scene/Scene.h>
 #include <Paralax/Scene/SceneSerializer.h>
@@ -329,7 +330,9 @@ TEST_CASE("Fuzz: mutated glTF files never crash the importer")
 {
 	Paralax::Testing::ScopedLogLevel quiet(spdlog::level::off);
 	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("FuzzGltf");
-	const json document = Paralax::Testing::MakeTriangleDocument(directory);
+	const json plain = Paralax::Testing::MakeTriangleDocument(directory);
+	json withScene = plain;
+	Paralax::Testing::AddCamerasAndLights(withScene); // Nodes, cameras and lights for the scene import.
 	const std::vector<uint8_t> glb = Paralax::Testing::MakeTriangleGlb(directory);
 	Mutator mutator(0x6177F);
 	for (int iteration = 0; iteration < Iterations(800); iteration++)
@@ -338,6 +341,7 @@ TEST_CASE("Fuzz: mutated glTF files never crash the importer")
 		// Structural edits mostly (the importer sees a well-formed but hostile document), raw bytes of the text and
 		// binary forms sometimes (the binary form's chunk headers are a classic source of out-of-bounds reads).
 		const std::filesystem::path path = directory / "Fuzz.gltf";
+		const json& document = (iteration / 4) % 2 == 0 ? plain : withScene;
 		if (iteration % 4 == 3)
 			WriteBytes(path, mutator.Bytes(Text(document.dump())));
 		else if (iteration % 4 == 2)
@@ -346,7 +350,16 @@ TEST_CASE("Fuzz: mutated glTF files never crash the importer")
 			WriteBytes(path, Text(mutator.Json(document).dump()));
 		MeshImportResult result;
 		std::string error;
-		CHECK_NOTHROW(MeshImporter::Import(path, UUID(7), result, error));
+		bool imported = false;
+		CHECK_NOTHROW(imported = MeshImporter::Import(path, UUID(7), result, error));
+		// Whatever the importer accepts must also make a valid prefab, one that survives its own file format.
+		if (imported)
+		{
+			Ref<PrefabAsset> prefab;
+			CHECK_NOTHROW(prefab = BuildModelPrefab(result, "Fuzz", error));
+			REQUIRE_MESSAGE(prefab, error);
+			CHECK(PrefabAsset::FromJson(prefab->ToJson(), error) != nullptr);
+		}
 	}
 }
 

@@ -44,6 +44,17 @@ windowed one.
    [Scripting.md](Scripting.md). Asset handles are strings (built-ins: `"1"` cube, `"2"` sphere, `"3"` plane,
    `"4"` cylinder, `"5"` capsule; see `asset.list`). Make materials with `material.create`, prefabs with
    `prefab.create`, and import files placed under `Assets/` with `asset.import`.
+
+   **Models from Blender (or any glTF tool).** Export glTF 2.0 (`.glb`, or `.gltf` with its `.bin` and textures
+   beside it) into `Assets/`. `asset.import` makes it one mesh: put it on an entity's `Mesh` to show the whole file.
+   `model.create_prefab { model: "Models/Bay.glb" }` (importing it if needed) instead makes a prefab with one entity
+   per Blender object, nested as in Blender, each with its name, local transform and mesh, plus its camera (never
+   primary) or light; `prefab.instantiate` places it. The result reports counts and any warnings (animations and
+   skins are not imported; malformed light data is skipped). It is refused during play mode. Light strengths come
+   through as in Blender with its default "Standard" lighting mode (sun strength 3 becomes Intensity 3; a 1000 W
+   point light about 80), though the renderer's lighting is not physically calibrated, so check them with
+   `render.capture`. Re-exporting to the same file updates the meshes in place (they are matched by mesh name, so
+   reordering objects is fine); regenerate the prefab, to a new path, when objects are added or removed.
 2. **Script.** `script.create { path, source }` writes a Lua script, and `script.update` and `script.get` change and
    read it. Attach a script with a `Script` component. A script returns a table with `OnCreate`, `OnUpdate`,
    `OnFixedUpdate` (physics control, at the physics rate), `OnDestroy` and collision callbacks; see

@@ -97,6 +97,32 @@ namespace Paralax::Testing {
 		return document;
 	}
 
+	// Adds a small scene around the triangle's nodes (0, the root, and its child 1, both without names):
+	//   node 2 "Camera" (perspective, a root) with child node 3 "TopView" (orthographic);
+	//   node 4 "Sun" (directional light, a root) with children node 5 "Lamp" (point light, no range) and node 6
+	//   "Spot" (spot light, given as a matrix: translate (1, 2, 3), rotate 90 degrees about Y, scale 2).
+	// Light intensities are photometric, 683 times the strengths they should import as (3, 80 and 1).
+	inline void AddCamerasAndLights(json& document)
+	{
+		document["cameras"] = {{{"type", "perspective"}, {"perspective", {{"yfov", 0.8}, {"znear", 0.05}, {"zfar", 500.0}}}},
+							   {{"type", "orthographic"}, {"orthographic", {{"xmag", 4.0}, {"ymag", 3.0}, {"znear", 0.1}, {"zfar", 50.0}}}}};
+		document["extensionsUsed"] = {"KHR_lights_punctual"};
+		document["extensions"]["KHR_lights_punctual"]["lights"] = {
+			{{"type", "directional"}, {"color", {1.0, 0.9, 0.8}}, {"intensity", 3.0 * 683.0}},
+			{{"type", "point"}, {"intensity", 80.0 * 683.0}},
+			{{"type", "spot"}, {"intensity", 683.0}, {"range", 7.0}, {"spot", {{"innerConeAngle", 0.2}, {"outerConeAngle", 0.5}}}}};
+		auto light = [](int index) { return json{{"KHR_lights_punctual", {{"light", index}}}}; };
+		// translate(1, 2, 3) * rotate(90 degrees about Y) * scale(2), column-major.
+		const json spotMatrix = {0.0, 0.0, -2.0, 0.0, 0.0, 2.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 1.0};
+		json& nodes = document["nodes"];
+		nodes.push_back({{"name", "Camera"}, {"camera", 0}, {"translation", {0.0, 1.0, 5.0}}, {"children", {3}}});
+		nodes.push_back({{"name", "TopView"}, {"camera", 1}, {"rotation", {-0.70710678, 0.0, 0.0, 0.70710678}}});
+		nodes.push_back({{"name", "Sun"}, {"extensions", light(0)}, {"children", {5, 6}}});
+		nodes.push_back({{"name", "Lamp"}, {"extensions", light(1)}, {"translation", {0.0, 3.0, 0.0}}});
+		nodes.push_back({{"name", "Spot"}, {"extensions", light(2)}, {"matrix", spotMatrix}});
+		document["scenes"][0]["nodes"] = {0, 2, 4};
+	}
+
 	// The same triangle as binary glTF (GLB): the document as the JSON chunk, its buffer as the BIN chunk.
 	inline std::vector<uint8_t> MakeTriangleGlb(const std::filesystem::path& directory)
 	{

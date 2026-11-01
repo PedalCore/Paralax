@@ -68,7 +68,7 @@ cmake --preset debug && cmake --build build/debug && ctest --preset debug -j8
   The reflection layer is the single source for scene files, the inspector, scripting and the agent API; never hand-write per-component serialization.
 - **Hierarchy** goes through `Scene` (`SetParent`, `SetSiblingIndex`, `DestroyEntity`). Never edit `RelationshipComponent` directly. Tree walks must be iterative, because hierarchies can be very deep.
 - **Engine resources** are large built-in files, such as HDR environments, that ship beside the executables in `Resources/`: never embed them in the binary, and never commit them. Pin them in `cmake/Dependencies.cmake`, have the build copy them, and locate them with `GetEngineResourceDirectory()`. A missing resource is an error that is reported once; it is never a crash. Small files (shaders, UI fonts) are embedded with `px_embed_files`.
-- **Assets** are referenced by `AssetHandle` (UUID). Handles 1–1023 are reserved for built-ins (see `AssetManager`). Files live under the project's asset directory and are listed in `AssetRegistry.json`. glTF materials and textures are sub-assets with deterministic handles.
+- **Assets** are referenced by `AssetHandle` (UUID). Handles 1–1023 are reserved for built-ins (see `AssetManager`). Files live under the project's asset directory and are listed in `AssetRegistry.json`. glTF materials, textures and per-node meshes are sub-assets with deterministic handles; `BuildModelPrefab` (Scene/ModelPrefab) turns a glTF node hierarchy into a prefab.
 - **Untrusted input.** Every loader (scene, material, registry, glTF, image) treats files as untrusted:
   - check JSON types before reading (nlohmann's `value()` throws)
   - bounds-check every buffer access

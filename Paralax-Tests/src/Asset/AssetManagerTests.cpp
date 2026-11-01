@@ -1,11 +1,13 @@
 #include <doctest/doctest.h>
 
+#include "Asset/GltfTestDocument.h"
 #include "TestUtilities.h"
 
 #include <Paralax/Asset/AssetManager.h>
 #include <Paralax/Asset/MaterialAsset.h>
 #include <Paralax/Asset/MaterialSerializer.h>
 #include <Paralax/Asset/MeshAsset.h>
+#include <Paralax/Asset/MeshImporter.h>
 #include <Paralax/Asset/TextureAsset.h>
 #include <Paralax/Renderer/Image.h>
 #include <Paralax/Core/EngineResources.h>
@@ -356,4 +358,46 @@ TEST_CASE("AssetManager: imported HDR retains its registered environment type")
 	CHECK(assets.GetAssetType(handle) == AssetType::EnvironmentMap);
 	REQUIRE(assets.ReloadAsset(handle));
 	CHECK(assets.GetAsset<TextureAsset>(handle)->GetType() == AssetType::EnvironmentMap);
+}
+
+TEST_CASE("AssetManager: a model's per-node meshes are registered, and follow re-exports that drop objects")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("AssetManagerNodeMeshes");
+	// Two named meshes, each on its own node.
+	nlohmann::json document = Paralax::Testing::MakeTriangleDocument(directory);
+	document["meshes"].push_back(document["meshes"][0]);
+	document["meshes"][0]["name"] = "Keep";
+	document["meshes"][1]["name"] = "Drop";
+	document["nodes"] = {{{"name", "Kept"}, {"mesh", 0}}, {{"name", "Dropped"}, {"mesh", 1}}};
+	document["scenes"][0]["nodes"] = {0, 1};
+	Paralax::Testing::WriteGltf(directory, document, "Model.gltf");
+
+	AssetManager assets(directory);
+	const AssetHandle model = assets.ImportAsset("Model.gltf");
+	REQUIRE(model.IsValid());
+	MeshImportResult imported;
+	std::string error;
+	REQUIRE(MeshImporter::Import(directory / "Model.gltf", model, imported, error));
+	REQUIRE(imported.NodeMeshes.size() == 2);
+	const AssetHandle kept = imported.Nodes[0].Mesh;
+	const AssetHandle dropped = imported.Nodes[1].Mesh;
+	for (AssetHandle handle : {kept, dropped})
+	{
+		REQUIRE(assets.IsRegistered(handle));
+		CHECK(assets.GetMetadata(handle)->Parent == model);
+		CHECK(assets.GetMetadata(handle)->Type == AssetType::Mesh);
+		CHECK(assets.GetAsset<MeshAsset>(handle));
+	}
+
+	// Re-exported without the second object: reloading unregisters its mesh and keeps the other's handle.
+	document["meshes"].erase(1);
+	document["nodes"].erase(1);
+	document["scenes"][0]["nodes"] = {0};
+	Paralax::Testing::WriteGltf(directory, document, "Model.gltf");
+	REQUIRE(assets.ReloadAsset(model));
+	CHECK(assets.IsRegistered(kept));
+	CHECK(assets.GetAsset<MeshAsset>(kept));
+	CHECK_FALSE(assets.IsRegistered(dropped));
+	Paralax::Testing::ScopedLogCapture capture;
+	CHECK_FALSE(assets.GetAsset<MeshAsset>(dropped));
 }

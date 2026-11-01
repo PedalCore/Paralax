@@ -8,7 +8,9 @@ namespace Paralax::Editor {
 
 	namespace {
 
-		void AssetRow(const char* type, const std::string& name, uint64_t handle, bool* doubleClicked = nullptr)
+		// One row of the asset table. With contextAction, right-clicking the row offers that action; contextChosen is
+		// set when it is picked.
+		void AssetRow(const char* type, const std::string& name, uint64_t handle, bool* doubleClicked = nullptr, const char* contextAction = nullptr, bool* contextChosen = nullptr)
 		{
 			ImGui::TableNextRow();
 			ImGui::TableSetColumnIndex(0);
@@ -16,6 +18,11 @@ namespace Paralax::Editor {
 			ImGui::Selectable(name.c_str(), false, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick);
 			if (doubleClicked)
 				*doubleClicked = ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+			if (contextAction && contextChosen && ImGui::BeginPopupContextItem())
+			{
+				*contextChosen = ImGui::MenuItem(contextAction);
+				ImGui::EndPopup();
+			}
 			if (ImGui::BeginDragDropSource())
 			{
 				ImGui::SetDragDropPayload("PARALAX_ASSET", &handle, sizeof(handle));
@@ -68,9 +75,14 @@ namespace Paralax::Editor {
 				if (metadata.Parent.IsValid())
 					name += fmt::format(" > {} {}", AssetTypeToString(metadata.Type), static_cast<uint64_t>(metadata.Handle) % 10000);
 				bool doubleClicked = false;
-				AssetRow(std::string(AssetTypeToString(metadata.Type)).c_str(), name, metadata.Handle, &doubleClicked);
+				bool createPrefab = false;
+				const bool isModel = metadata.Type == AssetType::Mesh && !metadata.Parent.IsValid();
+				AssetRow(std::string(AssetTypeToString(metadata.Type)).c_str(), name, metadata.Handle, &doubleClicked, isModel ? "Create Prefab From Model" : nullptr, &createPrefab);
 				if (doubleClicked && metadata.Type == AssetType::Scene)
 					context.Execute("scene.open", {{"path", metadata.FilePath.generic_string()}});
+				// It writes files and registers assets (changing the list being drawn): run it after the panels.
+				if (createPrefab)
+					context.Defer("model.create_prefab", {{"model", std::to_string(static_cast<uint64_t>(metadata.Handle))}});
 			}
 			ImGui::EndTable();
 		}

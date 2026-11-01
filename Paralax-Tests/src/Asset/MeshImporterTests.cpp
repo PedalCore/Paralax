@@ -7,10 +7,15 @@
 #include <Paralax/Asset/MeshImporter.h>
 #include <Paralax/Renderer/Image.h>
 
+#include <glm/gtc/epsilon.hpp>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <fstream>
+#include <map>
+#include <optional>
 
 using namespace Paralax;
 using json = nlohmann::json;
@@ -91,6 +96,191 @@ TEST_CASE("MeshImporter: imports binary glTF (GLB)")
 	CHECK(result.Mesh->Vertices[1].UV == glm::vec2(1.0f, 0.0f));
 	CHECK(result.Mesh->Indices == std::vector<uint32_t>{0, 1, 2, 0, 1, 2});
 	CHECK(result.Textures.size() == 1);
+}
+
+TEST_CASE("MeshImporter: records the scene's node hierarchy with per-node meshes, cameras and lights")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfNodes");
+	json document = Paralax::Testing::MakeTriangleDocument(directory);
+	Paralax::Testing::AddCamerasAndLights(document);
+	MeshImportResult result;
+	std::string error;
+	REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), result, error), error);
+
+	// Pre-order, parents first; nodes without names are named after their index.
+	REQUIRE(result.Nodes.size() == 7);
+	std::vector<std::string> names;
+	std::vector<std::optional<size_t>> parents;
+	for (const ImportedNode& node : result.Nodes)
+	{
+		names.push_back(node.Name);
+		parents.push_back(node.Parent);
+	}
+	CHECK(names == std::vector<std::string>{"Node0", "Node1", "Camera", "TopView", "Sun", "Lamp", "Spot"});
+	CHECK(parents == std::vector<std::optional<size_t>>{std::nullopt, 0, std::nullopt, 2, std::nullopt, 4, 4});
+
+	// Local transforms, from TRS or decomposed from a matrix.
+	CHECK(result.Nodes[0].Translation == glm::vec3(10.0f, 0.0f, 0.0f));
+	CHECK(result.Nodes[1].Translation == glm::vec3(0.0f, 5.0f, 0.0f)); // Relative to its parent.
+	const ImportedNode& spot = result.Nodes[6];
+	CHECK(glm::all(glm::epsilonEqual(spot.Translation, glm::vec3(1.0f, 2.0f, 3.0f), 1e-5f)));
+	CHECK(glm::all(glm::epsilonEqual(spot.Scale, glm::vec3(2.0f), 1e-5f)));
+	CHECK(glm::all(glm::epsilonEqual(spot.Rotation * glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, -1.0f), 1e-5f)));
+	// TopView's TRS rotation (-90 degrees about X, as [x, y, z, w]) turns its view (-Z) straight down.
+	CHECK(glm::all(glm::epsilonEqual(result.Nodes[3].Rotation * glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0.0f, -1.0f, 0.0f), 1e-5f)));
+
+	// One mesh shared by two nodes: one per-node mesh, in its own space, with the shared material slots.
+	REQUIRE(result.NodeMeshes.size() == 1);
+	const MeshAsset& nodeMesh = *result.NodeMeshes[0];
+	CHECK(nodeMesh.Handle.IsValid());
+	CHECK(nodeMesh.Handle != result.Mesh->Handle);
+	CHECK(result.Nodes[0].Mesh == nodeMesh.Handle);
+	CHECK(result.Nodes[1].Mesh == nodeMesh.Handle);
+	CHECK(result.Nodes[2].Mesh == AssetHandle(0));
+	CHECK(nodeMesh.Submeshes.size() == 1);
+	CHECK(nodeMesh.Submeshes[0].Transform == glm::mat4(1.0f));
+	CHECK(nodeMesh.Bounds.Max == glm::vec3(1.0f, 1.0f, 0.0f));
+	CHECK(nodeMesh.Materials == result.Mesh->Materials);
+	// The combined mesh is unchanged: both instances, with their world transforms.
+	REQUIRE(result.Mesh->Submeshes.size() == 2);
+	CHECK(glm::vec3(result.Mesh->Submeshes[1].Transform[3]) == glm::vec3(10.0f, 5.0f, 0.0f));
+
+	// Cameras.
+	REQUIRE(result.Nodes[2].Camera);
+	CHECK_FALSE(result.Nodes[2].Camera->Orthographic);
+	CHECK(result.Nodes[2].Camera->FieldOfView == doctest::Approx(0.8));
+	CHECK(result.Nodes[2].Camera->Near == doctest::Approx(0.05));
+	CHECK(result.Nodes[2].Camera->Far == doctest::Approx(500.0));
+	REQUIRE(result.Nodes[3].Camera);
+	CHECK(result.Nodes[3].Camera->Orthographic);
+	CHECK(result.Nodes[3].Camera->OrthographicSize == doctest::Approx(6.0)); // Twice ymag.
+
+	// Lights, back in the strengths they were exported from.
+	REQUIRE(result.Nodes[4].Light);
+	CHECK(result.Nodes[4].Light->Type == ImportedLightType::Directional);
+	CHECK(result.Nodes[4].Light->Intensity == doctest::Approx(3.0));
+	CHECK(glm::all(glm::epsilonEqual(result.Nodes[4].Light->Color, glm::vec3(1.0f, 0.9f, 0.8f), 1e-6f)));
+	REQUIRE(result.Nodes[5].Light);
+	CHECK(result.Nodes[5].Light->Type == ImportedLightType::Point);
+	CHECK(result.Nodes[5].Light->Intensity == doctest::Approx(80.0));
+	CHECK(result.Nodes[5].Light->Range == doctest::Approx(10.0 * std::sqrt(80.0))); // No range: where it falls to 0.01.
+	REQUIRE(spot.Light);
+	CHECK(spot.Light->Type == ImportedLightType::Spot);
+	CHECK(spot.Light->Intensity == doctest::Approx(1.0));
+	CHECK(spot.Light->Range == doctest::Approx(7.0));
+	CHECK(spot.Light->InnerConeAngle == doctest::Approx(0.2));
+	CHECK(spot.Light->OuterConeAngle == doctest::Approx(0.5));
+	CHECK_FALSE(result.Nodes[0].Light);
+	CHECK_FALSE(result.Nodes[0].Camera);
+}
+
+TEST_CASE("MeshImporter: hostile node, camera and light values are made safe")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfHostileNodes");
+	json document = Paralax::Testing::MakeTriangleDocument(directory);
+	Paralax::Testing::AddCamerasAndLights(document);
+	document["nodes"][0]["translation"] = {1e39, 0.0, 0.0};  // Overflows a float.
+	document["nodes"][2]["rotation"] = {0.0, 0.0, 0.0, 0.0}; // Not a rotation.
+	document["nodes"][6]["matrix"] = json::array();          // A matrix of zeros: collapsed to a point.
+	for (int i = 0; i < 16; i++)
+		document["nodes"][6]["matrix"].push_back(0.0);
+	document["nodes"][5]["name"] = std::string(255, 'x') + "\xC3\xA9" + std::string(10, 'y'); // A 2-byte character across byte 256.
+	document["cameras"][0]["perspective"]["yfov"] = 9.0;                                      // More than 179 degrees.
+	document["cameras"][1]["orthographic"]["znear"] = 60.0;                                   // Beyond far.
+	document["cameras"][1]["orthographic"]["ymag"] = -3.0;                                    // Negative extent.
+	auto& lights = document["extensions"]["KHR_lights_punctual"]["lights"];
+	lights[0]["intensity"] = 1e30;
+	lights[1]["color"] = {5.0, -1.0, 0.5};
+	lights[2]["spot"] = {{"innerConeAngle", 1.5}, {"outerConeAngle", 1.56}}; // Valid glTF (under pi/2), wider than 89 degrees.
+
+	Paralax::Testing::ScopedLogCapture capture;
+	MeshImportResult result;
+	std::string error;
+	REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), result, error), error);
+	REQUIRE(result.Nodes.size() == 7);
+	for (size_t i : {size_t(0), size_t(2)})
+	{
+		CAPTURE(i);
+		CHECK(result.Nodes[i].Translation == glm::vec3(0.0f));
+		CHECK(result.Nodes[i].Rotation == glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+		CHECK(result.Nodes[i].Scale == glm::vec3(1.0f));
+	}
+	CHECK(std::count_if(result.Warnings.begin(), result.Warnings.end(), [](const std::string& w) { return w.find("unusable transform") != std::string::npos; }) == 2);
+	// The collapsed node stays collapsed, where the combined mesh shows it (nowhere).
+	CHECK(result.Nodes[6].Scale == glm::vec3(0.0f));
+	CHECK(result.Nodes[5].Name == std::string(255, 'x'));
+	CHECK(result.Nodes[2].Camera->FieldOfView == doctest::Approx(glm::radians(179.0)));
+	CHECK(result.Nodes[3].Camera->Far > result.Nodes[3].Camera->Near);
+	CHECK(result.Nodes[3].Camera->OrthographicSize == doctest::Approx(6.0));
+	CHECK(result.Nodes[4].Light->Intensity == doctest::Approx(100000.0));
+	CHECK(result.Nodes[5].Light->Color == glm::vec3(1.0f, 0.0f, 0.5f));
+	CHECK(result.Nodes[6].Light->OuterConeAngle == doctest::Approx(glm::radians(89.0)));
+	CHECK(result.Nodes[6].Light->InnerConeAngle <= result.Nodes[6].Light->OuterConeAngle);
+}
+
+TEST_CASE("MeshImporter: per-node meshes keep their handles when a re-export renumbers them")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfMeshNames");
+	auto import = [&](const json& document) {
+		MeshImportResult result;
+		std::string error;
+		REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), result, error), error);
+		std::map<std::string, AssetHandle> handles; // By node name.
+		for (const ImportedNode& node : result.Nodes)
+			handles[node.Name] = node.Mesh;
+		return handles;
+	};
+	// Two named meshes on two nodes, then the same file with the meshes in the opposite order (as Blender writes it
+	// after objects are reordered).
+	json first = Paralax::Testing::MakeTriangleDocument(directory);
+	first["meshes"].push_back(first["meshes"][0]);
+	first["meshes"][0]["name"] = "Table";
+	first["meshes"][1]["name"] = "Chair";
+	first["nodes"] = {{{"name", "TableObject"}, {"mesh", 0}}, {{"name", "ChairObject"}, {"mesh", 1}}};
+	first["scenes"][0]["nodes"] = {0, 1};
+	json reordered = first;
+	std::swap(reordered["meshes"][0], reordered["meshes"][1]);
+	reordered["nodes"][0]["mesh"] = 1;
+	reordered["nodes"][1]["mesh"] = 0;
+
+	const auto before = import(first);
+	const auto after = import(reordered);
+	CHECK(before.at("TableObject") != before.at("ChairObject"));
+	CHECK(after.at("TableObject") == before.at("TableObject"));
+	CHECK(after.at("ChairObject") == before.at("ChairObject"));
+
+	// Unnamed or repeated names fall back to the index, and stay distinct.
+	json unnamed = first;
+	unnamed["meshes"][0].erase("name");
+	unnamed["meshes"][1]["name"] = "";
+	const auto byIndex = import(unnamed);
+	json repeated = first;
+	repeated["meshes"][1]["name"] = "Table";
+	const auto byRepeat = import(repeated);
+	CHECK(byIndex.at("TableObject") != byIndex.at("ChairObject"));
+	CHECK(byRepeat.at("TableObject") != byRepeat.at("ChairObject"));
+	CHECK(byRepeat.at("TableObject") == byIndex.at("TableObject")); // Both keyed by index 0.
+}
+
+TEST_CASE("MeshImporter: malformed lights are skipped with a warning; the meshes still import")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfBadLights");
+	for (const json& light : {json{{"type", "laser"}, {"intensity", 1.0}}, json{{"type", "point"}, {"range", 0.0}},
+							  json{{"type", "spot"}, {"intensity", 1.0}}, json{{"type", "directional"}, {"range", 5.0}}})
+	{
+		CAPTURE(light.dump());
+		json document = Paralax::Testing::MakeTriangleDocument(directory);
+		Paralax::Testing::AddCamerasAndLights(document);
+		document["extensions"]["KHR_lights_punctual"]["lights"][1] = light;
+		Paralax::Testing::ScopedLogCapture capture;
+		MeshImportResult result;
+		std::string error;
+		REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), result, error), error);
+		CHECK(result.Mesh->Submeshes.size() == 2);
+		CHECK_FALSE(std::any_of(result.Nodes.begin(), result.Nodes.end(), [](const ImportedNode& node) { return node.Light.has_value(); }));
+		CHECK(std::any_of(result.Warnings.begin(), result.Warnings.end(), [](const std::string& w) { return w.find("lights") != std::string::npos; }));
+		CHECK(result.Nodes[2].Camera); // Everything else still comes through.
+	}
 }
 
 TEST_CASE("MeshImporter: computes normals when missing and warns about missing images")

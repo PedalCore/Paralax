@@ -77,6 +77,14 @@ if(Python3_Interpreter_FOUND AND TARGET Paralax-Editor)
 		TIMEOUT 900
 		LABELS "smoke;gpu"
 		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp;PYTHONDONTWRITEBYTECODE=1")
+	# Importing a multi-object glTF scene (as Blender exports one) as editable entities with model.create_prefab.
+	add_test(NAME "Smoke: an agent imports a glTF scene as entities and views it through its camera"
+		COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/agent/tests/model_import_test.py"
+			$<TARGET_FILE:Paralax-Editor> "${CMAKE_CURRENT_BINARY_DIR}/TestOutput/ModelImport")
+	set_tests_properties("Smoke: an agent imports a glTF scene as entities and views it through its camera" PROPERTIES
+		TIMEOUT 600
+		LABELS "smoke;gpu"
+		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp;PYTHONDONTWRITEBYTECODE=1")
 	# The physics counterpart: tools/agent/examples/gem_roller (bodies, triggers, a moving platform, fixed-rate control).
 	add_test(NAME "Smoke: an agent builds the Gem Roller physics game through commands and plays it"
 		COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/agent/tests/gem_roller_test.py"

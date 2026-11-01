@@ -2,17 +2,22 @@
 #include "Paralax/Asset/MeshImporter.h"
 
 #include "Paralax/Asset/AssetManager.h"
+#include "Paralax/Math/Math.h"
 
 #include <fastgltf/core.hpp>
 #include <fastgltf/glm_element_traits.hpp>
 #include <fastgltf/tools.hpp>
 
+#include <glm/gtc/constants.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <iterator>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace Paralax {
 
@@ -181,6 +186,125 @@ namespace Paralax {
 			return true;
 		}
 
+		// Photometric glTF light units back to the radiometric strengths exporters such as Blender start from.
+		constexpr float s_LumensPerWatt = 683.0f;
+		// Field ranges of the light and camera components (see ComponentRegistry).
+		constexpr float s_MaxLightValue = 100000.0f;
+		constexpr size_t s_MaxNameBytes = 256;
+
+		float Clamped(float value, float low, float high, float fallback)
+		{
+			return std::isfinite(value) ? std::clamp(value, low, high) : fallback;
+		}
+
+		// Scripts may set names of at most s_MaxNameBytes; imported names keep to that too, cut at a UTF-8 boundary.
+		std::string NodeName(std::string_view name, size_t index)
+		{
+			if (name.empty())
+				return fmt::format("Node{}", index);
+			if (name.size() <= s_MaxNameBytes)
+				return std::string(name);
+			size_t end = s_MaxNameBytes;
+			while (end > 0 && (static_cast<unsigned char>(name[end]) & 0xC0) == 0x80)
+				end--;
+			return std::string(name.substr(0, end));
+		}
+
+		bool IsFinite(const glm::vec3& v)
+		{
+			return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+		}
+
+		// FNV-1a: a stable key for a mesh name.
+		uint64_t HashName(std::string_view name)
+		{
+			uint64_t hash = 0xCBF29CE484222325ull;
+			for (const char c : name)
+				hash = (hash ^ static_cast<unsigned char>(c)) * 0x100000001B3ull;
+			return hash;
+		}
+
+		// A node's name, local transform, camera and light, in Paralax's conventions.
+		ImportedNode MakeNode(const fastgltf::Asset& asset, const fastgltf::Node& node, size_t index, std::vector<std::string>& warnings)
+		{
+			ImportedNode record;
+			record.Name = NodeName(std::string_view(node.name.data(), node.name.size()), index);
+
+			bool usable = true;
+			if (const auto* trs = std::get_if<fastgltf::TRS>(&node.transform))
+			{
+				record.Translation = glm::vec3(trs->translation.x(), trs->translation.y(), trs->translation.z());
+				record.Rotation = glm::quat(trs->rotation.w(), trs->rotation.x(), trs->rotation.y(), trs->rotation.z());
+				record.Scale = glm::vec3(trs->scale.x(), trs->scale.y(), trs->scale.z());
+				const float length = glm::length(record.Rotation);
+				usable = std::isfinite(length) && length > 1e-6f;
+				if (usable)
+					record.Rotation /= length;
+			}
+			else if (const auto* matrix = std::get_if<fastgltf::math::fmat4x4>(&node.transform))
+			{
+				glm::mat4 transform;
+				std::memcpy(glm::value_ptr(transform), matrix->data(), sizeof(float) * 16);
+				if (!Math::DecomposeTransform(transform, record.Translation, record.Rotation, record.Scale))
+				{
+					// No scale to take apart (a node collapsed to a point): keep it collapsed where it is, as the
+					// combined mesh shows it.
+					record.Translation = glm::vec3(transform[3]);
+					record.Rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+					record.Scale = glm::vec3(0.0f);
+					usable = IsFinite(record.Translation);
+				}
+			}
+			if (!usable || !IsFinite(record.Translation) || !IsFinite(record.Scale))
+			{
+				warnings.push_back(fmt::format("node '{}' has an unusable transform; imported at its parent's origin", record.Name));
+				record.Translation = glm::vec3(0.0f);
+				record.Rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+				record.Scale = glm::vec3(1.0f);
+			}
+
+			if (node.cameraIndex.has_value() && *node.cameraIndex < asset.cameras.size())
+			{
+				ImportedCamera camera;
+				if (const auto* perspective = std::get_if<fastgltf::Camera::Perspective>(&asset.cameras[*node.cameraIndex].camera))
+				{
+					camera.FieldOfView = Clamped(perspective->yfov, glm::radians(1.0f), glm::radians(179.0f), glm::radians(60.0f));
+					camera.Near = Clamped(perspective->znear, 0.0001f, 100000.0f, 0.1f);
+					camera.Far = Clamped(perspective->zfar.value_or(1000.0f), 0.001f, 1000000.0f, 1000.0f);
+				}
+				else if (const auto* orthographic = std::get_if<fastgltf::Camera::Orthographic>(&asset.cameras[*node.cameraIndex].camera))
+				{
+					camera.Orthographic = true;
+					camera.OrthographicSize = Clamped(2.0f * std::abs(orthographic->ymag), 0.0001f, 1000000.0f, 10.0f); // ymag is half the height.
+					camera.Near = Clamped(orthographic->znear, -1000000.0f, 1000000.0f, 0.0f);
+					camera.Far = Clamped(orthographic->zfar, -1000000.0f, 1000000.0f, 100.0f);
+				}
+				if (camera.Far <= camera.Near)
+					camera.Far = camera.Near + 1.0f;
+				record.Camera = camera;
+			}
+
+			if (node.lightIndex.has_value() && *node.lightIndex < asset.lights.size())
+			{
+				const fastgltf::Light& source = asset.lights[*node.lightIndex];
+				ImportedLight light;
+				light.Type = source.type == fastgltf::LightType::Directional ? ImportedLightType::Directional
+							 : source.type == fastgltf::LightType::Spot      ? ImportedLightType::Spot
+																			 : ImportedLightType::Point;
+				light.Color = glm::vec3(source.color.x(), source.color.y(), source.color.z());
+				light.Color = IsFinite(light.Color) ? glm::clamp(light.Color, glm::vec3(0.0f), glm::vec3(1.0f)) : glm::vec3(1.0f);
+				light.Intensity = Clamped(source.intensity / s_LumensPerWatt, 0.0f, s_MaxLightValue, 1.0f);
+				// Without a range the light reaches as far as it stays above 0.01 (intensity / d^2).
+				const float range = source.range.has_value() ? source.range.value() : 10.0f * std::sqrt(light.Intensity);
+				light.Range = Clamped(range, 0.01f, s_MaxLightValue, 10.0f);
+				const float maxCone = glm::radians(89.0f);
+				light.OuterConeAngle = Clamped(source.outerConeAngle.value_or(glm::quarter_pi<float>()), 0.0f, maxCone, glm::quarter_pi<float>());
+				light.InnerConeAngle = std::min(Clamped(source.innerConeAngle.value_or(0.0f), 0.0f, maxCone, 0.0f), light.OuterConeAngle);
+				record.Light = light;
+			}
+			return record;
+		}
+
 		// glTF indices are unsigned integers; anything else is a malformed file.
 		bool ValidateIndexComponents(const fastgltf::Accessor& accessor, size_t index, std::string& outProblem)
 		{
@@ -219,23 +343,39 @@ namespace Paralax {
 			return false;
 		}
 
-		fastgltf::Parser parser(fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_texture_transform);
+		// fastgltf only validates on export; structurally invalid documents are rejected before any data is touched.
 		const auto options = fastgltf::Options::LoadExternalBuffers | fastgltf::Options::GenerateMeshIndices;
+		const auto extensions = fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_texture_transform;
+		fastgltf::Parser parser(extensions | fastgltf::Extensions::KHR_lights_punctual);
 		auto loaded = parser.loadGltf(data.get(), path.parent_path(), options);
+		fastgltf::Error validation = loaded.error() == fastgltf::Error::None ? fastgltf::validate(loaded.get()) : fastgltf::Error::None;
+		if (loaded.error() != fastgltf::Error::None || validation != fastgltf::Error::None)
+		{
+			// fastgltf rejects a whole file over malformed light data (an unknown type, a zero range...), which the
+			// meshes do not need: try once more without lights.
+			fastgltf::Parser withoutLights(extensions);
+			data.get().reset();
+			auto retry = withoutLights.loadGltf(data.get(), path.parent_path(), options);
+			const fastgltf::Error retryValidation = retry.error() == fastgltf::Error::None ? fastgltf::validate(retry.get()) : fastgltf::Error::None;
+			if (retry.error() == fastgltf::Error::None && retryValidation == fastgltf::Error::None)
+			{
+				loaded = std::move(retry);
+				validation = retryValidation;
+				outResult.Warnings.push_back("the file's lights (KHR_lights_punctual) are malformed and were not imported");
+			}
+		}
 		if (loaded.error() != fastgltf::Error::None)
 		{
 			outError = fmt::format("cannot parse '{}': {}", path.string(), fastgltf::getErrorMessage(loaded.error()));
 			return false;
 		}
-		const fastgltf::Asset& asset = loaded.get();
-		const std::filesystem::path directory = path.parent_path();
-
-		// fastgltf only validates on export; reject structurally invalid documents before touching any data.
-		if (const fastgltf::Error validation = fastgltf::validate(asset); validation != fastgltf::Error::None)
+		if (validation != fastgltf::Error::None)
 		{
 			outError = fmt::format("'{}' is not a valid glTF file: {}", path.string(), fastgltf::getErrorMessage(validation));
 			return false;
 		}
+		const fastgltf::Asset& asset = loaded.get();
+		const std::filesystem::path directory = path.parent_path();
 
 		// Textures: one TextureAsset per (glTF texture, color space) pair actually used by materials.
 		std::unordered_map<uint64_t, AssetHandle> textureHandles; // key: textureIndex * 2 + srgb
@@ -306,27 +446,56 @@ namespace Paralax {
 			outResult.Materials.push_back(material);
 		}
 
-		auto mesh = CreateRef<MeshAsset>();
-		mesh->Handle = meshHandle;
-		for (const auto& material : outResult.Materials)
-			mesh->Materials.push_back(material->Handle);
-		const uint32_t defaultMaterialSlot = static_cast<uint32_t>(mesh->Materials.size());
-		bool usesDefaultMaterial = false;
-
 		const size_t sceneIndex = asset.defaultScene.value_or(0);
 		if (asset.scenes.empty() || sceneIndex >= asset.scenes.size())
 		{
 			outError = fmt::format("'{}' contains no usable scene", path.string());
 			return false;
 		}
+		if (!asset.animations.empty())
+			outResult.Warnings.push_back(fmt::format("{} animation(s) are not imported", asset.animations.size()));
+		if (!asset.skins.empty())
+			outResult.Warnings.push_back(fmt::format("{} skin(s) are not imported; skinned meshes appear in their bind pose", asset.skins.size()));
 
-		auto processNode = [&](const fastgltf::Node& node, const fastgltf::math::fmat4x4& matrix) {
-			if (!node.meshIndex.has_value() || *node.meshIndex >= asset.meshes.size())
-				return;
+		// Material slots, shared by every mesh: one per glTF material, then one for primitives without a material
+		// (rendered with the engine's default material) if any mesh needs it.
+		const uint32_t defaultMaterialSlot = static_cast<uint32_t>(outResult.Materials.size());
+		std::vector<AssetHandle> materialSlots;
+		for (const auto& material : outResult.Materials)
+			materialSlots.push_back(material->Handle);
+		bool usesDefaultMaterial = false;
 
-			glm::mat4 transform;
-			std::memcpy(glm::value_ptr(transform), matrix.data(), sizeof(float) * 16);
-			const fastgltf::Mesh& sourceMesh = asset.meshes[*node.meshIndex];
+		// Each glTF mesh the scene uses is built once, in its own space, on first use. Geometry built in all (unique
+		// meshes, and the combined mesh) is bounded, since zero-filled accessors need no backing bytes.
+		std::vector<Ref<MeshAsset>> builtMeshes(asset.meshes.size());
+		std::vector<bool> attempted(asset.meshes.size(), false);
+		size_t builtVertices = 0;
+		size_t builtIndices = 0;
+
+		// Per-node mesh handles follow the mesh's name, which survives re-exports that renumber meshes (as Blender's
+		// do when objects are added or reordered); unnamed meshes, and repeated names, fall back to the index.
+		std::unordered_map<std::string_view, size_t> nameCounts;
+		for (const fastgltf::Mesh& sourceMesh : asset.meshes)
+			nameCounts[std::string_view(sourceMesh.name.data(), sourceMesh.name.size())]++;
+		std::unordered_set<uint64_t> usedMeshHandles;
+		auto meshHandleFor = [&](size_t meshIndex) {
+			const std::string_view name(asset.meshes[meshIndex].name.data(), asset.meshes[meshIndex].name.size());
+			AssetHandle handle = 0;
+			if (!name.empty() && nameCounts[name] == 1)
+				handle = DeriveSubAssetHandle(meshHandle, SubAssetKind::Mesh, HashName(name));
+			if (!handle.IsValid() || usedMeshHandles.contains(handle))
+				handle = DeriveSubAssetHandle(meshHandle, SubAssetKind::MeshByIndex, meshIndex);
+			usedMeshHandles.insert(handle);
+			return handle;
+		};
+		auto buildMesh = [&](size_t meshIndex) -> Ref<MeshAsset> {
+			if (attempted[meshIndex])
+				return builtMeshes[meshIndex];
+			attempted[meshIndex] = true;
+			const fastgltf::Mesh& sourceMesh = asset.meshes[meshIndex];
+			auto built = CreateRef<MeshAsset>();
+			built->Handle = meshHandleFor(meshIndex);
+			bool builtUsesDefault = false;
 
 			for (size_t p = 0; p < sourceMesh.primitives.size(); p++)
 			{
@@ -357,29 +526,30 @@ namespace Paralax {
 				if (!accessorsValid)
 				{
 					outError = fmt::format("mesh '{}' primitive {}: {}", sourceMesh.name.c_str(), p, problem);
-					return;
+					return nullptr;
 				}
 				if (asset.accessors[*primitive.indicesAccessor].count % 3 != 0)
 				{
 					outResult.Warnings.push_back(fmt::format("mesh '{}' primitive {}: index count is not a multiple of 3; skipped", sourceMesh.name.c_str(), p));
 					continue;
 				}
-				if (mesh->Vertices.size() + asset.accessors[positionAttribute->accessorIndex].count > s_MaxElements * 4 || mesh->Indices.size() + asset.accessors[*primitive.indicesAccessor].count > s_MaxElements * 4)
+				builtVertices += asset.accessors[positionAttribute->accessorIndex].count;
+				builtIndices += asset.accessors[*primitive.indicesAccessor].count;
+				if (builtVertices > s_MaxElements * 4 || builtIndices > s_MaxElements * 4)
 				{
 					outError = fmt::format("'{}' is too large to import", path.string());
-					return;
+					return nullptr;
 				}
 
 				Submesh submesh;
-				submesh.Name = sourceMesh.name.empty() ? fmt::format("Mesh{}", *node.meshIndex) : std::string(sourceMesh.name.c_str());
-				submesh.Transform = transform;
-				submesh.VertexOffset = static_cast<uint32_t>(mesh->Vertices.size());
-				submesh.IndexOffset = static_cast<uint32_t>(mesh->Indices.size());
+				submesh.Name = sourceMesh.name.empty() ? fmt::format("Mesh{}", meshIndex) : std::string(sourceMesh.name.c_str());
+				submesh.VertexOffset = static_cast<uint32_t>(built->Vertices.size());
+				submesh.IndexOffset = static_cast<uint32_t>(built->Indices.size());
 
 				const fastgltf::Accessor& positions = asset.accessors[positionAttribute->accessorIndex];
 				submesh.VertexCount = static_cast<uint32_t>(positions.count);
-				mesh->Vertices.resize(mesh->Vertices.size() + positions.count);
-				MeshVertex* vertices = mesh->Vertices.data() + submesh.VertexOffset;
+				built->Vertices.resize(built->Vertices.size() + positions.count);
+				MeshVertex* vertices = built->Vertices.data() + submesh.VertexOffset;
 
 				fastgltf::iterateAccessorWithIndex<glm::vec3>(asset, positions, [&](glm::vec3 value, size_t index) { vertices[index].Position = value; });
 
@@ -405,15 +575,15 @@ namespace Paralax {
 
 				const fastgltf::Accessor& indexAccessor = asset.accessors[*primitive.indicesAccessor];
 				submesh.IndexCount = static_cast<uint32_t>(indexAccessor.count);
-				mesh->Indices.resize(mesh->Indices.size() + indexAccessor.count);
-				fastgltf::copyFromAccessor<uint32_t>(asset, indexAccessor, mesh->Indices.data() + submesh.IndexOffset);
+				built->Indices.resize(built->Indices.size() + indexAccessor.count);
+				fastgltf::copyFromAccessor<uint32_t>(asset, indexAccessor, built->Indices.data() + submesh.IndexOffset);
 
 				for (uint32_t i = 0; i < submesh.IndexCount; i++)
 				{
-					if (mesh->Indices[submesh.IndexOffset + i] >= submesh.VertexCount)
+					if (built->Indices[submesh.IndexOffset + i] >= submesh.VertexCount)
 					{
 						outError = fmt::format("mesh '{}' primitive {} has an out-of-range index", submesh.Name, p);
-						return;
+						return nullptr;
 					}
 				}
 
@@ -424,7 +594,7 @@ namespace Paralax {
 						vertices[i].Normal = glm::vec3(0.0f);
 					for (uint32_t i = 0; i + 2 < submesh.IndexCount; i += 3)
 					{
-						const uint32_t* tri = &mesh->Indices[submesh.IndexOffset + i];
+						const uint32_t* tri = &built->Indices[submesh.IndexOffset + i];
 						const glm::vec3 n = glm::cross(vertices[tri[1]].Position - vertices[tri[0]].Position, vertices[tri[2]].Position - vertices[tri[0]].Position);
 						vertices[tri[0]].Normal += n;
 						vertices[tri[1]].Normal += n;
@@ -437,7 +607,7 @@ namespace Paralax {
 					}
 				}
 				if (!hasTangents)
-					ComputeTangents(mesh->Vertices, mesh->Indices, submesh.IndexOffset, submesh.IndexCount, submesh.VertexOffset, submesh.VertexCount);
+					ComputeTangents(built->Vertices, built->Indices, submesh.IndexOffset, submesh.IndexCount, submesh.VertexOffset, submesh.VertexCount);
 
 				if (primitive.materialIndex.has_value() && *primitive.materialIndex < outResult.Materials.size())
 				{
@@ -446,25 +616,67 @@ namespace Paralax {
 				else
 				{
 					submesh.MaterialIndex = defaultMaterialSlot;
-					usesDefaultMaterial = true;
+					builtUsesDefault = true;
 				}
+				built->Submeshes.push_back(std::move(submesh));
+			}
+			if (built->Submeshes.empty())
+				return nullptr;
+
+			built->Materials = materialSlots;
+			if (builtUsesDefault)
+			{
+				built->Materials.push_back(0);
+				usesDefaultMaterial = true;
+			}
+			built->ComputeBounds();
+			std::string validationError;
+			if (!built->Validate(validationError))
+			{
+				outError = fmt::format("mesh '{}' is invalid: {}", sourceMesh.name.c_str(), validationError);
+				return nullptr;
+			}
+			builtMeshes[meshIndex] = built;
+			outResult.NodeMeshes.push_back(built);
+			return built;
+		};
+
+		// The combined mesh: each node's mesh appended with the node's world transform.
+		auto mesh = CreateRef<MeshAsset>();
+		mesh->Handle = meshHandle;
+		auto appendToCombined = [&](const MeshAsset& source, const glm::mat4& transform) {
+			if (mesh->Vertices.size() + source.Vertices.size() > s_MaxElements * 4 || mesh->Indices.size() + source.Indices.size() > s_MaxElements * 4)
+			{
+				outError = fmt::format("'{}' is too large to import", path.string());
+				return;
+			}
+			const uint32_t vertexBase = static_cast<uint32_t>(mesh->Vertices.size());
+			const uint32_t indexBase = static_cast<uint32_t>(mesh->Indices.size());
+			mesh->Vertices.insert(mesh->Vertices.end(), source.Vertices.begin(), source.Vertices.end());
+			mesh->Indices.insert(mesh->Indices.end(), source.Indices.begin(), source.Indices.end());
+			for (Submesh submesh : source.Submeshes)
+			{
+				submesh.VertexOffset += vertexBase;
+				submesh.IndexOffset += indexBase;
+				submesh.Transform = transform * submesh.Transform;
 				mesh->Submeshes.push_back(std::move(submesh));
 			}
 		};
 
 		// Iterative scene traversal with a visited set (glTF node graphs must be trees; cycles or shared nodes in
-		// malformed files are ignored) and a depth limit.
+		// malformed files are ignored) and a depth limit. Nodes are recorded in pre-order, so parents come first.
 		struct PendingNode
 		{
 			size_t Index;
 			fastgltf::math::fmat4x4 Parent;
 			size_t Depth;
+			std::optional<size_t> ParentRecord;
 		};
 		std::vector<bool> visited(asset.nodes.size(), false);
 		std::vector<PendingNode> stack;
 		const auto& roots = asset.scenes[sceneIndex].nodeIndices;
 		for (auto it = roots.rbegin(); it != roots.rend(); ++it)
-			stack.push_back({*it, fastgltf::math::fmat4x4(), 0});
+			stack.push_back({*it, fastgltf::math::fmat4x4(), 0, std::nullopt});
 		while (!stack.empty() && outError.empty())
 		{
 			const PendingNode pending = stack.back();
@@ -483,9 +695,24 @@ namespace Paralax {
 
 			const fastgltf::Node& node = asset.nodes[pending.Index];
 			const fastgltf::math::fmat4x4 matrix = fastgltf::getTransformMatrix(node, pending.Parent);
-			processNode(node, matrix);
+
+			ImportedNode record = MakeNode(asset, node, pending.Index, outResult.Warnings);
+			record.Parent = pending.ParentRecord;
+			if (node.meshIndex.has_value() && *node.meshIndex < asset.meshes.size())
+			{
+				if (Ref<MeshAsset> built = buildMesh(*node.meshIndex))
+				{
+					record.Mesh = built->Handle;
+					glm::mat4 transform;
+					std::memcpy(glm::value_ptr(transform), matrix.data(), sizeof(float) * 16);
+					appendToCombined(*built, transform);
+				}
+			}
+			const size_t recordIndex = outResult.Nodes.size();
+			outResult.Nodes.push_back(std::move(record));
+
 			for (auto it = node.children.rbegin(); it != node.children.rend(); ++it)
-				stack.push_back({*it, matrix, pending.Depth + 1});
+				stack.push_back({*it, matrix, pending.Depth + 1, recordIndex});
 		}
 
 		if (!outError.empty())
@@ -495,8 +722,12 @@ namespace Paralax {
 			outError = fmt::format("'{}' contains no triangle meshes", path.string());
 			return false;
 		}
+		mesh->Materials = materialSlots;
 		if (usesDefaultMaterial)
-			mesh->Materials.push_back(0); // Slot rendered with the engine's default material.
+		{
+			// Every mesh's default slot sits at the same index; meshes that do not need it simply lack it.
+			mesh->Materials.push_back(0);
+		}
 
 		mesh->ComputeBounds();
 		std::string validationError;

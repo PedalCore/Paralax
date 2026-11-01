@@ -1,0 +1,98 @@
+#include "pxpch.h"
+#include "Paralax/Scene/ModelPrefab.h"
+
+#include "Paralax/Scene/Components.h"
+#include "Paralax/Scene/Entity.h"
+#include "Paralax/Scene/Scene.h"
+
+#include <vector>
+
+namespace Paralax {
+
+	Ref<PrefabAsset> BuildModelPrefab(const MeshImportResult& model, const std::string& rootName, std::string& outError)
+	{
+		outError.clear();
+		if (model.Nodes.empty())
+		{
+			outError = "the model has no nodes";
+			return nullptr;
+		}
+
+		Scene scene("ModelPrefab");
+		Entity root = scene.CreateEntity(rootName.empty() ? std::string("Model") : rootName);
+		std::vector<Entity> entities;
+		entities.reserve(model.Nodes.size());
+		for (const ImportedNode& node : model.Nodes)
+		{
+			Entity entity = scene.CreateEntity(node.Name);
+			// Parents precede children (MeshImporter records nodes in pre-order); anything else is attached to the root.
+			const bool hasParent = node.Parent.has_value() && *node.Parent < entities.size();
+			scene.SetParent(entity, hasParent ? entities[*node.Parent] : root, false);
+
+			auto& transform = entity.GetComponent<TransformComponent>();
+			transform.Translation = node.Translation;
+			transform.Rotation = node.Rotation;
+			transform.Scale = node.Scale;
+
+			if (node.Mesh.IsValid())
+				entity.AddComponent<MeshComponent>().Mesh = node.Mesh;
+
+			if (node.Camera)
+			{
+				auto& camera = entity.AddComponent<CameraComponent>();
+				camera.Primary = false;
+				SceneCamera& projection = camera.Camera;
+				if (node.Camera->Orthographic)
+				{
+					projection.Projection = SceneCamera::ProjectionType::Orthographic;
+					projection.OrthographicSize = node.Camera->OrthographicSize;
+					projection.OrthographicNear = node.Camera->Near;
+					projection.OrthographicFar = node.Camera->Far;
+				}
+				else
+				{
+					projection.Projection = SceneCamera::ProjectionType::Perspective;
+					projection.PerspectiveFOV = node.Camera->FieldOfView;
+					projection.PerspectiveNear = node.Camera->Near;
+					projection.PerspectiveFar = node.Camera->Far;
+				}
+			}
+
+			if (node.Light)
+			{
+				const ImportedLight& light = *node.Light;
+				switch (light.Type)
+				{
+					case ImportedLightType::Directional:
+					{
+						auto& component = entity.AddComponent<DirectionalLightComponent>();
+						component.Color = light.Color;
+						component.Intensity = light.Intensity;
+						break;
+					}
+					case ImportedLightType::Point:
+					{
+						auto& component = entity.AddComponent<PointLightComponent>();
+						component.Color = light.Color;
+						component.Intensity = light.Intensity;
+						component.Range = light.Range;
+						break;
+					}
+					case ImportedLightType::Spot:
+					{
+						auto& component = entity.AddComponent<SpotLightComponent>();
+						component.Color = light.Color;
+						component.Intensity = light.Intensity;
+						component.Range = light.Range;
+						component.InnerConeAngle = light.InnerConeAngle;
+						component.OuterConeAngle = light.OuterConeAngle;
+						break;
+					}
+				}
+			}
+			entities.push_back(entity);
+		}
+		return PrefabAsset::CreateFromEntity(scene, root);
+	}
+
+}
