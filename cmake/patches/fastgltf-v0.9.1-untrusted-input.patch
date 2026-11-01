@@ -1,0 +1,73 @@
+--- a/include/fastgltf/types.hpp
++++ b/include/fastgltf/types.hpp
+@@ -452,26 +452,15 @@
+ 	 * Gets the AccessorType by its string representation found in glTF files.
+ 	 */
+ 	constexpr auto getAccessorType(std::string_view accessorTypeName) noexcept {
+-		assert(!accessorTypeName.empty());
+-		switch (accessorTypeName[0]) {
+-			case 'S': return AccessorType::Scalar;
+-			case 'V': {
+-				const auto componentCount = static_cast<std::size_t>(accessorTypeName[3] - '2');
+-				if (componentCount + 1 >= accessorTypes.size()) {
+-					return AccessorType::Invalid;
+-				}
+-				return accessorTypes[componentCount + 1];
++		// Paralax patch: compare whole names. The name comes from an untrusted file, and the original indexed [0] and [3]
++		// without checking the length (out-of-bounds reads for "", "V", "MA", ...). Upstream v1.0.0 also matches whole names.
++		constexpr std::string_view names[] = {"SCALAR", "VEC2", "VEC3", "VEC4", "MAT2", "MAT3", "MAT4"};
++		for (std::size_t i = 0; i < accessorTypes.size(); ++i) {
++			if (accessorTypeName == names[i]) {
++				return accessorTypes[i];
+ 			}
+-			case 'M': {
+-				const auto componentCount = static_cast<std::size_t>(accessorTypeName[3] - '2');
+-				if (componentCount + 4 >= accessorTypes.size()) {
+-					return AccessorType::Invalid;
+-				}
+-				return accessorTypes[componentCount + 4];
+-			}
+-			default:
+-				return AccessorType::Invalid;
+ 		}
++		return AccessorType::Invalid;
+ 	}
+ 
+ 	static constexpr std::array<std::string_view, 7> accessorTypeNames = {
+--- a/src/fastgltf.cpp
++++ b/src/fastgltf.cpp
+@@ -634,6 +634,12 @@
+ 		if (x[i] != '%')
+ 			continue;
+ 
++		// Paralax patch: only decode a '%' followed by two hex digits, and never into a NUL. The URI comes from an
++		// untrusted file: the original read past the end of the string for a trailing "%" or "%A", and an embedded NUL
++		// would make the path that is opened differ from the path that was checked.
++		const auto isHex = [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); };
++		if (i + 2 >= x.size() || !isHex(x[i + 1]) || !isHex(x[i + 2]) || (x[i + 1] == '0' && x[i + 2] == '0'))
++			continue;
+ 		// Read the next two chars and store them
+ 		std::array<char, 3> chars = {x[i + 1], x[i + 2]};
+ 		x[i] = static_cast<char>(std::strtoul(chars.data(), nullptr, 16));
+@@ -681,6 +687,21 @@
+ 	}
+ 
+ 	auto encodedData = path.substr(encodingEnd + 1);
++	// Paralax patch: base64 data must be whole groups of four characters from the base64 alphabet, with '=' only as
++	// padding at the end. getPadding and the decoders assume all of it: a hostile URI made them read out of bounds,
++	// past the data ("data:;base64,A") or past the decoding table (non-ASCII bytes). Found by Paralax-Tests' loader
++	// fuzzing.
++	if (encodedData.size() < 4 || encodedData.size() % 4 != 0) {
++		return Error::InvalidURI;
++	}
++	for (std::size_t i = 0; i < encodedData.size(); ++i) {
++		const char c = encodedData[i];
++		const bool alphabet = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' || c == '/';
++		const bool padding = c == '=' && (i == encodedData.size() - 1 || (i == encodedData.size() - 2 && encodedData.back() == '='));
++		if (!alphabet && !padding) {
++			return Error::InvalidURI;
++		}
++	}
+ 	if (config.mapCallback != nullptr) {
+ 		// If a map callback is specified, we use a pointer to memory specified by it.
+ 		auto padding = base64::getPadding(encodedData);

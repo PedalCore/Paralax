@@ -1,0 +1,12 @@
+--- a/stb_image.h
++++ b/stb_image.h
+@@ -1665,6 +1665,9 @@
+ #else
+ static int stbi__getn(stbi__context *s, stbi_uc *buffer, int n)
+ {
++   // Paralax patch: nothing to read. A zero-length chunk (e.g. an empty first IDAT in a hostile PNG) arrives with no
++   // buffer yet, and memcpy(NULL, ..., 0) is undefined behaviour (found by Paralax-Tests' loader fuzzing under UBSan).
++   if (n == 0) return 1;
+    if (s->io.read) {
+       int blen = (int) (s->img_buffer_end - s->img_buffer);
+       if (blen < n) {

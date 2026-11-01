@@ -6,6 +6,14 @@
 
 include(CPM)
 
+# CPM keys its source cache on a package's arguments, which name a patch but not its content, so an edited patch would
+# silently reuse a tree patched with the old one. Patched packages are cached under a key that includes the patch hash.
+function(px_patched_cache_key outVar version patch)
+	file(SHA256 "${patch}" patchHash)
+	string(SUBSTRING "${patchHash}" 0 16 patchHash)
+	set(${outVar} "${version}-patch-${patchHash}" PARENT_SCOPE)
+endfunction()
+
 # --- GLFW (windowing and input) -----------------------------------------------------------------
 CPMAddPackage(
 	NAME glfw
@@ -94,14 +102,22 @@ if(NOT EXISTS "${PX_SLANGC}")
 	message(FATAL_ERROR "slangc not found at ${PX_SLANGC}")
 endif()
 
-# --- stb (image writing) ------------------------------------------------------------------------
-# stb publishes no release tags; pinned to a reviewed commit (2026-08-02).
+# --- stb (image loading and writing) -------------------------------------------------------------
+# stb publishes no release tags; pinned to a reviewed commit (2026-08-02). Patched: stbi__getn copied zero bytes from a
+# null buffer for an empty first IDAT chunk in a PNG (undefined behaviour; found by the loader fuzz tests).
+px_patched_cache_key(PX_STB_CACHE_KEY 2c980bb5 "${CMAKE_CURRENT_LIST_DIR}/patches/stb-zero-length-read.patch")
 CPMAddPackage(
 	NAME stb
 	GITHUB_REPOSITORY nothings/stb
 	GIT_TAG 2c980bb59875b0d32144a71867fbdebb2f77cd20
+	PATCHES "${CMAKE_CURRENT_LIST_DIR}/patches/stb-zero-length-read.patch"
+	CUSTOM_CACHE_KEY "${PX_STB_CACHE_KEY}"
 	DOWNLOAD_ONLY YES)
 if(stb_ADDED)
+	file(READ "${stb_SOURCE_DIR}/stb_image.h" PX_STB_IMAGE)
+	if(NOT PX_STB_IMAGE MATCHES "Paralax patch: nothing to read")
+		message(FATAL_ERROR "stb in ${stb_SOURCE_DIR} lacks cmake/patches/stb-zero-length-read.patch; reconfigure this build tree with cmake --fresh")
+	endif()
 	add_library(stb INTERFACE)
 	add_library(stb::stb ALIAS stb)
 	target_include_directories(stb SYSTEM INTERFACE "${stb_SOURCE_DIR}")
@@ -139,16 +155,34 @@ CPMAddPackage(
 		"BUILD_SHARED_LIBS OFF")
 
 # --- fastgltf (glTF 2.0 import) ----------------------------------------------------------------
+# Patched for untrusted files (found by Paralax-Tests' loader fuzzing and its review; see the patch for details):
+# - getAccessorType indexed an accessor's "type" at [0] and [3] without checking its length ("V", "" read out of
+#   bounds). The patch compares whole names, as upstream does from v1.0.0 (2026-10-31, too new to pin).
+# - Base64 data URIs whose length is not a multiple of four, or with characters outside the base64 alphabet, made
+#   the decoders read out of bounds; they are now rejected as invalid URIs.
+# - Percent-decoding read past the end of a URI ending in "%" or "%A", and could decode "%00" into a NUL; such
+#   sequences are now left as they are.
+# Drop the parts upstream has fixed when upgrading.
+px_patched_cache_key(PX_FASTGLTF_CACHE_KEY v0.9.1 "${CMAKE_CURRENT_LIST_DIR}/patches/fastgltf-v0.9.1-untrusted-input.patch")
 CPMAddPackage(
 	NAME fastgltf
 	GITHUB_REPOSITORY spnda/fastgltf
 	GIT_TAG v0.9.1
+	PATCHES "${CMAKE_CURRENT_LIST_DIR}/patches/fastgltf-v0.9.1-untrusted-input.patch"
+	CUSTOM_CACHE_KEY "${PX_FASTGLTF_CACHE_KEY}"
 	OPTIONS
 		"FASTGLTF_ENABLE_TESTS OFF"
 		"FASTGLTF_ENABLE_EXAMPLES OFF"
 		"FASTGLTF_ENABLE_DOCS OFF"
 		"FASTGLTF_COMPILE_AS_CPP20 ON"
 		"FASTGLTF_ENABLE_INSTALL OFF")
+if(fastgltf_ADDED)
+	# Like Jolt's patch: a build tree configured before the patch keeps unpatched sources; say so.
+	file(READ "${fastgltf_SOURCE_DIR}/src/fastgltf.cpp" PX_FASTGLTF_SOURCE)
+	if(NOT PX_FASTGLTF_SOURCE MATCHES "from the base64 alphabet" OR NOT PX_FASTGLTF_SOURCE MATCHES "never into a NUL")
+		message(FATAL_ERROR "fastgltf in ${fastgltf_SOURCE_DIR} lacks cmake/patches/fastgltf-v0.9.1-untrusted-input.patch; reconfigure this build tree with cmake --fresh")
+	endif()
+endif()
 
 # --- Dear ImGui (editor UI; docking branch) + ImGuizmo (transform gizmos) --------------------------
 CPMAddPackage(
@@ -182,11 +216,13 @@ endif()
 # Patched with upstream commit 1b2e77e (2026-10-14, "Changed Mutex::mLockedThreadID to an atomic"), which is in no
 # release yet: in debug builds Jolt's mutexes track their owner for asserts, and v5.6.0 reads that field while another
 # thread writes it, which ThreadSanitizer rightly reports. Drop the patch when upgrading to a release that has it.
+px_patched_cache_key(PX_JOLTPHYSICS_CACHE_KEY v5.6.0 "${CMAKE_CURRENT_LIST_DIR}/patches/jolt-v5.6.0-atomic-mutex-owner.patch")
 CPMAddPackage(
 	NAME JoltPhysics
 	GITHUB_REPOSITORY jrouwe/JoltPhysics
 	GIT_TAG v5.6.0
 	PATCHES "${CMAKE_CURRENT_LIST_DIR}/patches/jolt-v5.6.0-atomic-mutex-owner.patch"
+	CUSTOM_CACHE_KEY "${PX_JOLTPHYSICS_CACHE_KEY}"
 	SOURCE_SUBDIR Build
 	OPTIONS
 		"CROSS_PLATFORM_DETERMINISTIC ON"
@@ -254,7 +290,10 @@ if(miniaudio_ADDED AND NOT TARGET miniaudio)
 	if(MSVC)
 		target_compile_options(miniaudio PRIVATE /w)
 	else()
-		target_compile_options(miniaudio PRIVATE -w)
+		# The decoders' sample arithmetic (FLAC prediction, for one) overflows signed integers on corrupt files, which
+		# the loader fuzz tests found under UBSan. -fwrapv makes that overflow defined wrapping, so a hostile file
+		# only decodes to noise. MSVC has no equivalent flag; there it stays undefined, as it is upstream.
+		target_compile_options(miniaudio PRIVATE -w -fwrapv)
 	endif()
 	find_package(Threads REQUIRED)
 	target_link_libraries(miniaudio PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
@@ -372,3 +411,14 @@ foreach(dep glfw glm glm-header-only spdlog nvrhi nvrhi_vk Vulkan-Headers nlohma
 		set_target_properties(${dep} PROPERTIES SYSTEM TRUE FOLDER "Dependencies")
 	endif()
 endforeach()
+
+# In ASan/UBSan builds the third-party code that reads untrusted files (glTF and its JSON parser, audio, scripts)
+# is instrumented too, so the loader fuzz tests catch out-of-bounds reads and undefined behaviour inside it, not
+# only in Paralax code. (TSan builds instrument the threaded libraries instead; see Jolt and miniaudio above.)
+if(PX_SANITIZERS MATCHES "address|undefined")
+	foreach(dep fastgltf simdjson miniaudio lua)
+		if(TARGET ${dep})
+			target_compile_options(${dep} PRIVATE -fsanitize=${PX_SANITIZERS} -fno-omit-frame-pointer -fno-sanitize-recover=all)
+		endif()
+	endforeach()
+endif()

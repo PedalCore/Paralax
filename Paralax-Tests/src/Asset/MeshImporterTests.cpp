@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include "Asset/GltfTestDocument.h"
 #include "TestUtilities.h"
 
 #include <Paralax/Asset/AssetManager.h>
@@ -16,89 +17,9 @@ using json = nlohmann::json;
 
 namespace {
 
-	std::string Base64(const std::vector<uint8_t>& bytes)
-	{
-		static const char* table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-		std::string out;
-		for (size_t i = 0; i < bytes.size(); i += 3)
-		{
-			const uint32_t a = bytes[i];
-			const uint32_t b = i + 1 < bytes.size() ? bytes[i + 1] : 0;
-			const uint32_t c = i + 2 < bytes.size() ? bytes[i + 2] : 0;
-			const uint32_t triple = (a << 16) | (b << 8) | c;
-			out += table[(triple >> 18) & 63];
-			out += table[(triple >> 12) & 63];
-			out += i + 1 < bytes.size() ? table[(triple >> 6) & 63] : '=';
-			out += i + 2 < bytes.size() ? table[triple & 63] : '=';
-		}
-		return out;
-	}
-
-	template<typename T>
-	void Append(std::vector<uint8_t>& buffer, const T& value)
-	{
-		const auto* bytes = reinterpret_cast<const uint8_t*>(&value);
-		buffer.insert(buffer.end(), bytes, bytes + sizeof(T));
-	}
-
-	// Writes a glTF with one triangle (positions, normals, UVs, 16-bit indices) used by two nodes: a root translated
-	// by (10, 0, 0) and its child translated by (0, 5, 0). The material has a base color factor and an external
-	// base color texture.
-	json MakeTriangleDocument(const std::filesystem::path& directory, bool withNormals = true)
-	{
-		Image texture(2, 2);
-		texture.SetPixel(0, 0, {255, 0, 0, 255});
-		REQUIRE(texture.SavePNG(directory / "albedo.png"));
-
-		std::vector<uint8_t> buffer;
-		const float positions[] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
-		const float normals[] = {0, 0, 1, 0, 0, 1, 0, 0, 1};
-		const float uvs[] = {0, 0, 1, 0, 0, 1};
-		const uint16_t indices[] = {0, 1, 2, 0};
-		for (float v : positions)
-			Append(buffer, v);
-		for (float v : normals)
-			Append(buffer, v);
-		for (float v : uvs)
-			Append(buffer, v);
-		for (uint16_t v : indices)
-			Append(buffer, v);
-
-		json attributes = {{"POSITION", 0}, {"TEXCOORD_0", 2}};
-		if (withNormals)
-			attributes["NORMAL"] = 1;
-
-		json document = {
-			{"asset", {{"version", "2.0"}}},
-			{"scene", 0},
-			{"scenes", {{{"nodes", {0}}}}},
-			{"nodes", {{{"mesh", 0}, {"translation", {10, 0, 0}}, {"children", {1}}}, {{"mesh", 0}, {"translation", {0, 5, 0}}}}},
-			{"meshes", {{{"name", "Tri"}, {"primitives", {{{"attributes", attributes}, {"indices", 3}, {"material", 0}}}}}}},
-			{"materials", {{{"pbrMetallicRoughness", {{"baseColorFactor", {0.5, 0.25, 1.0, 1.0}}, {"metallicFactor", 0.75}, {"roughnessFactor", 0.2}, {"baseColorTexture", {{"index", 0}}}}}, {"emissiveFactor", {1, 0, 0}}, {"alphaMode", "MASK"}, {"alphaCutoff", 0.3}, {"doubleSided", true}}}},
-			{"textures", {{{"source", 0}}}},
-			{"images", {{{"uri", "albedo.png"}}}},
-			{"buffers", {{{"byteLength", buffer.size()}, {"uri", "data:application/octet-stream;base64," + Base64(buffer)}}}},
-			{"bufferViews", {{{"buffer", 0}, {"byteOffset", 0}, {"byteLength", 36}}, {{"buffer", 0}, {"byteOffset", 36}, {"byteLength", 36}}, {{"buffer", 0}, {"byteOffset", 72}, {"byteLength", 24}}, {{"buffer", 0}, {"byteOffset", 96}, {"byteLength", 6}}}},
-			{"accessors",
-			 {{{"bufferView", 0}, {"componentType", 5126}, {"count", 3}, {"type", "VEC3"}, {"min", {0, 0, 0}}, {"max", {1, 1, 0}}},
-			  {{"bufferView", 1}, {"componentType", 5126}, {"count", 3}, {"type", "VEC3"}},
-			  {{"bufferView", 2}, {"componentType", 5126}, {"count", 3}, {"type", "VEC2"}},
-			  {{"bufferView", 3}, {"componentType", 5123}, {"count", 3}, {"type", "SCALAR"}}}},
-		};
-
-		return document;
-	}
-
-	std::filesystem::path WriteGltf(const std::filesystem::path& directory, const json& document, const char* name = "triangle.gltf")
-	{
-		const std::filesystem::path path = directory / name;
-		std::ofstream(path) << document.dump();
-		return path;
-	}
-
 	std::filesystem::path WriteTriangleGltf(const std::filesystem::path& directory, bool withNormals = true)
 	{
-		return WriteGltf(directory, MakeTriangleDocument(directory, withNormals));
+		return Paralax::Testing::WriteGltf(directory, Paralax::Testing::MakeTriangleDocument(directory, withNormals));
 	}
 
 }
@@ -155,6 +76,23 @@ TEST_CASE("MeshImporter: imports geometry, node transforms, materials and textur
 	CHECK(DeriveSubAssetHandle(UUID(1000), SubAssetKind::Material, 0) != DeriveSubAssetHandle(UUID(1000), SubAssetKind::Texture, 0));
 }
 
+TEST_CASE("MeshImporter: imports binary glTF (GLB)")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GlbImport");
+	const std::vector<uint8_t> glb = Paralax::Testing::MakeTriangleGlb(directory);
+	const std::filesystem::path path = directory / "triangle.glb";
+	std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(glb.data()), static_cast<std::streamsize>(glb.size()));
+
+	MeshImportResult result;
+	std::string error;
+	REQUIRE_MESSAGE(MeshImporter::Import(path, UUID(1000), result, error), error);
+	CHECK(result.Warnings.empty());
+	REQUIRE(result.Mesh->Submeshes.size() == 2);
+	CHECK(result.Mesh->Vertices[1].UV == glm::vec2(1.0f, 0.0f));
+	CHECK(result.Mesh->Indices == std::vector<uint32_t>{0, 1, 2, 0, 1, 2});
+	CHECK(result.Textures.size() == 1);
+}
+
 TEST_CASE("MeshImporter: computes normals when missing and warns about missing images")
 {
 	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfNoNormals");
@@ -197,46 +135,165 @@ TEST_CASE("MeshImporter: hostile files are rejected without reading out of bound
 
 	SUBCASE("accessor count larger than its buffer view")
 	{
-		json document = MakeTriangleDocument(directory);
+		json document = Paralax::Testing::MakeTriangleDocument(directory);
 		document["accessors"][0]["count"] = 1000000;
-		CHECK_FALSE(MeshImporter::Import(WriteGltf(directory, document), UUID(1), result, error));
+		CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1), result, error));
 	}
 	SUBCASE("attribute referencing a missing accessor")
 	{
-		json document = MakeTriangleDocument(directory);
+		json document = Paralax::Testing::MakeTriangleDocument(directory);
 		document["meshes"][0]["primitives"][0]["attributes"]["POSITION"] = 99;
-		CHECK_FALSE(MeshImporter::Import(WriteGltf(directory, document), UUID(1), result, error));
+		CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1), result, error));
 	}
 	SUBCASE("buffer declaring more bytes than its data holds")
 	{
-		json document = MakeTriangleDocument(directory);
+		json document = Paralax::Testing::MakeTriangleDocument(directory);
 		document["buffers"][0]["byteLength"] = 100000;
 		document["bufferViews"][0]["byteLength"] = 50000;
-		CHECK_FALSE(MeshImporter::Import(WriteGltf(directory, document), UUID(1), result, error));
+		CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1), result, error));
 	}
 	SUBCASE("default scene index out of range")
 	{
-		json document = MakeTriangleDocument(directory);
+		json document = Paralax::Testing::MakeTriangleDocument(directory);
 		document["scene"] = 5;
-		CHECK_FALSE(MeshImporter::Import(WriteGltf(directory, document), UUID(1), result, error));
+		CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1), result, error));
 	}
 	SUBCASE("huge zero-filled accessor")
 	{
-		json document = MakeTriangleDocument(directory);
+		json document = Paralax::Testing::MakeTriangleDocument(directory);
 		document["accessors"].push_back({{"componentType", 5126}, {"count", 4000000000000ull}, {"type", "VEC2"}});
 		document["meshes"][0]["primitives"][0]["attributes"]["TEXCOORD_0"] = 4;
-		CHECK_FALSE(MeshImporter::Import(WriteGltf(directory, document), UUID(1), result, error));
+		CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1), result, error));
+	}
+}
+
+TEST_CASE("MeshImporter: malformed accessor types are rejected without reading past them")
+{
+	// fastgltf v0.9.1 read characters [0] and [3] of the type without checking its length (patched, see
+	// cmake/patches); found by the loader fuzz tests.
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("MeshImporterAccessorTypes");
+	for (const char* type : {"", "V", "MA", "VEC", "VEC9", "MAT", "SCALARS", "vec3"})
+	{
+		CAPTURE(type);
+		json document = Paralax::Testing::MakeTriangleDocument(directory);
+		document["accessors"][0]["type"] = type;
+		MeshImportResult result;
+		std::string error;
+		CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1), result, error));
+	}
+	// The original matched these by their first and fourth characters, so it accepted them as the right types.
+	for (const auto& [accessor, type] : {std::pair{0, "VEC3X"}, std::pair{3, "SCALARX"}, std::pair{3, "S"}})
+	{
+		CAPTURE(accessor);
+		CAPTURE(std::string(type));
+		json document = Paralax::Testing::MakeTriangleDocument(directory);
+		document["accessors"][accessor]["type"] = type;
+		MeshImportResult result;
+		std::string error;
+		CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1), result, error));
+	}
+}
+
+TEST_CASE("MeshImporter: accessors of the wrong element type for their use are rejected")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("MeshImporterWrongTypes");
+
+	// fastgltf validates vertex attribute types itself; the importer checks them too, in case it ever stops.
+	for (const auto& [accessor, type] : {std::pair{0, "VEC2"}, std::pair{1, "VEC2"}, std::pair{2, "SCALAR"}})
+	{
+		CAPTURE(accessor);
+		CAPTURE(std::string(type));
+		json document = Paralax::Testing::MakeTriangleDocument(directory);
+		document["accessors"][accessor]["type"] = type;
+		MeshImportResult result;
+		std::string error;
+		CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1), result, error));
+	}
+
+	// It does not validate the indices, and its typed readers only assert the type, so a mismatch would write past
+	// the destination; found by the loader fuzz tests. One element of each type fits in the 6-byte index view, so
+	// only the type is wrong.
+	for (const char* type : {"VEC2", "VEC3"})
+	{
+		CAPTURE(std::string(type));
+		json document = Paralax::Testing::MakeTriangleDocument(directory);
+		document["accessors"][3]["type"] = type;
+		document["accessors"][3]["count"] = 1;
+		MeshImportResult result;
+		std::string error;
+		CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1), result, error));
+		CAPTURE(error);
+		CHECK(error.find("has type") != std::string::npos);
+	}
+
+	// Indices must be unsigned integers.
+	json document = Paralax::Testing::MakeTriangleDocument(directory);
+	document["accessors"][3]["componentType"] = 5122; // SHORT: the same size as the valid UNSIGNED_SHORT.
+	MeshImportResult result;
+	std::string error;
+	CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1), result, error));
+	CAPTURE(error);
+	CHECK(error.find("unsigned integers") != std::string::npos);
+}
+
+TEST_CASE("MeshImporter: embedded data of a malformed base64 length is rejected without reading past it")
+{
+	// fastgltf v0.9.1 assumed whole groups of four characters from the base64 alphabet (patched, see cmake/patches):
+	// shorter data read past its end, and other bytes past the decoding table. Found by the fuzz tests and their review.
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("MeshImporterBase64");
+	for (const char* data : {"", "A", "AB", "ABC", "ABCDE", "AAAAAA==", "A\xC3\xA9=", "AAA*", "AB=C", "A===", "=AAA", "AAAA AAA"})
+	{
+		CAPTURE(std::string(data));
+		json document = Paralax::Testing::MakeTriangleDocument(directory);
+		document["buffers"][0]["uri"] = std::string("data:application/octet-stream;base64,") + data;
+		MeshImportResult result;
+		std::string error;
+		CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1), result, error));
+	}
+
+	// Padded data is still accepted: the triangle's buffer is 104 bytes, which needs "=", and two more bytes need "==".
+	for (const auto& [extra, padding] : {std::pair{size_t(0), "="}, std::pair{size_t(2), "=="}})
+	{
+		CAPTURE(extra);
+		json document = Paralax::Testing::MakeTriangleDocument(directory, true, extra);
+		REQUIRE(document["buffers"][0]["uri"].get<std::string>().ends_with(padding));
+		MeshImportResult result;
+		std::string error;
+		CHECK_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1), result, error), error);
+	}
+}
+
+TEST_CASE("MeshImporter: percent escapes in image URIs decode only when whole")
+{
+	// fastgltf v0.9.1 read two characters past any '%', even at the end of the URI (patched, see cmake/patches).
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("MeshImporterPercent");
+	struct Case
+	{
+		const char* Uri;
+		bool Found;
+	};
+	for (const Case& c : {Case{"albedo%2Epng", true}, Case{"albedo%2epng", true}, Case{"albedo.png%", false}, Case{"albedo.png%A", false},
+						  Case{"albedo.png%00", false}, Case{"albedo.png%zz", false}, Case{"%", false}})
+	{
+		CAPTURE(std::string(c.Uri));
+		json document = Paralax::Testing::MakeTriangleDocument(directory);
+		document["images"][0]["uri"] = c.Uri;
+		Paralax::Testing::ScopedLogCapture capture;
+		MeshImportResult result;
+		std::string error;
+		REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1), result, error), error);
+		CHECK(result.Textures.size() == (c.Found ? 1u : 0u));
 	}
 }
 
 TEST_CASE("MeshImporter: node cycles and shared nodes are skipped instead of recursing forever")
 {
 	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfCycle");
-	json document = MakeTriangleDocument(directory);
+	json document = Paralax::Testing::MakeTriangleDocument(directory);
 	document["nodes"][1]["children"] = {0}; // 0 -> 1 -> 0
 	MeshImportResult result;
 	std::string error;
-	const bool imported = MeshImporter::Import(WriteGltf(directory, document), UUID(1), result, error);
+	const bool imported = MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1), result, error);
 	// fastgltf's validator may reject the cycle outright; either way nothing crashes and nothing loops.
 	if (imported)
 		CHECK(result.Mesh->Submeshes.size() == 2);
@@ -249,12 +306,12 @@ TEST_CASE("MeshImporter: image URIs cannot escape the model's directory")
 	const std::filesystem::path root = Paralax::Testing::CreateTestDirectory("GltfTraversal");
 	std::filesystem::create_directories(root / "model");
 	Image(2, 2).SavePNG(root / "secret.png");
-	json document = MakeTriangleDocument(root / "model");
+	json document = Paralax::Testing::MakeTriangleDocument(root / "model");
 	document["images"][0]["uri"] = "../secret.png";
 
 	MeshImportResult result;
 	std::string error;
-	REQUIRE(MeshImporter::Import(WriteGltf(root / "model", document), UUID(1), result, error));
+	REQUIRE(MeshImporter::Import(Paralax::Testing::WriteGltf(root / "model", document), UUID(1), result, error));
 	CHECK(result.Textures.empty());
 	CHECK(result.Materials[0]->BaseColorTexture == AssetHandle(0));
 	bool warned = false;
@@ -266,11 +323,11 @@ TEST_CASE("MeshImporter: image URIs cannot escape the model's directory")
 TEST_CASE("MeshImporter: primitives whose index count is not a multiple of 3 are skipped")
 {
 	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfPartial");
-	json document = MakeTriangleDocument(directory);
+	json document = Paralax::Testing::MakeTriangleDocument(directory);
 	document["accessors"][3]["count"] = 2;
 	MeshImportResult result;
 	std::string error;
-	CHECK_FALSE(MeshImporter::Import(WriteGltf(directory, document), UUID(1), result, error));
+	CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1), result, error));
 	CHECK(error.find("no triangle meshes") != std::string::npos);
 }
 

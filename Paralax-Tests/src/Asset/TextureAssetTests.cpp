@@ -229,3 +229,30 @@ TEST_CASE("TextureAsset: extreme finite HDR samples remain finite through every 
 	CHECK(std::isfinite(FloatChannel(*texture, 1, 0)));
 	CHECK(FloatChannel(*texture, 1, 0) == FloatChannel(*texture, 0, 0));
 }
+
+TEST_CASE("TextureAsset: a PNG with an empty data chunk before its data still decodes")
+{
+	// stb_image copied zero bytes from a null buffer here (undefined behaviour, patched; see cmake/patches). Found by
+	// the loader fuzz tests under UBSan.
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("TextureEmptyIdat");
+	Image image(4, 4);
+	image.SetPixel(1, 2, {10, 20, 30, 255});
+	REQUIRE(image.SavePNG(directory / "Sample.png"));
+	std::ifstream file(directory / "Sample.png", std::ios::binary);
+	std::vector<uint8_t> png((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+	// Chunks start after the 8-byte signature; insert a zero-length IDAT before the first one (stb skips CRCs).
+	size_t at = 8;
+	while (at + 8 <= png.size() && std::string(png.begin() + static_cast<std::ptrdiff_t>(at + 4), png.begin() + static_cast<std::ptrdiff_t>(at + 8)) != "IDAT")
+	{
+		const uint32_t length = (uint32_t(png[at]) << 24) | (uint32_t(png[at + 1]) << 16) | (uint32_t(png[at + 2]) << 8) | uint32_t(png[at + 3]);
+		at += 12 + length;
+	}
+	REQUIRE(at + 8 <= png.size());
+	const uint8_t empty[] = {0, 0, 0, 0, 'I', 'D', 'A', 'T', 0, 0, 0, 0};
+	png.insert(png.begin() + static_cast<std::ptrdiff_t>(at), std::begin(empty), std::end(empty));
+
+	Ref<TextureAsset> texture = TextureAsset::LoadFromMemory(png.data(), png.size(), false);
+	REQUIRE(texture);
+	CHECK(texture->Width == 4);
+	CHECK(texture->Mips[0][(2 * 4 + 1) * 4 + 1] == 20);
+}

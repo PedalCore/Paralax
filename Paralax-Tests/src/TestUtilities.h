@@ -182,6 +182,24 @@ namespace Paralax::Testing {
 		return std::nullopt;
 	}
 
+	// Sets the engine's log level while alive (e.g. off, for tests that feed thousands of bad inputs on purpose).
+	class ScopedLogLevel
+	{
+	public:
+		explicit ScopedLogLevel(spdlog::level::level_enum level)
+			: m_Previous(Log::GetCoreLogger()->level())
+		{
+			Log::SetLevel(level);
+		}
+		~ScopedLogLevel() { Log::SetLevel(m_Previous); }
+
+		ScopedLogLevel(const ScopedLogLevel&) = delete;
+		ScopedLogLevel& operator=(const ScopedLogLevel&) = delete;
+
+	private:
+		spdlog::level::level_enum m_Previous;
+	};
+
 	// Records formatted log messages while alive.
 	class ScopedLogCapture
 	{

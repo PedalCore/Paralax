@@ -30,6 +30,24 @@ namespace Paralax {
 		constexpr size_t s_MaxElements = size_t(1) << 24;
 		constexpr size_t s_MaxNodeDepth = 256;
 
+		struct AttributeType
+		{
+			std::string_view Name;
+			fastgltf::AccessorType Type;
+		};
+		// Vertex attributes read when present, and the element type each must have.
+		constexpr AttributeType s_OptionalAttributes[] = {
+			{"NORMAL", fastgltf::AccessorType::Vec3},
+			{"TANGENT", fastgltf::AccessorType::Vec4},
+			{"TEXCOORD_0", fastgltf::AccessorType::Vec2},
+		};
+
+		std::string_view AccessorTypeName(fastgltf::AccessorType type)
+		{
+			const std::string_view name = fastgltf::getAccessorTypeName(type);
+			return name.empty() ? std::string_view("invalid") : name;
+		}
+
 		size_t GetBufferSize(const fastgltf::Buffer& buffer)
 		{
 			return std::visit(fastgltf::visitor{
@@ -101,8 +119,10 @@ namespace Paralax {
 			return bytes;
 		}
 
-		// Checks that reading the accessor stays within the bytes actually present (not just the declared lengths).
-		bool ValidateAccessor(const fastgltf::Asset& asset, size_t index, std::string& outProblem)
+		// Checks that the accessor holds elements of the type its use requires (fastgltf's typed readers only assert it,
+		// and a mismatch would write past the destination) and that reading it stays within the bytes actually present,
+		// not just the declared lengths.
+		bool ValidateAccessor(const fastgltf::Asset& asset, size_t index, fastgltf::AccessorType expectedType, std::string& outProblem)
 		{
 			if (index >= asset.accessors.size())
 			{
@@ -110,6 +130,11 @@ namespace Paralax {
 				return false;
 			}
 			const fastgltf::Accessor& accessor = asset.accessors[index];
+			if (accessor.type != expectedType)
+			{
+				outProblem = fmt::format("accessor {} has type {}, expected {}", index, AccessorTypeName(accessor.type), AccessorTypeName(expectedType));
+				return false;
+			}
 			if (accessor.sparse.has_value())
 			{
 				outProblem = fmt::format("accessor {} is sparse (unsupported)", index);
@@ -154,6 +179,21 @@ namespace Paralax {
 				return false;
 			}
 			return true;
+		}
+
+		// glTF indices are unsigned integers; anything else is a malformed file.
+		bool ValidateIndexComponents(const fastgltf::Accessor& accessor, size_t index, std::string& outProblem)
+		{
+			switch (accessor.componentType)
+			{
+				case fastgltf::ComponentType::UnsignedByte:
+				case fastgltf::ComponentType::UnsignedShort:
+				case fastgltf::ComponentType::UnsignedInt:
+					return true;
+				default:
+					outProblem = fmt::format("index accessor {} does not hold unsigned integers", index);
+					return false;
+			}
 		}
 
 	}
@@ -306,11 +346,13 @@ namespace Paralax {
 
 				// Every accessor this primitive reads must stay within real data.
 				std::string problem;
-				bool accessorsValid = ValidateAccessor(asset, positionAttribute->accessorIndex, problem) && ValidateAccessor(asset, *primitive.indicesAccessor, problem);
-				for (const char* name : {"NORMAL", "TANGENT", "TEXCOORD_0"})
+				bool accessorsValid = ValidateAccessor(asset, positionAttribute->accessorIndex, fastgltf::AccessorType::Vec3, problem) &&
+									  ValidateAccessor(asset, *primitive.indicesAccessor, fastgltf::AccessorType::Scalar, problem) &&
+									  ValidateIndexComponents(asset.accessors[*primitive.indicesAccessor], *primitive.indicesAccessor, problem);
+				for (const AttributeType& attribute : s_OptionalAttributes)
 				{
-					if (const auto* attribute = primitive.findAttribute(name); accessorsValid && attribute != primitive.attributes.end())
-						accessorsValid = ValidateAccessor(asset, attribute->accessorIndex, problem);
+					if (const auto* found = primitive.findAttribute(attribute.Name); accessorsValid && found != primitive.attributes.end())
+						accessorsValid = ValidateAccessor(asset, found->accessorIndex, attribute.Type, problem);
 				}
 				if (!accessorsValid)
 				{
