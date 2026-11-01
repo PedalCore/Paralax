@@ -381,6 +381,7 @@ namespace {
 	{
 		DuringRender,
 		BeforeRender,
+		DuringPreparation,
 		BeforeLutGeneration
 	};
 
@@ -442,9 +443,17 @@ namespace {
 			REQUIRE(output.Framebuffer);
 			const auto afterOutputAllocation = readCurrent();
 			std::vector<uint16_t> afterTargetPreparation;
+			std::vector<std::pair<std::string, std::vector<uint16_t>>> preparationSnapshots;
 			if (preparation != TargetPreparation::DuringRender)
 			{
-				renderer.PrepareTargetsForDiagnostics(320, 180);
+				if (preparation == TargetPreparation::DuringPreparation)
+				{
+					renderer.PrepareTargetsForDiagnostics(320, 180, [&](const char* checkpoint) {
+						preparationSnapshots.emplace_back(checkpoint, readCurrent());
+					});
+				}
+				else
+					renderer.PrepareTargetsForDiagnostics(320, 180);
 				afterTargetPreparation = readCurrent();
 			}
 			const auto camera = CameraView::LookAt({0, 2, 4.5f}, {0, 0.4f, 0}, glm::radians(50.0f), 320.0f / 180.0f);
@@ -459,6 +468,16 @@ namespace {
 				const std::vector<uint16_t>& Pixels;
 			};
 			std::vector<Observation> observations = {{"initial dispatch snapshot", initial}, {"after initialization submission", afterInitialization}, {"after output allocation", afterOutputAllocation}};
+			if (preparation == TargetPreparation::DuringPreparation)
+			{
+				REQUIRE(preparationSnapshots.size() == 4);
+				CHECK(preparationSnapshots[0].first == "after target preparation idle wait");
+				CHECK(preparationSnapshots[1].first == "after scene textures before framebuffer");
+				CHECK(preparationSnapshots[2].first == "after scene textures and framebuffer");
+				CHECK(preparationSnapshots[3].first == "after shadow texture and framebuffers");
+				for (const auto& [name, pixels] : preparationSnapshots)
+					observations.push_back({name.c_str(), pixels});
+			}
 			if (preparation != TargetPreparation::DuringRender)
 				observations.push_back({"after target preparation before Render", afterTargetPreparation});
 			observations.push_back({"first frame after internal target allocation", atFirstFrame});
@@ -505,6 +524,11 @@ TEST_CASE("SceneRenderer: BRDF LUT survives output and internal target allocatio
 TEST_CASE("SceneRenderer: BRDF LUT survives target preparation before frame recording")
 {
 	CheckBRDFTargetOrdering(TargetPreparation::BeforeRender);
+}
+
+TEST_CASE("SceneRenderer: BRDF LUT survives each target preparation stage")
+{
+	CheckBRDFTargetOrdering(TargetPreparation::DuringPreparation);
 }
 
 TEST_CASE("SceneRenderer: BRDF LUT survives when targets precede LUT generation")

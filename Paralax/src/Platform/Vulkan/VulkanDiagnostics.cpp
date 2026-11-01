@@ -33,7 +33,7 @@ namespace Paralax::VulkanDiagnostics {
 		{
 			std::mutex Mutex;
 			uint64_t Sequence = 0;
-			uint32_t PendingBRDFs = 0;
+			uint32_t ActiveBRDFs = 0;
 			std::unordered_map<VkImage, ImageInfo> Images;
 			std::unordered_map<VkImageView, ViewInfo> Views;
 			std::unordered_map<VkDeviceMemory, VkDeviceSize> MemorySizes;
@@ -53,10 +53,10 @@ namespace Paralax::VulkanDiagnostics {
 				return static_cast<uint64_t>(handle);
 		}
 
-		// Callers hold the trace mutex. The second LUT readback is the first-frame checkpoint in SceneRenderer.
+		// Callers hold the trace mutex. Intermediate readbacks must not hide later target allocations.
 		bool WindowOpen()
 		{
-			return s_Trace.PendingBRDFs != 0;
+			return s_Trace.ActiveBRDFs != 0;
 		}
 
 		bool IsBRDF(VkImage image)
@@ -81,7 +81,7 @@ namespace Paralax::VulkanDiagnostics {
 									info->extent.depth == 1 && info->arrayLayers == 1 && info->mipLevels == 1 && (info->usage & VK_IMAGE_USAGE_STORAGE_BIT) != 0;
 				s_Trace.Images[*image] = {isBRDF};
 				if (isBRDF)
-					s_Trace.PendingBRDFs++;
+					s_Trace.ActiveBRDFs++;
 				if (WindowOpen())
 					PX_CORE_WARN("[BRDF Vulkan trace] seq={} create_image image={:#x} lut={} width={} height={} format={} usage={:#x} initialLayout={}",
 								 ++s_Trace.Sequence, HandleID(*image), isBRDF, info->extent.width, info->extent.height, static_cast<uint32_t>(info->format), info->usage, static_cast<uint32_t>(info->initialLayout));
@@ -99,8 +99,8 @@ namespace Paralax::VulkanDiagnostics {
 					PX_CORE_WARN("[BRDF Vulkan trace] seq={} destroy_image image={:#x} memory={:#x}", ++s_Trace.Sequence, HandleID(image), it == s_Trace.Images.end() ? 0 : HandleID(it->second.Memory));
 				if (it != s_Trace.Images.end())
 				{
-					if (it->second.IsBRDF && it->second.ReadbackCopies < 2)
-						s_Trace.PendingBRDFs--;
+					if (it->second.IsBRDF)
+						s_Trace.ActiveBRDFs--;
 					s_Trace.Images.erase(it);
 				}
 			}
@@ -303,11 +303,6 @@ namespace Paralax::VulkanDiagnostics {
 				{
 					it->second.ReadbackCopies++;
 					PX_CORE_WARN("[BRDF Vulkan trace] seq={} readback command={:#x} image={:#x} memory={:#x} offset={} buffer={:#x} layout={} ordinal={}", ++s_Trace.Sequence, HandleID(commands), HandleID(image), HandleID(it->second.Memory), it->second.Offset, HandleID(buffer), static_cast<uint32_t>(layout), it->second.ReadbackCopies);
-					if (it->second.ReadbackCopies == 2)
-					{
-						s_Trace.PendingBRDFs--;
-						PX_CORE_WARN("[BRDF Vulkan trace] seq={} window_end image={:#x} reason=second_lut_readback", ++s_Trace.Sequence, HandleID(image));
-					}
 				}
 			}
 			s_Original.vkCmdCopyImageToBuffer(commands, image, layout, buffer, count, regions);
@@ -348,7 +343,7 @@ namespace Paralax::VulkanDiagnostics {
 		{
 			std::scoped_lock lock(s_Trace.Mutex);
 			s_Trace.Sequence = 0;
-			s_Trace.PendingBRDFs = 0;
+			s_Trace.ActiveBRDFs = 0;
 			s_Trace.Images.clear();
 			s_Trace.Views.clear();
 			s_Trace.MemorySizes.clear();
@@ -373,7 +368,7 @@ namespace Paralax::VulkanDiagnostics {
 		hook(dispatcher.vkCmdCopyImageToBuffer, CopyImageToBuffer);
 		hook(dispatcher.vkCmdClearColorImage, ClearColorImage);
 		if (s_Record)
-			PX_CORE_WARN("[BRDF Vulkan trace] enabled; memory window ends at the second LUT readback; Vulkan calls are forwarded unchanged");
+			PX_CORE_WARN("[BRDF Vulkan trace] enabled; memory window covers live LUT lifetimes; Vulkan calls are forwarded unchanged");
 		return true;
 	}
 

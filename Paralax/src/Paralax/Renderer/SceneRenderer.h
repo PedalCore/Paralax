@@ -12,6 +12,7 @@
 #include <nvrhi/nvrhi.h>
 
 #include <algorithm>
+#include <functional>
 #include <optional>
 #include <span>
 #include <unordered_map>
@@ -110,7 +111,8 @@ namespace Paralax {
 		// Verifies that the renderer is not initialized and that both dimensions are positive.
 		bool InitializeWithTargetsForDiagnostics(uint32_t width, uint32_t height);
 		// Temporary main-thread allocation checkpoint. Verifies initialization and positive dimensions.
-		void PrepareTargetsForDiagnostics(uint32_t width, uint32_t height);
+		// The optional observer is borrowed for this call; it must not mutate the renderer or throw.
+		void PrepareTargetsForDiagnostics(uint32_t width, uint32_t height, const std::function<void(const char*)>& observer = {});
 
 		// Renders the scene into output (a framebuffer with one 8-bit color attachment, e.g. a swapchain image).
 		// Internal targets are resized to the output's size as needed.
@@ -168,7 +170,7 @@ namespace Paralax {
 		};
 
 		bool CreatePipelines();
-		void EnsureTargets(uint32_t width, uint32_t height);
+		void EnsureTargets(uint32_t width, uint32_t height, const std::function<void(const char*)>& observer = {});
 		nvrhi::IGraphicsPipeline* GetTonemapPipeline(nvrhi::IFramebuffer* output);
 		MaterialEntry* GetMaterial(AssetHandle handle);
 		nvrhi::ITexture* ResolveTexture(AssetHandle handle, nvrhi::ITexture* fallback);

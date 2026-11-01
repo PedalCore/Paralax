@@ -159,11 +159,11 @@ namespace Paralax {
 		return InitializeInternal(width, height);
 	}
 
-	void SceneRenderer::PrepareTargetsForDiagnostics(uint32_t width, uint32_t height)
+	void SceneRenderer::PrepareTargetsForDiagnostics(uint32_t width, uint32_t height, const std::function<void(const char*)>& observer)
 	{
 		PX_CORE_VERIFY(m_Initialized, "Diagnostic target preparation requires an initialized renderer");
 		PX_CORE_VERIFY(width > 0 && height > 0, "Diagnostic targets require positive dimensions");
-		EnsureTargets(width, height);
+		EnsureTargets(width, height, observer);
 	}
 
 	bool SceneRenderer::InitializeInternal(uint32_t diagnosticTargetWidth, uint32_t diagnosticTargetHeight)
@@ -303,7 +303,7 @@ namespace Paralax {
 		return m_InputLayout && m_ViewLayout && m_MaterialLayout && m_ShadowViewLayout && m_TonemapLayout && m_ShadowViewBindings;
 	}
 
-	void SceneRenderer::EnsureTargets(uint32_t width, uint32_t height)
+	void SceneRenderer::EnsureTargets(uint32_t width, uint32_t height, const std::function<void(const char*)>& observer)
 	{
 		const bool sizeChanged = width != m_Width || height != m_Height;
 		const bool shadowChanged = m_ShadowMapSize != m_Settings.GetShadowMapSize();
@@ -311,6 +311,8 @@ namespace Paralax {
 			return;
 
 		m_GraphicsDevice.WaitForIdle();
+		if (observer)
+			observer("after target preparation idle wait");
 
 		if (sizeChanged || !m_HDRTarget)
 		{
@@ -335,12 +337,17 @@ namespace Paralax {
 			depth.keepInitialState = true;
 			depth.setClearValue(nvrhi::Color(0.0f)); // Reversed Z: far plane = 0.
 			m_DepthTarget = m_Device->createTexture(depth);
+			if (observer)
+				observer("after scene textures before framebuffer");
 
 			m_HDRFramebuffer = m_Device->createFramebuffer(nvrhi::FramebufferDesc().addColorAttachment(m_HDRTarget).setDepthAttachment(m_DepthTarget));
 			m_Width = width;
 			m_Height = height;
 			m_TonemapBindings = nullptr;
 		}
+
+		if (observer)
+			observer("after scene textures and framebuffer");
 
 		if (shadowChanged || !m_ShadowMap)
 		{
@@ -366,6 +373,9 @@ namespace Paralax {
 				m_ShadowFramebuffers.push_back(m_Device->createFramebuffer(desc));
 			}
 		}
+
+		if (observer)
+			observer("after shadow texture and framebuffers");
 
 		// Pipelines depend on framebuffer formats only, which never change; create them once.
 		if (!m_OpaquePipeline)
