@@ -21,6 +21,9 @@ namespace {
 		REQUIRE(pair.Listener.Listen(0));
 		REQUIRE(pair.Listener.GetPort() != 0);
 		REQUIRE(pair.Client.Connect(pair.Listener.GetPort()));
+		// Connect can return before the connection reaches the listener's queue (seen on loaded macOS runners), and
+		// Accept never blocks: wait for it, as the API asks.
+		REQUIRE(pair.Listener.WaitReadable(5000) == TcpSocket::WaitResult::Readable);
 		pair.Server = pair.Listener.Accept();
 		REQUIRE(pair.Server.IsValid());
 		return pair;
