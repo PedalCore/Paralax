@@ -1,0 +1,35 @@
+Paralax patch for Jolt Physics v5.6.0: acquire ordering when a barrier meets a finished job.
+
+JobSystemThreadPool queues a job created with zero dependencies at once, so a job can run to completion on a
+worker before PhysicsSystem::Update adds it to the update barrier. Job::Execute publishes cBarrierDoneState with
+a relaxed compare-exchange and Job::SetBarrier reads it with a relaxed compare-exchange, so in that case the
+thread calling Update never synchronises with the job's writes: the barrier skips the job and Update returns
+with no happens-before edge to work it relies on. ThreadSanitizer reports it (under CPU load, as a race between
+the ContactRemovedCallbacks job lambda and the caller's stack reuse after Update returns); on weakly ordered
+hardware it is a real missing acquire. The done state is now published with release ordering and observed
+with acquire ordering.
+
+--- a/Jolt/Core/JobSystem.h
++++ b/Jolt/Core/JobSystem.h
+@@ -225,7 +225,11 @@
+ 		inline bool			SetBarrier(Barrier *inBarrier)
+ 		{
+ 			intptr_t barrier = 0;
+-			if (mBarrier.compare_exchange_strong(barrier, reinterpret_cast<intptr_t>(inBarrier), memory_order_relaxed))
++			// Paralax patch: a job created without dependencies can run and finish before the thread that created it adds
++			// it to a barrier. Execute() publishes cBarrierDoneState with release ordering; reading it here must acquire,
++			// or that thread never synchronises with the finished job's writes (the barrier skips the job). One order for
++			// both outcomes: C++17 forbids a failure order stronger than the success order.
++			if (mBarrier.compare_exchange_strong(barrier, reinterpret_cast<intptr_t>(inBarrier), memory_order_acquire))
+ 				return true;
+ 			JPH_ASSERT(barrier == cBarrierDoneState, "A job can only belong to 1 barrier");
+ 			return false;
+@@ -249,7 +253,7 @@
+ 			intptr_t barrier = mBarrier.load(memory_order_relaxed);
+ 			for (;;)
+ 			{
+-				if (mBarrier.compare_exchange_weak(barrier, cBarrierDoneState, memory_order_relaxed))
++				if (mBarrier.compare_exchange_weak(barrier, cBarrierDoneState, memory_order_release, memory_order_relaxed))
+ 					break;
+ 			}
+ 			JPH_ASSERT(barrier != cBarrierDoneState);

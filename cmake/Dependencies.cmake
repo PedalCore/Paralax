@@ -8,8 +8,14 @@ include(CPM)
 
 # CPM keys its source cache on a package's arguments, which name a patch but not its content, so an edited patch would
 # silently reuse a tree patched with the old one. Patched packages are cached under a key that includes the patch hash.
+# The key hashes every patch (in order), so editing or adding one re-fetches and re-patches the package.
 function(px_patched_cache_key outVar version patch)
-	file(SHA256 "${patch}" patchHash)
+	set(combined "")
+	foreach(file IN LISTS patch ARGN)
+		file(SHA256 "${file}" fileHash)
+		string(APPEND combined "${fileHash}")
+	endforeach()
+	string(SHA256 patchHash "${combined}")
 	string(SUBSTRING "${patchHash}" 0 16 patchHash)
 	set(${outVar} "${version}-patch-${patchHash}" PARENT_SCOPE)
 endfunction()
@@ -218,15 +224,22 @@ endif()
 
 # --- Jolt Physics (rigid body physics) ----------------------------------------------------------
 # Cross-platform determinism is required: simulation must reproduce exactly on every platform (AGENTS.md rule 6).
-# Patched with upstream commit 1b2e77e (2026-10-14, "Changed Mutex::mLockedThreadID to an atomic"), which is in no
-# release yet: in debug builds Jolt's mutexes track their owner for asserts, and v5.6.0 reads that field while another
-# thread writes it, which ThreadSanitizer rightly reports. Drop the patch when upgrading to a release that has it.
-px_patched_cache_key(PX_JOLTPHYSICS_CACHE_KEY v5.6.0 "${CMAKE_CURRENT_LIST_DIR}/patches/jolt-v5.6.0-atomic-mutex-owner.patch")
+# Two patches, both found by ThreadSanitizer; drop each when upgrading to a release that has it:
+# - jolt-v5.6.0-atomic-mutex-owner.patch: upstream commit 1b2e77e (2026-10-14, "Changed Mutex::mLockedThreadID to an
+#   atomic"). In debug builds Jolt's mutexes track their owner for asserts, and v5.6.0 reads that field while another
+#   thread writes it.
+# - jolt-v5.6.0-barrier-done-ordering.patch (ours): a job that finishes before PhysicsSystem::Update adds it to the
+#   update barrier was observed with relaxed ordering, so the caller never synchronised with that job's writes.
+px_patched_cache_key(PX_JOLTPHYSICS_CACHE_KEY v5.6.0
+	"${CMAKE_CURRENT_LIST_DIR}/patches/jolt-v5.6.0-atomic-mutex-owner.patch"
+	"${CMAKE_CURRENT_LIST_DIR}/patches/jolt-v5.6.0-barrier-done-ordering.patch")
 CPMAddPackage(
 	NAME JoltPhysics
 	GITHUB_REPOSITORY jrouwe/JoltPhysics
 	GIT_TAG v5.6.0
-	PATCHES "${CMAKE_CURRENT_LIST_DIR}/patches/jolt-v5.6.0-atomic-mutex-owner.patch"
+	PATCHES
+		"${CMAKE_CURRENT_LIST_DIR}/patches/jolt-v5.6.0-atomic-mutex-owner.patch"
+		"${CMAKE_CURRENT_LIST_DIR}/patches/jolt-v5.6.0-barrier-done-ordering.patch"
 	CUSTOM_CACHE_KEY "${PX_JOLTPHYSICS_CACHE_KEY}"
 	SOURCE_SUBDIR Build
 	OPTIONS
@@ -260,11 +273,15 @@ CPMAddPackage(
 		"USE_LZCNT OFF"
 		"USE_TZCNT OFF")
 if(TARGET Jolt)
-	# A build tree configured before the patch was added keeps using the unpatched sources; say so instead of
+	# A build tree configured before a patch was added keeps using the unpatched sources; say so instead of
 	# building them.
 	file(READ "${JoltPhysics_SOURCE_DIR}/Jolt/Core/Mutex.h" PX_JOLT_MUTEX)
 	if(NOT PX_JOLT_MUTEX MATCHES "atomic<thread::id>")
 		message(FATAL_ERROR "Jolt in ${JoltPhysics_SOURCE_DIR} lacks cmake/patches/jolt-v5.6.0-atomic-mutex-owner.patch; reconfigure this build tree with cmake --fresh")
+	endif()
+	file(READ "${JoltPhysics_SOURCE_DIR}/Jolt/Core/JobSystem.h" PX_JOLT_JOBSYSTEM)
+	if(NOT PX_JOLT_JOBSYSTEM MATCHES "Paralax patch: a job created without dependencies")
+		message(FATAL_ERROR "Jolt in ${JoltPhysics_SOURCE_DIR} lacks cmake/patches/jolt-v5.6.0-barrier-done-ordering.patch; reconfigure this build tree with cmake --fresh")
 	endif()
 	# Jolt's headers are third-party: keep our warnings-as-errors policy away from them.
 	get_target_property(PX_JOLT_INCLUDES Jolt INTERFACE_INCLUDE_DIRECTORIES)
