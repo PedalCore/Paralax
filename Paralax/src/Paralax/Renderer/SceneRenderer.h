@@ -91,6 +91,8 @@ namespace Paralax {
 		uint32_t TextGlyphs = 0;
 		uint64_t Triangles = 0;
 		uint32_t Lights = 0;
+		// Frames that regenerated the BRDF LUT and environment maps after allocating render targets (see Render).
+		uint32_t StaticLightingGenerations = 0;
 	};
 
 	// Renders a Scene: cascaded soft shadows for the sun, forward PBR with point/spot lights and image-based lighting
@@ -114,6 +116,8 @@ namespace Paralax {
 
 		SceneRendererSettings& GetSettings() { return m_Settings; }
 		const SceneRenderStats& GetStats() const { return m_Stats; }
+		// The split-sum BRDF lookup table (128 x 128, RG16_FLOAT), for diagnostics and tests.
+		nvrhi::ITexture* GetBRDFLut() const { return m_Environment.GetBRDFLut(); }
 		nvrhi::ITexture* GetHDRTarget() const { return m_HDRTarget; }
 		GPUResourceCache& GetResourceCache() { return m_Resources; }
 
@@ -212,6 +216,8 @@ namespace Paralax {
 
 		// Environment cache: the environment is only regenerated when its inputs change.
 		uint64_t m_EnvironmentKey = 0;
+		// Set when render targets are (re)allocated; the next frame regenerates the static lighting textures.
+		bool m_StaticLightingDirty = false;
 		float m_EnvironmentIntensity = 1.0f;
 		float m_EnvironmentRotation = 0.0f;
 		bool m_ShowSky = true;

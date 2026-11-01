@@ -108,13 +108,24 @@ namespace Paralax {
 		lutDesc.initialState = nvrhi::ResourceStates::ShaderResource;
 		lutDesc.keepInitialState = true;
 		m_BRDFLut = m_Device->createTexture(lutDesc);
-
 		nvrhi::BindingSetDesc lutSet;
 		lutSet.bindings = {nvrhi::BindingSetItem::PushConstants(0, sizeof(GPU::IBLConstants)), nvrhi::BindingSetItem::Texture_UAV(1, m_BRDFLut)};
-		nvrhi::BindingSetHandle lutBindings = m_Device->createBindingSet(lutSet, m_LutLayout);
-		GPU::IBLConstants constants{};
-		Dispatch(commandList, m_LutPipeline, lutBindings, &constants, 128, 1);
+		if (m_BRDFLut)
+			m_LutBindings = m_Device->createBindingSet(lutSet, m_LutLayout);
+		if (!m_LutBindings)
+		{
+			PX_CORE_ERROR("Failed to create the BRDF lookup table");
+			return false;
+		}
+		GenerateBRDFLut(commandList);
 		return true;
+	}
+
+	void EnvironmentLighting::GenerateBRDFLut(nvrhi::ICommandList* commandList)
+	{
+		PX_CORE_ASSERT(m_LutBindings && commandList, "EnvironmentLighting::GenerateBRDFLut requires Initialize and an open command list");
+		GPU::IBLConstants constants{};
+		Dispatch(commandList, m_LutPipeline, m_LutBindings, &constants, 128, 1);
 	}
 
 	void EnvironmentLighting::Dispatch(nvrhi::ICommandList* commandList, nvrhi::IComputePipeline* pipeline, nvrhi::IBindingSet* bindings, const void* constants, uint32_t size, uint32_t layers)

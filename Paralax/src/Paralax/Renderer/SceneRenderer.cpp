@@ -275,6 +275,7 @@ namespace Paralax {
 			return;
 
 		m_GraphicsDevice.WaitForIdle();
+		m_StaticLightingDirty = true;
 
 		if (sizeChanged || !m_HDRTarget)
 		{
@@ -595,7 +596,7 @@ namespace Paralax {
 			for (int component : {direction.x, direction.y, direction.z, color.x, color.y, color.z})
 				key = HashCombine(key, static_cast<uint64_t>(static_cast<int64_t>(component)));
 		}
-		if (key == m_EnvironmentKey && m_EnvironmentMaps.Specular)
+		if (!m_StaticLightingDirty && key == m_EnvironmentKey && m_EnvironmentMaps.Specular)
 			return;
 
 		if (equirect)
@@ -612,6 +613,7 @@ namespace Paralax {
 			m_Environment.GenerateProceduralSky(m_CommandList, m_EnvironmentMaps, direction, skyTint, 1.0f, hasSun ? 40.0f : 0.0f);
 		}
 		m_EnvironmentKey = key;
+		m_StaticLightingDirty = false;
 	}
 
 	void SceneRenderer::ComputeCascades(const CameraView& camera, const glm::vec3& sunDirection, GPU::ViewConstants& view)
@@ -785,6 +787,18 @@ namespace Paralax {
 		EnsureTargets(outputInfo.width, outputInfo.height);
 
 		m_CommandList->open();
+
+		if (m_StaticLightingDirty)
+		{
+			// The BRDF LUT and environment maps are written once and read for the rest of the run. On the macOS CI
+			// device (an Apple paravirtual GPU through MoltenVK) they have intermittently come back all zero in the
+			// first frame after a large render-target allocation, with no GPU command touching them in between, and
+			// the loss was never seen when they were generated after the allocation (renderer issue R1). Regenerating
+			// them after every target allocation costs a few compute dispatches and removes the dependence on
+			// allocation order. UpdateEnvironment regenerates the maps while this flag is set.
+			m_Environment.GenerateBRDFLut(m_CommandList);
+			m_Stats.StaticLightingGenerations++;
+		}
 
 		// Sun (first directional light) and point/spot lights.
 		glm::vec3 sunDirection(0.0f);
