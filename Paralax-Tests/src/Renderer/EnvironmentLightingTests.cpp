@@ -153,6 +153,8 @@ TEST_CASE("EnvironmentLighting: packaged HDR environments generate finite radian
 					CAPTURE(mip);
 					double totalEnergy = 0;
 					size_t invalid = 0;
+					float minimumAlpha = std::numeric_limits<float>::max();
+					float maximumAlpha = std::numeric_limits<float>::lowest();
 					for (uint32_t face = 0; face < 6; face++)
 					{
 						const auto values = ReadHalfTexture(device, texture, mip, face, 4);
@@ -162,9 +164,16 @@ TEST_CASE("EnvironmentLighting: packaged HDR environments generate finite radian
 							invalid += !std::isfinite(value) || value < 0.0f || value > 65.0f ? 1 : 0;
 							if (i % 4 != 3)
 								totalEnergy += static_cast<double>(value);
+							else
+							{
+								minimumAlpha = std::min(minimumAlpha, value);
+								maximumAlpha = std::max(maximumAlpha, value);
+							}
 						}
 					}
 					CHECK(invalid == 0);
+					CAPTURE(minimumAlpha);
+					CAPTURE(maximumAlpha);
 					CHECK(totalEnergy > 0.01);
 				}
 			}

@@ -121,6 +121,11 @@ namespace Paralax {
 		nvrhi::IComputePipeline* GetBRDFLutPipeline() const { return m_Environment.GetBRDFLutPipeline(); }
 		// Temporary borrowed main-thread snapshot; map only after GPU completion, null before initialization.
 		nvrhi::IStagingTexture* GetInitialBRDFLut() const { return m_Environment.GetInitialBRDFLut(); }
+		// Temporary borrowed main-thread snapshot; map after the first render completes, null before initialization.
+		nvrhi::IStagingTexture* GetFirstFrameBRDFLut() const { return m_FirstFrameBRDFLut; }
+		// Temporary main-thread state observations; Unknown until the corresponding checkpoint is reached.
+		nvrhi::ResourceStates GetBRDFStateBeforeInitializationClose() const { return m_BRDFStateBeforeInitializationClose; }
+		nvrhi::ResourceStates GetBRDFStateAtFirstFrame() const { return m_BRDFStateAtFirstFrame; }
 		GPUResourceCache& GetResourceCache() { return m_Resources; }
 
 	private:
@@ -183,6 +188,9 @@ namespace Paralax {
 		uint32_t m_Width = 0;
 		uint32_t m_Height = 0;
 		nvrhi::TextureHandle m_HDRTarget;
+		nvrhi::StagingTextureHandle m_FirstFrameBRDFLut;
+		nvrhi::ResourceStates m_BRDFStateBeforeInitializationClose = nvrhi::ResourceStates::Unknown;
+		nvrhi::ResourceStates m_BRDFStateAtFirstFrame = nvrhi::ResourceStates::Unknown;
 		nvrhi::TextureHandle m_DepthTarget;
 		nvrhi::FramebufferHandle m_HDRFramebuffer;
 		nvrhi::TextureHandle m_ShadowMap;

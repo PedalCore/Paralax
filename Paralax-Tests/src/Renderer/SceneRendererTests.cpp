@@ -253,8 +253,13 @@ namespace {
 		report << "CapturedEpochMilliseconds=" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << '\n';
 		report << "adapter=" << graphics.GetInfo().AdapterName << " driver=" << graphics.GetInfo().DriverName << '\n';
 		report << "Raw data: tightly packed native half-float components, dimensions and channels below\n";
+		report << "BRDFTrackedStateBeforeInitializationClose=" << static_cast<uint32_t>(renderer.GetBRDFStateBeforeInitializationClose())
+			   << " BRDFTrackedStateAtFirstFrame=" << static_cast<uint32_t>(renderer.GetBRDFStateAtFirstFrame())
+			   << " ExpectedCopySource=" << static_cast<uint32_t>(nvrhi::ResourceStates::CopySource)
+			   << " ExpectedShaderResource=" << static_cast<uint32_t>(nvrhi::ResourceStates::ShaderResource) << '\n';
 		graphics.GetDevice()->waitForIdle();
 		CheckLightingSnapshot(graphics.GetDevice(), renderer.GetInitialBRDFLut(), 2, "BRDFLutAtInitialization", 0, 0, directory, report);
+		CheckLightingSnapshot(graphics.GetDevice(), renderer.GetFirstFrameBRDFLut(), 2, "BRDFLutAtFirstFrame", 0, 0, directory, report);
 		const auto& maps = renderer.GetEnvironmentMaps();
 		CheckLightingTexture(graphics.GetDevice(), renderer.GetBRDFLut(), 2, "BRDFLut", directory, report);
 		CheckLightingTexture(graphics.GetDevice(), maps.Specular, 4, "Specular", directory, report);

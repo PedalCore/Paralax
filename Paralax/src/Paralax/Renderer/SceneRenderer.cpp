@@ -181,10 +181,20 @@ namespace Paralax {
 		m_CommandList->open();
 		m_Resources.Initialize(m_CommandList);
 		const bool environmentReady = m_Environment.Initialize(m_CommandList);
+		if (environmentReady)
+			m_BRDFStateBeforeInitializationClose = m_CommandList->getTextureSubresourceState(m_Environment.GetBRDFLut(), 0, 0);
 		m_CommandList->close();
 		m_Device->executeCommandList(m_CommandList);
 		if (!environmentReady)
 			return false;
+		nvrhi::TextureDesc snapshotDesc = m_Environment.GetInitialBRDFLut()->getDesc();
+		snapshotDesc.debugName = "BRDFLutAtFirstFrame";
+		m_FirstFrameBRDFLut = m_Device->createStagingTexture(snapshotDesc, nvrhi::CpuAccessMode::Read);
+		if (!m_FirstFrameBRDFLut)
+		{
+			PX_CORE_ERROR("Failed to create first-frame BRDF LUT diagnostic snapshot");
+			return false;
+		}
 
 		if (!CreatePipelines())
 			return false;
@@ -783,6 +793,12 @@ namespace Paralax {
 		EnsureTargets(outputInfo.width, outputInfo.height);
 
 		m_CommandList->open();
+		if (m_FrameIndex == 1)
+		{
+			// Separate initialization/submission loss from writes or transitions during the first frame.
+			m_BRDFStateAtFirstFrame = m_CommandList->getTextureSubresourceState(m_Environment.GetBRDFLut(), 0, 0);
+			m_CommandList->copyTexture(m_FirstFrameBRDFLut, nvrhi::TextureSlice(), m_Environment.GetBRDFLut(), nvrhi::TextureSlice());
+		}
 
 		// Sun (first directional light) and point/spot lights.
 		glm::vec3 sunDirection(0.0f);
