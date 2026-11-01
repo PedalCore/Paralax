@@ -1,5 +1,4 @@
 #include "GPUTestContext.h"
-#include "TestUtilities.h"
 
 #include <doctest/doctest.h>
 
@@ -33,13 +32,8 @@ namespace Paralax::Testing {
 			GraphicsDeviceSpecification specification;
 			specification.Headless = true;
 			specification.EnableValidation = true;
-			ScopedLogCapture startup;
 			MESSAGE("GPU device creation epoch_ms: ", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
 			holder.Device = GraphicsDevice::Create(specification);
-			// Test logging hides Info by default; retain device/format details in each process's test log.
-			for (const auto& entry : startup.GetEntries())
-				if (entry.Level == spdlog::level::info)
-					MESSAGE("GPU startup: ", entry.Message);
 		}
 		return holder.Device.get();
 	}

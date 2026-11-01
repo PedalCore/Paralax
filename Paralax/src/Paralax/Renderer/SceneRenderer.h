@@ -119,6 +119,8 @@ namespace Paralax {
 		nvrhi::ITexture* GetBRDFLut() const { return m_Environment.GetBRDFLut(); }
 		// Temporary main-thread diagnostic view, owned by the renderer; null before pipeline creation succeeds.
 		nvrhi::IComputePipeline* GetBRDFLutPipeline() const { return m_Environment.GetBRDFLutPipeline(); }
+		// Temporary borrowed main-thread snapshot; map only after GPU completion, null before initialization.
+		nvrhi::IStagingTexture* GetInitialBRDFLut() const { return m_Environment.GetInitialBRDFLut(); }
 		GPUResourceCache& GetResourceCache() { return m_Resources; }
 
 	private:

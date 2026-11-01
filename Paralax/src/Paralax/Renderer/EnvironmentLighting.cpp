@@ -114,6 +114,18 @@ namespace Paralax {
 		nvrhi::BindingSetHandle lutBindings = m_Device->createBindingSet(lutSet, m_LutLayout);
 		GPU::IBLConstants constants{};
 		Dispatch(commandList, m_LutPipeline, lutBindings, &constants, 128, 1);
+
+		// Temporary diagnostic: preserve the first dispatch's result before later frames can change it.
+		lutDesc.isUAV = false;
+		lutDesc.initialState = nvrhi::ResourceStates::CopyDest;
+		lutDesc.debugName = "BRDFLutAtInitialization";
+		m_InitialBRDFLut = m_Device->createStagingTexture(lutDesc, nvrhi::CpuAccessMode::Read);
+		if (!m_InitialBRDFLut)
+		{
+			PX_CORE_ERROR("Failed to create initial BRDF LUT diagnostic snapshot");
+			return false;
+		}
+		commandList->copyTexture(m_InitialBRDFLut, nvrhi::TextureSlice(), m_BRDFLut, nvrhi::TextureSlice());
 		return true;
 	}
 
