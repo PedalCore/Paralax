@@ -1,6 +1,7 @@
 #include "pxpch.h"
 #include "Paralax/Scene/ModelPrefab.h"
 
+#include "Paralax/Scene/ComponentRegistry.h"
 #include "Paralax/Scene/Components.h"
 #include "Paralax/Scene/Entity.h"
 #include "Paralax/Scene/Scene.h"
@@ -19,7 +20,10 @@ namespace Paralax {
 		}
 
 		Scene scene("ModelPrefab");
-		Entity root = scene.CreateEntity(rootName.empty() ? std::string("Model") : rootName);
+		Entity root = scene.CreateEntity("Model");
+		// Through the registry, so the prefab never holds a name its own file would refuse when loaded.
+		if (!rootName.empty() && !ComponentRegistry::SetField(*ComponentRegistry::Find("Tag")->FindField("Name"), &root.GetComponent<TagComponent>(), rootName, outError))
+			return nullptr;
 		std::vector<Entity> entities;
 		entities.reserve(model.Nodes.size());
 		for (const ImportedNode& node : model.Nodes)

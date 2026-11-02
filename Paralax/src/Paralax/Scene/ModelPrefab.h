@@ -20,7 +20,8 @@ namespace Paralax {
 	// - an Animation component, playing and looping, on the entity each animation is meant to be played by (see
 	//   ImportedAnimation; an entity holds one clip, so a further clip for the same entity is left out, with a warning
 	//   in outWarnings if given, and stays available as an asset).
-	// Returns nullptr (with outError set) if the model has no nodes. Main-thread-only.
+	// Returns nullptr (with outError set) if the model has no nodes or rootName is longer than a name may be (an
+	// empty rootName means "Model"). Main-thread-only.
 	Ref<PrefabAsset> BuildModelPrefab(const MeshImportResult& model, const std::string& rootName, std::string& outError, std::vector<std::string>* outWarnings = nullptr);
 
 }

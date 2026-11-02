@@ -2,6 +2,8 @@
 
 #include <Paralax/Core/Reflection.h>
 
+#include <string>
+
 namespace Paralax::Editor {
 
 	class EditorContext;
@@ -14,5 +16,8 @@ namespace Paralax::Editor {
 
 	// Draws all fields of an object in a two-column property table.
 	bool DrawFields(EditorContext& context, std::span<const FieldInfo> fields, void* object, const char* undoLabel);
+
+	// Cuts text to at most maxBytes without splitting a UTF-8 character, as string fields with a MaxLength need.
+	void TruncateUtf8(std::string& text, size_t maxBytes);
 
 }

@@ -55,6 +55,18 @@ namespace Paralax::Editor {
 			return CommandResult::Fail(fmt::format("No entity with id {}", params.value("id", json()).dump(-1, ' ', false, json::error_handler_t::replace)));
 		}
 
+		// Names are written through the registry, so the editor accepts exactly the names scene files, scripts and
+		// agents do, and never one that saving or an undo would then drop.
+		CommandResult RenameEntity(Entity entity, const std::string& name)
+		{
+			if (name.empty())
+				return CommandResult::Fail("Names cannot be empty");
+			std::string error;
+			if (!ComponentRegistry::SetField(*ComponentRegistry::Find("Tag")->FindField("Name"), &entity.GetComponent<TagComponent>(), name, error))
+				return CommandResult::Fail(error);
+			return CommandResult::Ok();
+		}
+
 		// Applies { "<Component>": { fields } } to an entity, adding missing components.
 		CommandResult ApplyComponents(Scene& scene, Entity entity, const json& components)
 		{
@@ -203,7 +215,12 @@ namespace Paralax::Editor {
 								   if (!parent)
 									   return CommandResult::Fail("Parent entity not found");
 							   }
-							   Entity entity = scene.CreateEntity(params.value("name", "Entity"));
+							   Entity entity = scene.CreateEntity();
+							   if (const std::string name = params.value("name", std::string()); !name.empty())
+							   {
+								   if (CommandResult renamed = RenameEntity(entity, name); !renamed.Success)
+									   return renamed;
+							   }
 							   if (parent)
 								   scene.SetParent(entity, parent, false);
 							   if (params.contains("components"))
@@ -245,11 +262,7 @@ namespace Paralax::Editor {
 							   std::optional<Entity> entity = context.ResolveEntity(params["id"]);
 							   if (!entity)
 								   return EntityNotFound(params);
-							   const std::string name = params["name"].get<std::string>();
-							   if (name.empty())
-								   return CommandResult::Fail("Names cannot be empty");
-							   entity->GetComponent<TagComponent>().Name = name;
-							   return CommandResult::Ok();
+							   return RenameEntity(*entity, params["name"].get<std::string>());
 						   }});
 
 		registry.Register({"entity.set_parent", "Reparents an entity (null or omitted parent = root), keeping its world transform.", {{"id", "any", "Entity id.", true}, {"parent", "any", "New parent id, or null.", false}}, true, [](EditorContext& context, const json& params) {

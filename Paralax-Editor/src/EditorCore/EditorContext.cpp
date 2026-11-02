@@ -298,9 +298,12 @@ namespace Paralax::Editor {
 	{
 		auto scene = CreateRef<Scene>(m_EditorScene->GetName());
 		std::string error;
-		// Snapshots come from Serialize, so they always load; verify to catch serializer regressions.
+		std::vector<std::string> warnings;
+		// Snapshots come from Serialize, so they load completely. A warning means an edit stored a value the scene
+		// format refuses, which loading would silently drop: verify, to catch such writes rather than lose data.
 		const json document = json::parse(snapshot, nullptr, false);
-		PX_CORE_VERIFY(!document.is_discarded() && SceneSerializer::Deserialize(*scene, document, error), "Undo snapshot failed to load: {}", error);
+		PX_CORE_VERIFY(!document.is_discarded() && SceneSerializer::Deserialize(*scene, document, error, &warnings), "Undo snapshot failed to load: {}", error);
+		PX_CORE_VERIFY(warnings.empty(), "Undo snapshot loaded with changes ({}); an edit stored a value the scene format refuses", warnings.front());
 		scene->SetViewportSize(m_EditorScene->GetViewportWidth(), m_EditorScene->GetViewportHeight());
 		m_EditorScene = scene;
 		PruneSelection();

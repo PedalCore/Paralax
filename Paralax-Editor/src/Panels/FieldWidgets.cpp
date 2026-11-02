@@ -9,7 +9,9 @@
 
 #include <glm/gtc/type_ptr.hpp>
 
+#include <cmath>
 #include <cstring>
+#include <type_traits>
 
 namespace Paralax::Editor {
 
@@ -22,6 +24,34 @@ namespace Paralax::Editor {
 			return 0.02f;
 		}
 
+		template<typename T>
+		bool IsFiniteValue(const T& value)
+		{
+			if constexpr (std::is_same_v<T, float>)
+				return std::isfinite(value);
+			else if constexpr (std::is_same_v<T, glm::vec2> || std::is_same_v<T, glm::vec3> || std::is_same_v<T, glm::vec4> || std::is_same_v<T, glm::quat>)
+			{
+				for (glm::length_t i = 0; i < T::length(); i++)
+				{
+					if (!std::isfinite(value[i]))
+						return false;
+				}
+				return true;
+			}
+			else
+				return true;
+		}
+
+	}
+
+	void TruncateUtf8(std::string& text, size_t maxBytes)
+	{
+		if (text.size() <= maxBytes)
+			return;
+		size_t end = maxBytes;
+		while (end > 0 && (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80)
+			end--;
+		text.resize(end);
 	}
 
 	bool DrawField(EditorContext& context, const FieldInfo& field, void* object, const char* undoLabel)
@@ -37,6 +67,10 @@ namespace Paralax::Editor {
 		// A null undoLabel means the object is not scene data (e.g. renderer settings): no undo tracking.
 		const bool undoable = undoLabel != nullptr;
 		auto write = [&](auto& target, const auto& newValue, ImGuiID editKey) {
+			// Typed numbers are read with sscanf, which accepts "nan" and "inf" (and clamping lets NaN through). A
+			// scene cannot store them (an undo or a reload would drop the field), so such an edit is ignored.
+			if (!IsFiniteValue(newValue))
+				return;
 			if (undoable)
 				context.ApplyInteractiveEdit(editKey, undoLabel);
 			target = newValue;
@@ -148,13 +182,8 @@ namespace Paralax::Editor {
 				if (ImGui::InputText("##value", &edited))
 				{
 					// The same limit scene files, agents and scripts get; cut at a UTF-8 character boundary.
-					if (field.MaxLength > 0 && edited.size() > field.MaxLength)
-					{
-						size_t end = field.MaxLength;
-						while (end > 0 && (static_cast<unsigned char>(edited[end]) & 0xC0) == 0x80)
-							end--;
-						edited.resize(end);
-					}
+					if (field.MaxLength > 0)
+						TruncateUtf8(edited, field.MaxLength);
 					write(target, edited, key);
 				}
 				break;

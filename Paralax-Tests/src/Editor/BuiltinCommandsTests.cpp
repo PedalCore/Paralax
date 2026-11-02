@@ -387,6 +387,42 @@ TEST_CASE("BuiltinCommands: component.set cannot give an entity an empty name")
 	CHECK(context.Execute("entity.get", {{"id", child.Result["id"]}}).Result["parent"] == id);
 }
 
+TEST_CASE("BuiltinCommands: names longer than a scene can hold are refused, and the longest survives undo, redo and a reload")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("EditorLongNames") / "Game";
+	Ref<Project> project = Project::Create(directory, "Game");
+	REQUIRE(project);
+	EditorContext context(project);
+	const std::string longest(TagComponent::MaxLength, 'n');
+	const std::string tooLong = longest + "n";
+
+	// The registry's rule and message, as for scene files, scripts and component.set.
+	const CommandResult created = context.Execute("entity.create", {{"name", tooLong}});
+	CHECK_FALSE(created.Success);
+	CHECK(created.Error.find("at most 256 bytes") != std::string::npos);
+	CHECK(context.Execute("scene.info").Result["entities"] == 0); // Rolled back.
+	const std::string id = CreateEntity(context, {{"name", "Short"}});
+	const CommandResult renamed = context.Execute("entity.rename", {{"id", id}, {"name", tooLong}});
+	CHECK_FALSE(renamed.Success);
+	CHECK(renamed.Error.find("at most 256 bytes") != std::string::npos);
+	auto nameOf = [](EditorContext& editor, const std::string& entity) { return editor.Execute("entity.get", {{"id", entity}}).Result["name"]; };
+	CHECK(nameOf(context, id) == "Short");
+	CHECK(context.Execute("entity.create").Result.contains("id")); // No name: the default.
+
+	// Undo and redo restore the scene from snapshots, and saving writes it out: the longest name survives each.
+	REQUIRE(context.Execute("entity.rename", {{"id", id}, {"name", longest}}).Success);
+	const std::string other = CreateEntity(context, {{"name", longest}});
+	REQUIRE(context.Execute("edit.undo").Success);
+	CHECK(nameOf(context, id) == longest);
+	REQUIRE(context.Execute("edit.redo").Success);
+	CHECK(nameOf(context, other) == longest);
+	REQUIRE(context.Execute("scene.save", {{"path", "Scenes/Long"}}).Success);
+	EditorContext reopened(Project::Load(directory));
+	REQUIRE(reopened.Execute("scene.open", {{"path", "Scenes/Long.pxscene"}}).Success);
+	CHECK(nameOf(reopened, id) == longest);
+	CHECK(nameOf(reopened, other) == longest);
+}
+
 TEST_CASE("BuiltinCommands: asset list exposes the complete built-in catalog without a project")
 {
 	EditorContext context;

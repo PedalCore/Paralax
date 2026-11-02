@@ -67,7 +67,10 @@ namespace Paralax::Editor {
 				ImGui::PushFont(headerFont, 0.0f);
 			ImGui::SetNextItemWidth(-FLT_MIN);
 			if (ImGui::InputText("##name", &name, ImGuiInputTextFlags_EnterReturnsTrue) && !name.empty())
+			{
+				TruncateUtf8(name, TagComponent::MaxLength); // The longest name entity.rename accepts.
 				context.Defer("entity.rename", {{"id", id}, {"name", name}});
+			}
 			if (headerFont)
 				ImGui::PopFont();
 			ImGui::TextDisabled("ID %s", id.c_str());

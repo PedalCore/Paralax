@@ -435,6 +435,18 @@ TEST_CASE("EditorContext: names with invalid UTF-8 can still be snapshotted, und
 	CHECK_NOTHROW((void)described.Result.dump(-1, ' ', false, json::error_handler_t::replace));
 }
 
+TEST_CASE("EditorContext: restoring a snapshot that would drop a value fails verification")
+{
+	EditorContext context;
+	const std::string id = CreateEntity(context, {{"name", "Box"}});
+	// Written behind the registry's back, as no edit may: the scene format refuses the name, so loading the snapshot
+	// that holds it would quietly turn it into "Entity".
+	context.GetActiveScene().GetEntityByUUID(UUID(std::stoull(id))).GetComponent<TagComponent>().Name = std::string(TagComponent::MaxLength + 1, 'n');
+	REQUIRE(context.Execute("component.set", {{"id", id}, {"components", {{"Transform", {{"Translation", {1, 0, 0}}}}}}}).Success);
+	Paralax::Testing::ScopedAssertionCapture capture;
+	CHECK_THROWS_AS(context.Undo(), Paralax::Testing::AssertionFailedError);
+}
+
 TEST_CASE("EditorContext: a command during an interactive edit is its own undo step and rolls back on its own")
 {
 	EditorContext context;
