@@ -63,6 +63,23 @@ TEST_CASE("Scene: invalid creation and stale handles are verified")
 	CHECK_THROWS_AS(a.GetName(), AssertionFailedError);
 	CHECK_THROWS_AS(Entity().GetName(), AssertionFailedError);
 	CHECK_THROWS_AS(scene.CreateEntity().AddComponent<TagComponent>(), AssertionFailedError);
+
+	// Every hierarchy operation verifies its entity rather than accepting a destroyed one.
+	CHECK_THROWS_AS(scene.DuplicateEntity(a), AssertionFailedError);
+	CHECK_THROWS_AS(scene.SetParent(a, std::nullopt), AssertionFailedError);
+	CHECK_THROWS_AS(scene.SetSiblingIndex(a, 0), AssertionFailedError);
+	Scene other;
+	Entity otherRoot = other.CreateEntity("OtherRoot");
+	CHECK_THROWS_AS(other.CopySubtreeFrom(scene, a), AssertionFailedError);
+	CHECK_THROWS_AS(other.CopySubtreeFrom(scene, a, otherRoot), AssertionFailedError);
+	CHECK(other.GetEntityCount() == 1);
+	CHECK(scene.GetEntityCount() == 1);
+
+	// Component access verifies presence; TryGetComponent is the query.
+	Entity live = scene.CreateEntity("Live");
+	CHECK_THROWS_AS(live.GetComponent<PointLightComponent>(), AssertionFailedError);
+	CHECK_THROWS_AS(live.RemoveComponent<PointLightComponent>(), AssertionFailedError);
+	CHECK(live.TryGetComponent<PointLightComponent>() == nullptr);
 }
 
 TEST_CASE("Scene: components can be added, queried and removed")

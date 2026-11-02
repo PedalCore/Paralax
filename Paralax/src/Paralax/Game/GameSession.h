@@ -43,15 +43,20 @@ namespace Paralax {
 		GameSession(const GameSession&) = delete;
 		GameSession& operator=(const GameSession&) = delete;
 
-		// Advances the game one step, then performs a scene switch if scripts asked for one. Not after End.
+		// Advances the game one step, then performs a scene switch if scripts asked for one. Verifies the session
+		// has not ended.
 		void Update(Timestep timestep);
 		// Stops the game (scripts get OnDestroy) so that every error, including those raised while stopping, is in
 		// GetScriptErrors. Called by the destructor if not before; later calls do nothing.
 		void End();
 		bool HasEnded() const { return m_Scene == nullptr; }
 
-		// Not after End.
-		Scene& GetScene() const { return *m_Scene; }
+		// Verifies the session has not ended (the systems below are null then).
+		Scene& GetScene() const
+		{
+			PX_CORE_VERIFY(m_Scene, "GameSession::GetScene after End");
+			return *m_Scene;
+		}
 		ScriptSystem* GetScripts() const { return m_Scripts; }
 		PhysicsSystem* GetPhysics() const { return m_Physics; }
 		AnimationSystem* GetAnimation() const { return m_Animation; }

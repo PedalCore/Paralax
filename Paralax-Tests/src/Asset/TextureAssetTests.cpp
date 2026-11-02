@@ -45,6 +45,23 @@ TEST_CASE("TextureAsset: mip chains halve each level down to 1x1, including odd 
 	CHECK(noMips->GetMipCount() == 1);
 }
 
+TEST_CASE("TextureAsset: an empty image and a mip chain without mip 0 fail verification")
+{
+	const uint8_t pixel[] = {10, 20, 30, 255};
+	Testing::ScopedAssertionCapture capture;
+	CHECK_THROWS_AS(TextureAsset::CreateRGBA8(0, 1, pixel, false), Testing::AssertionFailedError);
+	CHECK_THROWS_AS(TextureAsset::CreateRGBA8(1, 0, pixel, false), Testing::AssertionFailedError);
+	CHECK_THROWS_AS(TextureAsset::CreateRGBA8(1, 1, nullptr, false), Testing::AssertionFailedError);
+	CHECK_THROWS_AS(TextureAsset(AssetType::Texture).GenerateMips(), Testing::AssertionFailedError);
+	CHECK_THROWS_AS(TextureAsset(AssetType::EnvironmentMap).GenerateMips(), Testing::AssertionFailedError);
+
+	// The smallest real image is fine.
+	Ref<TextureAsset> smallest = TextureAsset::CreateRGBA8(1, 1, pixel, false);
+	REQUIRE(smallest);
+	CHECK(smallest->GetMipCount() == 1);
+	CHECK(smallest->Mips[0][2] == 30);
+}
+
 TEST_CASE("TextureAsset: sRGB textures are filtered in linear space, data textures are not")
 {
 	// A 2x1 image: black and white.

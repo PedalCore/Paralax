@@ -99,6 +99,29 @@ TEST_CASE("GameState: values of the supported types are kept, within limits")
 	CHECK(state.GetSize() == GameState::MaxKeys);
 }
 
+TEST_CASE("GameSession: Update and GetScene after End are verified")
+{
+	SessionFixture fixture("GameSessionEnded");
+	Scene scene;
+	scene.CreateEntity("Marker");
+	GameSession game(fixture.Assets, scene);
+	CHECK(HasEntity(game, "Marker"));
+	game.Update(Timestep(1.0f / 60.0f));
+	CHECK_FALSE(game.HasEnded());
+
+	game.End();
+	CHECK(game.HasEnded());
+	game.End(); // A second End is still a no-op.
+	CHECK(game.GetScripts() == nullptr);
+	CHECK(game.GetScriptErrors().empty());
+
+	// Verified, not asserted: a Dist build must fail the same way rather than dereference a null scene.
+	Paralax::Testing::ScopedAssertionCapture capture;
+	CHECK_THROWS_AS(game.Update(Timestep(1.0f / 60.0f)), Paralax::Testing::AssertionFailedError);
+	CHECK_THROWS_AS(game.GetScene(), Paralax::Testing::AssertionFailedError);
+	CHECK(game.HasEnded());
+}
+
 TEST_CASE("GameSession: scripts switch scenes and restart them after the update, keeping Game values")
 {
 	SessionFixture fixture("GameSessionSwitch");

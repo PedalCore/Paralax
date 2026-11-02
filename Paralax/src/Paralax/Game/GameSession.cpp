@@ -71,7 +71,7 @@ namespace Paralax {
 
 	void GameSession::Update(Timestep timestep)
 	{
-		PX_CORE_ASSERT(m_Scene, "GameSession::Update after End");
+		PX_CORE_VERIFY(m_Scene, "GameSession::Update after End");
 		m_Scene->OnUpdateRuntime(timestep);
 		if (std::optional<AssetHandle> request = m_Scripts->TakeSceneRequest())
 			SwitchScene(*request);

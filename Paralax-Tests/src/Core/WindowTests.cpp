@@ -121,6 +121,17 @@ TEST_CASE("Window: SetSize with a zero dimension is an asserted precondition")
 	CHECK_THROWS_AS(window->SetSize(0, 100), Paralax::Testing::AssertionFailedError);
 	CHECK(window->GetWidth() == 320);
 }
+#else
+TEST_CASE("Window: in Dist, SetSize with a zero dimension is ignored")
+{
+	Scope<Window> window = Window::Create(HeadlessSpecification());
+	REQUIRE(window);
+	window->SetSize(0, 100);
+	window->SetSize(100, 0);
+	window->PollEvents();
+	CHECK(window->GetWidth() == 320);
+	CHECK(window->GetHeight() == 240);
+}
 #endif
 
 TEST_CASE("Window: headless windows keep an in-process clipboard")
