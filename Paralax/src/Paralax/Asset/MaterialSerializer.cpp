@@ -52,10 +52,10 @@ namespace Paralax {
 			outError = "Not a Paralax material (missing \"Paralax\": { \"Type\": \"Material\" })";
 			return false;
 		}
-		const int version = header->contains("Version") && (*header)["Version"].is_number_integer() ? (*header)["Version"].get<int>() : 0;
-		if (version < 1 || version > CurrentVersion)
+		std::string foundVersion;
+		if (!ReadDocumentVersion(*header, CurrentVersion, foundVersion))
 		{
-			outError = fmt::format("Unsupported material version {}", version);
+			outError = fmt::format("Unsupported material version: expected 1-{}, got {}", CurrentVersion, foundVersion);
 			return false;
 		}
 

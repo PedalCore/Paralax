@@ -111,6 +111,22 @@ TEST_CASE("Project: Load rejects hostile and malformed project files")
 	CHECK(Project::Load(root / "Two" / "A.pxproj"));
 }
 
+TEST_CASE("Project: a Version that would wrap into range, a negative one and a float are refused as written")
+{
+	// 4294967297 and -4294967295 read as 1 through get<int>(), which keeps only the low 32 bits.
+	const std::filesystem::path root = Paralax::Testing::CreateTestDirectory("ProjectHostileVersions");
+	Paralax::Testing::ScopedLogCapture log;
+	for (const char* version : {"4294967297", "-4294967295", "-1", "1.5"})
+	{
+		const std::string shownVersion = version; // doctest shows a const char* as its address.
+		CAPTURE(shownVersion);
+		const std::filesystem::path file = root / "Game.pxproj";
+		WriteText(file, std::string(R"({"Paralax": {"Type": "Project", "Version": )") + version + R"(}, "Name": "Game", "StartScene": "0"})");
+		CHECK_FALSE(Project::Load(file));
+		CHECK(log.Contains(spdlog::level::err, fmt::format("Unsupported project version in '{}': expected 1-{}, got {} (number)", ToUtf8(file), Project::CurrentVersion, version)));
+	}
+}
+
 TEST_CASE("Project: oversized project files are refused before reading")
 {
 	// A valid project, padded with whitespace past the cap: read in full, it would load.

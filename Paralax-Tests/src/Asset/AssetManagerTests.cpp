@@ -501,6 +501,28 @@ TEST_CASE("MaterialSerializer: wrongly typed headers fail without throwing")
 	CHECK_NOTHROW(CHECK_FALSE(MaterialSerializer::Deserialize(material, nlohmann::json{{"Paralax", "Material"}}, error)));
 }
 
+TEST_CASE("MaterialSerializer: a Version that would wrap into range, a negative one and a float are refused as written")
+{
+	// 4294967297 and -4294967295 read as 1 through get<int>(), which keeps only the low 32 bits.
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("MaterialHostileVersions");
+	Paralax::Testing::ScopedLogCapture log;
+	for (const char* version : {"4294967297", "-4294967295", "-1", "1.5"})
+	{
+		const std::string shownVersion = version; // doctest shows a const char* as its address.
+		CAPTURE(shownVersion);
+		const std::string text = fmt::format(R"({{"Paralax": {{"Type": "Material", "Version": {}}}, "Roughness": 0.25}})", version);
+		const std::string expected = fmt::format("Unsupported material version: expected 1-{}, got {} (number)", MaterialSerializer::CurrentVersion, version);
+		MaterialAsset material;
+		std::string error;
+		CHECK_NOTHROW(CHECK_FALSE(MaterialSerializer::Deserialize(material, nlohmann::json::parse(text), error)));
+		CHECK(error == expected);
+		CHECK(material.RoughnessFactor == MaterialAsset().RoughnessFactor);
+		REQUIRE(WriteFileAtomically(directory / "Hostile.pxmat", text));
+		CHECK_FALSE(MaterialSerializer::LoadFromFile(directory / "Hostile.pxmat"));
+		CHECK(log.Contains(spdlog::level::err, expected));
+	}
+}
+
 TEST_CASE("MaterialSerializer: hostile and malformed material files are rejected")
 {
 	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("MaterialHostile");
