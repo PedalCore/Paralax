@@ -30,6 +30,7 @@
 #include <cstdarg>
 #include <map>
 #include <mutex>
+#include <set>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -52,6 +53,42 @@ namespace Paralax {
 			PX_CORE_TRACE("Jolt: {}", buffer);
 		}
 
+		// Jolt compiles its own assertions in exactly when NDEBUG is not defined (Jolt/Core/IssueReporting.h), so they
+		// exist in Debug builds only. JPH_ENABLE_ASSERTS is Jolt's configuration macro; it is handled here because this
+		// file is the only one that sees Jolt. Without a handler, a failed one breaks into the debugger (a silent
+		// SIGTRAP outside one) with no message.
+#ifdef JPH_ENABLE_ASSERTS
+		// The one assertion Jolt raises on a runtime condition rather than on misuse: at the end of every update,
+		// that the update reported no error (more contacts than its caches hold, say). Continuing is safe: Jolt
+		// returns the same error to the caller in every build, and Impl::Update reports it once per run. The text
+		// is Jolt's expression in PhysicsSystem::Update; if a Jolt upgrade changes it, the assertion fails like the
+		// others, and the capacity test catches that.
+		constexpr std::string_view UpdateErrorAssertion = "errors == EPhysicsUpdateError::None";
+
+		// Installed as JPH::AssertFailed. May be called on Jolt's worker threads.
+		bool JoltAssertFailed(const char* expression, const char* message, const char* file, JPH::uint line)
+		{
+			expression = expression ? expression : "";
+			file = file ? file : "";
+			// Logged once per site and expression: the update-error assertion repeats every step while it holds.
+			static std::mutex s_ReportedMutex;
+			static std::set<std::tuple<std::string, JPH::uint, std::string>> s_Reported;
+			bool first = false;
+			{
+				std::scoped_lock lock(s_ReportedMutex);
+				first = s_Reported.emplace(file, line, expression).second;
+			}
+			if (first)
+				PX_CORE_ERROR("Jolt assertion failed: {} ({}:{}){}{}", expression, file, line, message ? " - " : "", message ? message : "");
+			if (std::string_view(expression) == UpdateErrorAssertion)
+				return false; // Continue; never break into the debugger.
+			// Misuse of Jolt fails like the engine's own assertions: the default handler reports it and stops the
+			// process, and tests capture it. A capturing handler throws; Jolt is built without exceptions, so that
+			// is only well-defined where no Jolt code is being unwound (PhysicsSystem::RaiseJoltAssertion).
+			Assertion::Fail(expression, file, static_cast<int>(line), fmt::format("Jolt: {}", message ? message : "assertion failed"));
+		}
+#endif
+
 		// Jolt's type registry is global; it is created once and lives for the rest of the process.
 		void EnsureJoltInitialized()
 		{
@@ -60,6 +97,9 @@ namespace Paralax {
 			std::call_once(s_Once, [] {
 				JPH::RegisterDefaultAllocator();
 				JPH::Trace = &JoltTrace;
+#ifdef JPH_ENABLE_ASSERTS
+				JPH::AssertFailed = &JoltAssertFailed;
+#endif
 				s_Factory = CreateScope<JPH::Factory>();
 				JPH::Factory::sInstance = s_Factory.get();
 				JPH::RegisterTypes();
@@ -1080,6 +1120,26 @@ namespace Paralax {
 	uint64_t PhysicsSystem::GetStepCount() const
 	{
 		return m_Impl->Steps;
+	}
+
+	bool PhysicsSystem::JoltAssertionsEnabled()
+	{
+#ifdef JPH_ENABLE_ASSERTS
+		return true;
+#else
+		return false;
+#endif
+	}
+
+	bool PhysicsSystem::RaiseJoltAssertion([[maybe_unused]] const char* expression, [[maybe_unused]] const char* message)
+	{
+#ifdef JPH_ENABLE_ASSERTS
+		// Through JPH::AssertFailed, so this exercises the handler actually installed.
+		EnsureJoltInitialized();
+		return JPH::AssertFailed(expression, message, __FILE__, __LINE__);
+#else
+		return false;
+#endif
 	}
 
 }

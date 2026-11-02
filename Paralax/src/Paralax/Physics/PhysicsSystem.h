@@ -123,6 +123,15 @@ namespace Paralax {
 		// Number of simulation steps taken since the scene started running.
 		uint64_t GetStepCount() const;
 
+		// Whether Jolt's own assertions are compiled in: where NDEBUG is not defined (Debug builds). There the engine
+		// handles them: Jolt's check that an update reported no error is logged once and continues (the engine reports
+		// the error once per run), and any other failure is fatal like PX_CORE_ASSERT.
+		static bool JoltAssertionsEnabled();
+		// Raises an assertion through Jolt's assertion hook, as Jolt's code does, so tests can reach the installed
+		// handler (Jolt's headers are private to the engine). Returns the handler's answer, false to continue; a fatal
+		// failure does not return. Returns false where Jolt's assertions are compiled out. Thread-safe.
+		static bool RaiseJoltAssertion(const char* expression, const char* message);
+
 	private:
 		struct Impl;
 		Scope<Impl> m_Impl;

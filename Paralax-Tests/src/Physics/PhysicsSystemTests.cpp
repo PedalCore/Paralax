@@ -861,10 +861,8 @@ TEST_CASE("PhysicsSystem: contact events beyond the limit are dropped with a war
 	CHECK(CountLogs(log, "contact events are waiting") == 1);
 }
 
-// Only where Jolt's own asserts are compiled out, which Jolt does exactly when NDEBUG is defined (Release and Dist; CI
-// runs both): with them, Jolt asserts that an update reported no error, and its default assert handler breaks into
-// the debugger, so in Debug this condition stops the process before the engine can warn.
-#if defined(NDEBUG)
+// In Debug, Jolt's own assertions are compiled in and Jolt asserts that every update reported no error: the engine's
+// handler lets that one continue, so this runs the same in every build.
 TEST_CASE("PhysicsSystem: running out of contact capacity is reported once per run")
 {
 	PhysicsFixture fixture;
@@ -878,20 +876,55 @@ TEST_CASE("PhysicsSystem: running out of contact capacity is reported once per r
 			spheres[i].GetComponent<TransformComponent>().Translation = 0.1f * glm::vec3(static_cast<float>(i % 6), static_cast<float>((i / 6) % 6), static_cast<float>(i / 36));
 	};
 	Paralax::Testing::ScopedLogCapture log;
+	// Jolt's own assertion about the error, where it is compiled in, is logged once per process (only this test
+	// raises it), so seeing it proves the engine's handler is installed.
+	const size_t joltReports = PhysicsSystem::JoltAssertionsEnabled() ? 1 : 0;
 
 	pile();
 	fixture.World.OnRuntimeStart();
-	fixture.Run(5 * Step);
+	fixture.Run(3 * Step);
 	CHECK(CountLogs(log, "ran out of capacity") == 1);
+	// The simulation carries on: every step was taken.
+	CHECK(fixture.Physics->GetStepCount() == 3);
 	for (Entity sphere : spheres)
 		CHECK(IsFinite(PositionOf(sphere)));
+	CHECK(CountLogs(log, "EPhysicsUpdateError::None") == joltReports);
 
 	// A new run reports it again.
 	fixture.World.OnRuntimeStop();
 	pile();
 	fixture.World.OnRuntimeStart();
-	fixture.Run(5 * Step);
+	fixture.Run(3 * Step);
 	CHECK(CountLogs(log, "ran out of capacity") == 2);
+	CHECK(fixture.Physics->GetStepCount() == 3);
+	CHECK(CountLogs(log, "EPhysicsUpdateError::None") == joltReports);
+}
+
+#if defined(NDEBUG)
+TEST_CASE("PhysicsSystem: in Release and Dist, Jolt's own assertions are compiled out")
+{
+	// Jolt compiles them in exactly when NDEBUG is not defined.
+	CHECK_FALSE(PhysicsSystem::JoltAssertionsEnabled());
+	CHECK_FALSE(PhysicsSystem::RaiseJoltAssertion("testMadeUpCondition", "never checked"));
+}
+#else
+TEST_CASE("PhysicsSystem: a failed Jolt assertion is an engine assertion failure, except Jolt's update-error check")
+{
+	REQUIRE(PhysicsSystem::JoltAssertionsEnabled());
+	Paralax::Testing::ScopedLogCapture log;
+
+	// Misuse of Jolt fails as PX_CORE_ASSERT does, with Jolt's expression, message and location.
+	const std::optional<AssertionInfo> failure = Paralax::Testing::CaptureAssertion([] { PhysicsSystem::RaiseJoltAssertion("testMadeUpCondition", "made up by the test"); });
+	REQUIRE(failure);
+	CHECK(std::string(failure->Expression) == "testMadeUpCondition");
+	CHECK(failure->Message.find("made up by the test") != std::string::npos);
+	CHECK(std::string(failure->File).find("PhysicsSystem") != std::string::npos);
+	CHECK(CountLogs(log, "testMadeUpCondition") == 1);
+
+	// Jolt's check that an update reported no error is a runtime condition: it continues, logged once.
+	for (int i = 0; i < 3; i++)
+		CHECK_FALSE(PhysicsSystem::RaiseJoltAssertion("errors == EPhysicsUpdateError::None", "An error occurred during the physics update"));
+	CHECK(CountLogs(log, "errors == EPhysicsUpdateError::None") == 1);
 }
 #endif
 
