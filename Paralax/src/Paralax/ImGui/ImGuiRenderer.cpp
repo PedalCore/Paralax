@@ -79,7 +79,7 @@ namespace Paralax {
 			}
 		}
 		m_Textures.clear();
-		m_ReportedTextures.clear();
+		m_TextureFailures.Clear();
 		m_BindingSets.clear();
 	}
 
@@ -103,11 +103,11 @@ namespace Paralax {
 				{
 					// Leave the request pending; ImGui keeps asking and draws nothing with this texture meanwhile.
 					m_Textures.erase(texture->UniqueID);
-					if (m_ReportedTextures.insert(texture->UniqueID).second)
+					if (m_TextureFailures.Failed(texture->UniqueID))
 						PX_CORE_ERROR("Could not create a {}x{} ImGui texture", texture->Width, texture->Height);
 					return;
 				}
-				m_ReportedTextures.erase(texture->UniqueID);
+				m_TextureFailures.Created(texture->UniqueID);
 				texture->SetTexID(ToImTextureID(gpuTexture));
 			}
 			// NVRHI uploads whole subresources; ImGui textures are small, so full re-uploads are cheap.
@@ -116,7 +116,7 @@ namespace Paralax {
 		}
 		else if (texture->Status == ImTextureStatus_WantDestroy && texture->UnusedFrames > 2)
 		{
-			m_ReportedTextures.erase(texture->UniqueID);
+			m_TextureFailures.Destroyed(texture->UniqueID);
 			if (auto it = m_Textures.find(texture->UniqueID); it != m_Textures.end())
 			{
 				// The cached binding set holds its own reference, so the texture outlives frames still in flight.

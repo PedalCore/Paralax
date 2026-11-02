@@ -12,6 +12,24 @@ struct ImTextureData;
 
 namespace Paralax {
 
+	// Which ImGui textures have a failed creation on record. ImGui asks for a texture again every frame until it
+	// exists, so ImGuiRenderer logs a failure only the first time, and again only once the texture has been created or
+	// destroyed in between. Main-thread-only.
+	class ImGuiTextureFailures
+	{
+	public:
+		// Records a failed creation. Returns true for the texture's first failure since it was last created or
+		// destroyed: the one to log.
+		bool Failed(int textureId) { return m_Failed.insert(textureId).second; }
+		void Created(int textureId) { m_Failed.erase(textureId); }
+		void Destroyed(int textureId) { m_Failed.erase(textureId); }
+		void Clear() { m_Failed.clear(); }
+		size_t GetCount() const { return m_Failed.size(); }
+
+	private:
+		std::unordered_set<int> m_Failed;
+	};
+
 	// Renders Dear ImGui draw data with NVRHI, including ImGui's dynamic texture requests (font atlas creation and
 	// updates, ImGuiBackendFlags_RendererHasTextures). Images drawn with ImGui::Image use an nvrhi::ITexture* as
 	// their ImTextureID (see ToImTextureID). Main-thread-only.
@@ -61,9 +79,7 @@ namespace Paralax {
 		std::unordered_map<nvrhi::ITexture*, CachedBindingSet> m_BindingSets;
 		// GPU textures for ImGui-managed textures (font atlas), by ImTextureData::UniqueID.
 		std::unordered_map<int, nvrhi::TextureHandle> m_Textures;
-		// ImGui textures whose creation failed and has been logged: ImGui asks again every frame, so the failure is
-		// reported once per texture, until it is created.
-		std::unordered_set<int> m_ReportedTextures;
+		ImGuiTextureFailures m_TextureFailures;
 		uint64_t m_Frame = 0;
 	};
 

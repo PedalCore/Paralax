@@ -49,3 +49,31 @@ TEST_CASE("ImGuiRenderer: rendering without draw data or a framebuffer is an ass
 	}
 	CHECK(graphics.GetValidationErrorCount() == initialErrors);
 }
+
+// A device cannot be made to refuse an allocation without validation errors, so the bookkeeping the renderer logs
+// through is tested on its own.
+TEST_CASE("ImGuiRenderer: a texture that keeps failing to be created is reported once until it is created or destroyed")
+{
+	ImGuiTextureFailures failures;
+	// ImGui asks again every frame: three failing frames, one report.
+	CHECK(failures.Failed(7));
+	CHECK_FALSE(failures.Failed(7));
+	CHECK_FALSE(failures.Failed(7));
+	// Another texture is reported on its own.
+	CHECK(failures.Failed(8));
+	CHECK_FALSE(failures.Failed(8));
+
+	// Created at last: a later failure is new, and reported.
+	failures.Created(7);
+	CHECK(failures.GetCount() == 1);
+	CHECK(failures.Failed(7));
+	CHECK_FALSE(failures.Failed(7));
+
+	// Destroyed likewise; Shutdown forgets them all.
+	failures.Destroyed(7);
+	CHECK(failures.Failed(7));
+	CHECK(failures.GetCount() == 2);
+	failures.Clear();
+	CHECK(failures.GetCount() == 0);
+	CHECK(failures.Failed(8));
+}
