@@ -34,6 +34,13 @@ namespace Paralax {
 			info.Copy = [](const entt::registry& source, entt::entity from, entt::registry& destination, entt::entity to) {
 				destination.emplace_or_replace<T>(to, source.get<T>(from));
 			};
+			info.StorageOrder = [](const entt::registry& registry) {
+				std::vector<entt::entity> entities;
+				// A storage's iterators run from its last element to its first; the reverse ones run in storage order.
+				if (const entt::sparse_set* pool = registry.storage<T>())
+					entities.assign(pool->rbegin(), pool->rend());
+				return entities;
+			};
 			return info;
 		}
 

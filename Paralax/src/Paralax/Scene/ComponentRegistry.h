@@ -31,6 +31,9 @@ namespace Paralax {
 		// Copies the component (exactly, without JSON round-tripping) from one entity to another, replacing any
 		// existing instance on the destination.
 		void (*Copy)(const entt::registry& source, entt::entity from, entt::registry& destination, entt::entity to) = nullptr;
+		// The entities that have the component, in the order the registry stores them (views visit them in the
+		// reverse of this order). Adding the component to entities in this order reproduces the storage.
+		std::vector<entt::entity> (*StorageOrder)(const entt::registry&) = nullptr;
 
 		const FieldInfo* FindField(std::string_view name) const;
 	};
