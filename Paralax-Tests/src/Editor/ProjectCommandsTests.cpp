@@ -200,11 +200,11 @@ TEST_CASE("ProjectCommands: project.export accepts a new output directory writte
 {
 	ExportFixture fixture("ProjectExportTrailingSlash");
 	REQUIRE_FALSE(std::filesystem::exists(fixture.Root / "Build"));
-	const CommandResult absolute = fixture.Context.Execute("project.export", {{"output", (fixture.Root / "Build").generic_string() + "/"}});
+	const CommandResult absolute = fixture.Context.Execute("project.export", {{"output", ToUtf8(fixture.Root / "Build") + "/"}});
 	CHECK_MESSAGE(absolute.Success, absolute.Error);
 	CHECK(std::filesystem::is_directory(fixture.Root / "Build"));
 	// By identity: the result is canonical, the temporary directory need not be (macOS /var, Windows short names).
-	CHECK(std::filesystem::equivalent(std::filesystem::path(absolute.Result["path"].get<std::string>()), fixture.Root / "Build"));
+	CHECK(std::filesystem::equivalent(FromUtf8(absolute.Result["path"].get<std::string>()), fixture.Root / "Build"));
 	// Each export holds a copy of the runtime: removed once checked, so the temporary root stays small.
 	std::error_code removeError;
 	std::filesystem::remove_all(fixture.Root / "Build", removeError);

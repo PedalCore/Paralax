@@ -534,7 +534,7 @@ namespace Paralax {
 			for (const auto& [subHandle, subMetadata] : m_Registry)
 			{
 				if (subMetadata.Parent == handle)
-					entries[subHandle] = {subMetadata.Type, subMetadata.FilePath.generic_string()};
+					entries[subHandle] = {subMetadata.Type, ToUtf8(subMetadata.FilePath)};
 			}
 			return entries;
 		};
@@ -576,7 +576,7 @@ namespace Paralax {
 			// written (a read-only project, a file held open elsewhere).
 			if (subAssetEntries() != previousEntries && !SaveRegistry())
 			{
-				PX_CORE_ERROR("Reloaded '{}', but the asset registry could not be saved; its sub-assets are recorded only in memory", parentMetadata.FilePath.generic_string());
+				PX_CORE_ERROR("Reloaded '{}', but the asset registry could not be saved; its sub-assets are recorded only in memory", ToUtf8(parentMetadata.FilePath));
 				return false;
 			}
 		}

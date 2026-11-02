@@ -641,6 +641,42 @@ TEST_CASE("AssetManager: removing and reloading fail without losing the registry
 	CHECK(reopened.IsRegistered(model));
 }
 
+TEST_CASE("AssetManager: a model under a non-ASCII name reloads, and a registry it cannot save is reported by that name")
+{
+	// "Modelle-é-日本/Model.gltf": the reload compares and reports registry paths, which must not go through the
+	// platform's narrow encoding (on Windows that would throw for 日本).
+	const std::string folder = "Modelle-\xC3\xA9-\xE6\x97\xA5\xE6\x9C\xAC";
+	const std::string modelName = folder + "/Model.gltf";
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("AssetReloadNonAscii");
+	const std::filesystem::path modelDirectory = directory / FromUtf8(folder);
+	nlohmann::json document = Paralax::Testing::MakeTriangleDocument(modelDirectory);
+	document["nodes"] = {{{"name", "Node"}, {"mesh", 0}}};
+	document["scenes"][0]["nodes"] = {0};
+	Paralax::Testing::WriteGltf(modelDirectory, document, "Model.gltf");
+	AssetManager assets(directory);
+	const AssetHandle model = assets.ImportAsset(FromUtf8(modelName));
+	REQUIRE(model.IsValid());
+	CHECK(ToUtf8(assets.GetMetadata(model)->FilePath) == modelName);
+	const std::filesystem::path registryFile = directory / AssetManager::RegistryFileName;
+	const std::string registry = Paralax::Testing::ReadFileText(registryFile);
+
+	// Unchanged: it reloads and the registry is left as it was.
+	CHECK(assets.ReloadAsset(model));
+	CHECK(Paralax::Testing::ReadFileText(registryFile) == registry);
+
+	// Re-exported with another object while the registry cannot be written: the error names the model in UTF-8.
+	std::filesystem::remove(registryFile);
+	std::filesystem::create_directories(registryFile);
+	document["meshes"].push_back(document["meshes"][0]);
+	document["meshes"][1]["name"] = "Second";
+	document["nodes"].push_back({{"name", "Other"}, {"mesh", 1}});
+	document["scenes"][0]["nodes"] = {0, 1};
+	Paralax::Testing::WriteGltf(modelDirectory, document, "Model.gltf");
+	Paralax::Testing::ScopedLogCapture capture;
+	CHECK_FALSE(assets.ReloadAsset(model));
+	CHECK(capture.Contains(spdlog::level::err, "Reloaded '" + modelName + "', but the asset registry could not be saved"));
+}
+
 TEST_CASE("AssetManager: a model's per-node meshes are registered, and follow re-exports that drop objects")
 {
 	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("AssetManagerNodeMeshes");
