@@ -221,7 +221,7 @@ TEST_CASE("SceneRenderer: fixed look matches the reviewed reference image")
 									 info.DriverName.find("llvmpipe") != std::string::npos || info.DriverName.find("lavapipe") != std::string::npos;
 		if (referenceDevice)
 		{
-			const Image expected = Image::LoadFromFile(std::filesystem::path(__FILE__).parent_path() / "Golden" / "R1-Reference.png");
+			const Image expected = Image::LoadFromFile(std::filesystem::path(PX_SOURCE_ROOT) / "Paralax-Tests" / "src" / "Renderer" / "Golden" / "R1-Reference.png");
 			REQUIRE(expected.GetWidth() == actual.GetWidth());
 			REQUIRE(expected.GetHeight() == actual.GetHeight());
 			// Permit sparse raster-edge differences within the reference driver family, but no broad color shift.

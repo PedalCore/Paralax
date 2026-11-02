@@ -19,6 +19,13 @@ endif()
 target_compile_definitions(Paralax-Tests PRIVATE DOCTEST_CONFIG_SUPER_FAST_ASSERTS
 	# A FLAC sample from the pinned miniaudio sources, for the decoder tests (not copied into this repository).
 	PX_TEST_FLAC_FILE="${miniaudio_SOURCE_DIR}/data/16-44100-stereo.flac")
+# Tests that read files from the source tree get its absolute path here, never from __FILE__: compiler caches such as
+# ccache (base_dir) make __FILE__ relative to the build directory. Only these sources get it, so the other test
+# sources stay identical across worktrees and share cache hits.
+set_source_files_properties(
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/Renderer/SceneRendererTests.cpp"
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/Scripting/FeatureTestCoverageTests.cpp"
+	PROPERTIES COMPILE_DEFINITIONS "PX_SOURCE_ROOT=\"${PROJECT_SOURCE_DIR}\"")
 px_configure_target(Paralax-Tests)
 
 # doctest_discover_tests turns the test list into a CMake list, so a ';' in a test name registers two CTest tests

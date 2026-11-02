@@ -28,8 +28,7 @@ namespace {
 
 	std::filesystem::path RepositoryRoot()
 	{
-		// This file lives at <root>/Paralax-Tests/src/Scripting/.
-		return std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+		return std::filesystem::path(PX_SOURCE_ROOT); // Defined by Paralax-Tests/CMakeLists.txt.
 	}
 
 	std::filesystem::path FeatureTestDirectory()
