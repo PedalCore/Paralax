@@ -21,10 +21,9 @@ namespace Paralax {
 	// path(std::string) throws on bytes that are not a valid code-page sequence, and even the UTF-8 ones
 	// (generic_u8string(), path(std::u8string)) throw on an unpaired surrogate or malformed UTF-8.
 	//
-	// Command-line arguments are the exception: they arrive in the native narrow encoding, so they become paths
-	// through path(std::string) and are converted with ToUtf8 from there. On Windows that encoding is the ANSI code
-	// page, so a path given on the command line must be representable in it (other characters arrive already
-	// replaced); paths given to commands are UTF-8 and have no such limit.
+	// Command-line arguments follow the same rule: the entry point reads them with GetProcessArguments
+	// (Core/CommandLine.h), which on Windows gives UTF-8 rather than argv's ANSI code page (on POSIX, argv's bytes),
+	// so a path option becomes a path through FromUtf8.
 	//
 	// Every function here is pure and safe to call from any thread.
 

@@ -597,7 +597,7 @@ namespace Paralax {
 		if (std::optional<std::string> gpu = args.GetOption("gpu"))
 			result.Graphics.PreferredAdapter = *gpu;
 		if (std::optional<std::string> screenshot = args.GetOption("screenshot"))
-			result.ScreenshotPath = *screenshot;
+			result.ScreenshotPath = FromUtf8(*screenshot);
 
 		specification = std::move(result);
 		return true;

@@ -129,8 +129,7 @@ namespace Paralax {
 			std::filesystem::path path;
 			if (std::optional<std::string> scene = args.GetOption("scene"))
 			{
-				// Arguments are in the native narrow encoding (the ANSI code page on Windows); logs are UTF-8.
-				const std::filesystem::path scenePath(*scene);
+				const std::filesystem::path scenePath = FromUtf8(*scene);
 				std::string nameError;
 				std::optional<std::filesystem::path> registryPath = project.GetAssetManager().ToRegistryPath(scenePath, &nameError);
 				if (!registryPath)
@@ -183,7 +182,7 @@ namespace Paralax {
 
 		std::optional<std::filesystem::path> projectPath;
 		if (std::optional<std::string> option = args.GetOption("project"))
-			projectPath = std::filesystem::path(*option);
+			projectPath = FromUtf8(*option);
 		else
 			projectPath = FindBundledProject();
 		if (!projectPath)
