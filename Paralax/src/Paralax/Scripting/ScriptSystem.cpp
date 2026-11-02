@@ -429,10 +429,13 @@ namespace Paralax {
 
 		// --- Error reporting ---------------------------------------------------------------------------------
 
-		void ReportError(const std::string& message)
+		// The message holds what the script raised, of any size (error() takes any string), so it is capped before it
+		// is logged and kept.
+		void ReportError(std::string_view error)
 		{
+			std::string message = CapMessage(error);
 			PX_ERROR("Script error: {}", message);
-			Errors.push_back(message);
+			Errors.push_back(std::move(message));
 			if (Errors.size() > Specification.MaxRecordedErrors)
 				Errors.erase(Errors.begin(), Errors.begin() + static_cast<std::ptrdiff_t>(Errors.size() - Specification.MaxRecordedErrors));
 		}
@@ -649,7 +652,7 @@ namespace Paralax {
 			const AssetHandle handle = registryPath ? Assets.GetHandleForPath(*registryPath) : AssetHandle(0);
 			Ref<ScriptAsset> script = handle.IsValid() ? Assets.GetAsset<ScriptAsset>(handle) : nullptr;
 			if (!script)
-				ScriptError(fmt::format("require: no script '{}' in the project", ToUtf8(path)));
+				ScriptError(fmt::format("require: no script {} in the project", QuoteText(ToUtf8(path))));
 			const std::string key = ToUtf8(*registryPath);
 			if (auto it = Modules.find(key); it != Modules.end())
 				return it->second;
@@ -1004,18 +1007,28 @@ namespace Paralax {
 
 		void BindLogging(sol::state& lua)
 		{
-			// Arguments are converted with Lua's tostring, so tables with __tostring print as their authors intend.
+			// Arguments are converted with Lua's tostring, so tables with __tostring print as their authors intend. A
+			// line keeps at most MaxMessageBytes of its text, and only that much (and a byte more, for CapMessage to
+			// find a character boundary) is copied out of Lua: a script can build strings up to its memory limit.
 			auto join = [](sol::variadic_args args, sol::this_state state) {
 				sol::state_view view(state);
 				sol::function toString = view["tostring"];
 				std::string message;
+				size_t fullBytes = 0;
+				auto append = [&](std::string_view text) {
+					fullBytes += text.size();
+					if (message.size() <= MaxMessageBytes)
+						message.append(text.substr(0, MaxMessageBytes + 1 - message.size()));
+				};
 				for (size_t i = 0; i < args.size(); i++)
 				{
 					if (i > 0)
-						message += '\t';
-					message += toString(args[i]).get<std::string>();
+						append("\t");
+					// The converted string stays on the Lua stack, and so valid, while `converted` lives.
+					const sol::function_result converted = toString(args[i]);
+					append(converted.get<std::string_view>());
 				}
-				return message;
+				return CapMessage(message, MaxMessageBytes, fullBytes);
 			};
 			sol::table log = CreateApiTable(lua, "Log");
 			log.set_function("Trace", [join](sol::variadic_args args, sol::this_state s) { PX_TRACE("{}", join(args, s)); });
@@ -1597,7 +1610,8 @@ namespace Paralax {
 		}
 		if (!failure.empty())
 		{
-			outError = std::move(failure);
+			// What the code raised, of any size; the results, which the caller asked for, are returned whole.
+			outError = CapMessage(failure);
 			return std::nullopt;
 		}
 		return output;

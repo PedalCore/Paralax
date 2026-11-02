@@ -5,6 +5,7 @@
 #include <Paralax/Asset/AssetManager.h>
 #include <Paralax/Audio/AudioSystem.h>
 #include <Paralax/Core/Input.h>
+#include <Paralax/Core/JsonText.h>
 #include <Paralax/Core/PathEncoding.h>
 #include <Paralax/Events/KeyEvent.h>
 #include <Paralax/Physics/PhysicsSystem.h>
@@ -1371,4 +1372,50 @@ TEST_CASE("ScriptSystem: the Physics API reports when the scene has no physics")
 	std::string error;
 	CHECK_FALSE(fixture.System->Evaluate("Physics.GetGravity()", error));
 	CHECK(error.find("physics is not running") != std::string::npos);
+}
+
+TEST_CASE("ScriptSystem: print, Log and errors keep at most MaxMessageBytes of their text")
+{
+	ScriptFixture fixture;
+	// 16 MiB of text, which scripts may build (it is well inside their memory limit).
+	fixture.CreateScripted(R"(
+		local Loud = {}
+		function Loud:OnCreate()
+			local text = string.rep("a", 16 * 1024 * 1024)
+			print(text)
+			Log.Info("x", text, "tail")
+			print("short", 1, true, nil)
+			error(text)
+		end
+		return Loud
+	)");
+	Paralax::Testing::ScopedLogCapture log;
+	fixture.Start();
+	fixture.Update();
+
+	const std::string kept(MaxMessageBytes, 'a');
+	CHECK(log.Contains(spdlog::level::info, kept + "... (16777216 bytes)"));
+	// Arguments are joined by tabs: "x", tab, 16 MiB, tab, "tail".
+	CHECK(log.Contains(spdlog::level::info, "x\t" + std::string(MaxMessageBytes - 2, 'a') + "... (16777223 bytes)"));
+	CHECK(log.Contains(spdlog::level::info, "short\t1\ttrue\tnil"));
+	for (const Paralax::Testing::ScopedLogCapture::Entry& entry : log.GetEntries())
+		CHECK(entry.Message.size() < MaxMessageBytes + 64);
+
+	// The error is recorded and logged with its context, cut to the same size.
+	REQUIRE(fixture.System->GetErrors().size() == 1);
+	const std::string& error = fixture.System->GetErrors()[0];
+	CHECK(error.find("OnCreate: ") != std::string::npos);
+	CHECK(error.size() <= MaxMessageBytes + 32);
+	CHECK(error.ends_with(" bytes)"));
+	CHECK(log.Contains(spdlog::level::err, "Script error: " + error));
+
+	// Evaluated code's errors are returned cut too; a long require path is named briefly.
+	std::string failure;
+	CHECK_FALSE(fixture.System->Evaluate("error(string.rep('b', 16 * 1024 * 1024))", failure));
+	CHECK(failure.size() <= MaxMessageBytes + 32);
+	CHECK(failure.find(std::string(1000, 'b')) != std::string::npos);
+	CHECK_FALSE(fixture.System->Evaluate("require(string.rep('c', 16 * 1024 * 1024))", failure));
+	CHECK(failure.find("require: no script 'ccc") != std::string::npos);
+	CHECK(failure.find("...' (16777220 bytes) in the project") != std::string::npos);
+	CHECK(failure.size() < 1024);
 }
