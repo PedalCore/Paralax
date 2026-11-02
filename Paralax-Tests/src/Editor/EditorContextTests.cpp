@@ -4,6 +4,7 @@
 
 #include <EditorCore/EditorContext.h>
 
+#include <Paralax/Core/PathEncoding.h>
 #include <Paralax/Scene/Entity.h>
 
 #include <filesystem>
@@ -339,7 +340,7 @@ TEST_CASE("EditorContext: scene paths must stay inside the project's asset direc
 
 	CHECK_FALSE(context.Execute("scene.save", {{"path", "../../Escape"}}).Success);
 	CHECK_FALSE(std::filesystem::exists(root / "Escape.pxscene"));
-	CHECK_FALSE(context.Execute("scene.save", {{"path", (root / "Absolute").string()}}).Success);
+	CHECK_FALSE(context.Execute("scene.save", {{"path", ToUtf8(root / "Absolute")}}).Success);
 	CHECK_FALSE(std::filesystem::exists(root / "Absolute.pxscene"));
 	CHECK_FALSE(context.Execute("scene.open", {{"path", "../Game.pxproj"}}).Success);
 
@@ -354,6 +355,42 @@ TEST_CASE("EditorContext: scene paths must stay inside the project's asset direc
 
 	CHECK(context.Execute("scene.save", {{"path", "Scenes/Inside"}}).Success);
 	CHECK(std::filesystem::exists(project->GetAssetDirectory() / "Scenes" / "Inside.pxscene"));
+}
+
+TEST_CASE("EditorContext: a scene file name that is not UTF-8 is refused before anything is written")
+{
+	if constexpr (sizeof(std::filesystem::path::value_type) != 1)
+	{
+		MESSAGE("Only POSIX file names can be bytes that are not UTF-8; nothing to check here");
+	}
+	else
+	{
+		// Latin-1 "Niveau-é": the project could not record it in the registry, so the scene is not written at all.
+		const std::filesystem::path root = Paralax::Testing::CreateTestDirectory("EditorContextNotUtf8");
+		Ref<Project> project = Project::Create(root / "Game", "Game");
+		REQUIRE(project);
+		EditorContext context(project);
+		const std::filesystem::path file = project->GetAssetDirectory() / "Scenes" / FromUtf8("Niveau-\xE9.pxscene");
+		std::string error;
+		CHECK_FALSE(context.ResolveProjectPath(file, error));
+		CHECK(error.find("is not a valid UTF-8 file name") != std::string::npos);
+
+		Paralax::Testing::ScopedLogCapture log;
+		CHECK_FALSE(context.SaveScene(file));
+		CHECK_FALSE(std::filesystem::exists(file));
+		CHECK(log.Contains(spdlog::level::err, "is not a valid UTF-8 file name"));
+
+		// Commands only carry UTF-8, but a UTF-8 link can still resolve to such a name: it is refused the same way.
+		std::ofstream(file) << "{}";
+		std::error_code linkError;
+		std::filesystem::create_symlink(file, project->GetAssetDirectory() / "Scenes" / "Link.pxscene", linkError);
+		if (!linkError)
+		{
+			const CommandResult opened = context.Execute("scene.open", {{"path", "Scenes/Link.pxscene"}});
+			CHECK_FALSE(opened.Success);
+			CHECK_FALSE(project->GetAssetManager().GetHandleForPath("Scenes/Link.pxscene").IsValid());
+		}
+	}
 }
 
 TEST_CASE("EditorContext: output files must have the expected extension and stay inside the project")

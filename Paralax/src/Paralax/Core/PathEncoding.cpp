@@ -2,6 +2,7 @@
 #include "Paralax/Core/PathEncoding.h"
 
 #include <algorithm>
+#include <optional>
 
 namespace Paralax {
 
@@ -36,10 +37,10 @@ namespace Paralax {
 		}
 
 		// Decodes the sequence starting at index (which must be inside text) and advances index past it. A malformed
-		// sequence yields U+FFFD, and index stops at the first byte that does not belong to it (Unicode's "maximal
+		// sequence yields nullopt, and index stops at the first byte that does not belong to it (Unicode's "maximal
 		// subpart" practice), so a valid character that follows is kept. The table is Unicode's well-formed byte
 		// sequences (Table 3-7): no overlong forms, no encoded surrogates, nothing beyond U+10FFFF.
-		char32_t DecodeUtf8(std::string_view text, size_t& index)
+		std::optional<char32_t> DecodeUtf8(std::string_view text, size_t& index)
 		{
 			const auto lead = static_cast<uint8_t>(text[index]);
 			index++;
@@ -74,16 +75,16 @@ namespace Paralax {
 			}
 			else
 			{
-				return ReplacementCharacter;
+				return std::nullopt;
 			}
 
 			for (size_t i = 0; i < continuations; i++)
 			{
 				if (index >= text.size())
-					return ReplacementCharacter;
+					return std::nullopt;
 				const auto byte = static_cast<uint8_t>(text[index]);
 				if (byte < lower || byte > upper)
-					return ReplacementCharacter;
+					return std::nullopt;
 				code = (code << 6) | (byte & 0x3Fu);
 				lower = 0x80;
 				upper = 0xBF;
@@ -162,7 +163,7 @@ namespace Paralax {
 		out.reserve(text.size());
 		for (size_t i = 0; i < text.size();)
 		{
-			const char32_t code = DecodeUtf8(text, i);
+			const char32_t code = DecodeUtf8(text, i).value_or(ReplacementCharacter);
 			if (code >= 0x10000)
 			{
 				out += static_cast<char16_t>(0xD800 + ((code - 0x10000) >> 10));
@@ -174,6 +175,16 @@ namespace Paralax {
 			}
 		}
 		return out;
+	}
+
+	bool IsWellFormedUtf8(std::string_view text)
+	{
+		for (size_t i = 0; i < text.size();)
+		{
+			if (!DecodeUtf8(text, i))
+				return false;
+		}
+		return true;
 	}
 
 	std::string ToUtf8(const std::filesystem::path& path)

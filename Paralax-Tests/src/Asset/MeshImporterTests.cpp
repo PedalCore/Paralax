@@ -5,6 +5,7 @@
 
 #include <Paralax/Asset/AssetManager.h>
 #include <Paralax/Asset/MeshImporter.h>
+#include <Paralax/Core/PathEncoding.h>
 #include <Paralax/Renderer/Image.h>
 
 #include <glm/gtc/epsilon.hpp>
@@ -319,6 +320,27 @@ TEST_CASE("MeshImporter: parallax settings come from material extras, with 16-bi
 	const auto* texels = reinterpret_cast<const float*>((*texture)->Mips[0].data());
 	CHECK(texels[4] != texels[8]); // 30000 and 30001 stay apart.
 	CHECK(std::count_if(result.Textures.begin(), result.Textures.end(), [](const Ref<TextureAsset>& t) { return t->Format == TextureFormat::RGBA32F; }) == 1);
+}
+
+TEST_CASE("MeshImporter: a height map with a non-ASCII name is found beside a model in a non-ASCII folder")
+{
+	// "Modelle-é-日本" and "Stein-é-日.png", as UTF-8 bytes. glTF text is UTF-8, so the name must be looked up as
+	// UTF-8 rather than in the platform's narrow encoding. It is in the textures folder, so the lookup beside the
+	// model is tried (and misses) first.
+	const std::string heightName = "Stein-\xC3\xA9-\xE6\x97\xA5.png";
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfParallaxUtf8") / FromUtf8("Modelle-\xC3\xA9-\xE6\x97\xA5\xE6\x9C\xAC");
+	std::filesystem::create_directories(directory / "textures");
+	const std::vector<uint8_t> height = Paralax::Testing::MakePng16(2, 2, {65535, 30000, 30001, 0});
+	std::ofstream(directory / "textures" / FromUtf8(heightName), std::ios::binary).write(reinterpret_cast<const char*>(height.data()), static_cast<std::streamsize>(height.size()));
+
+	json document = Paralax::Testing::MakeTriangleDocument(directory);
+	document["materials"][0]["extras"] = {{"pom", true}, {"height_map", heightName}, {"height_depth_m", 0.02}, {"texture_repeat_m", 1.0}};
+	MeshImportResult result;
+	std::string error;
+	REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), result, error), error);
+	CHECK(result.Warnings.empty());
+	REQUIRE_FALSE(result.Materials.empty());
+	CHECK(result.Materials[0]->HeightTexture.IsValid());
 }
 
 TEST_CASE("MeshImporter: unusable parallax extras are skipped with a warning")
@@ -843,7 +865,7 @@ TEST_CASE("MeshImporter: external buffers stay inside the model's directory and 
 	{
 		const std::filesystem::path outside = root / "absolute.bin";
 		writeBytes(outside, triangle);
-		for (const std::string& uri : {outside.generic_string(), "file://" + outside.generic_string()})
+		for (const std::string& uri : {ToUtf8(outside), "file://" + ToUtf8(outside)})
 		{
 			CAPTURE(uri);
 			CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, externalDocument(uri)), UUID(1), result, error));

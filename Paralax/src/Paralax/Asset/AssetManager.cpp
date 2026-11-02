@@ -87,7 +87,7 @@ namespace Paralax {
 
 	AssetManager::~AssetManager() = default;
 
-	std::optional<std::filesystem::path> AssetManager::ToRegistryPath(const std::filesystem::path& path) const
+	std::optional<std::filesystem::path> AssetManager::ToRegistryPath(const std::filesystem::path& path, std::string* outError) const
 	{
 		if (m_AssetDirectory.empty())
 			return std::nullopt;
@@ -100,7 +100,18 @@ namespace Paralax {
 		const std::filesystem::path relative = absolute.lexically_relative(m_AssetDirectory);
 		if (relative.empty() || *relative.begin() == "..")
 			return std::nullopt;
-		return FromUtf8(ToUtf8(relative));
+		// Only names that survive the trip through UTF-8 unchanged are accepted: any bytes are allowed on POSIX and
+		// unpaired surrogates on Windows, and either would be stored altered and point at no file after a reload.
+		const std::string text = ToUtf8(relative);
+		std::filesystem::path registryPath = FromUtf8(text);
+		if (!IsWellFormedUtf8(text) || registryPath != relative)
+		{
+			// Shown with U+FFFD in place of what is not UTF-8, which marks the part to rename.
+			if (outError)
+				*outError = fmt::format("'{}' is not a valid UTF-8 file name; rename it", Utf16ToUtf8(Utf8ToUtf16(text)));
+			return std::nullopt;
+		}
+		return registryPath;
 	}
 
 	std::filesystem::path AssetManager::ToAbsolutePath(const std::filesystem::path& registryPath) const
@@ -112,10 +123,14 @@ namespace Paralax {
 	{
 		// A newly imported (or re-imported) file may fix a handle that failed before.
 		m_Failed.clear();
-		const std::optional<std::filesystem::path> registryPath = ToRegistryPath(path);
+		std::string nameError;
+		const std::optional<std::filesystem::path> registryPath = ToRegistryPath(path, &nameError);
 		if (!registryPath)
 		{
-			PX_CORE_ERROR("Cannot import '{}': not inside the asset directory '{}'", ToUtf8(path), ToUtf8(m_AssetDirectory));
+			if (!nameError.empty())
+				PX_CORE_ERROR("Cannot import: {}", nameError);
+			else
+				PX_CORE_ERROR("Cannot import '{}': not inside the asset directory '{}'", ToUtf8(path), ToUtf8(m_AssetDirectory));
 			return 0;
 		}
 		if (AssetHandle existing = GetHandleForPath(*registryPath); existing.IsValid())
@@ -289,9 +304,12 @@ namespace Paralax {
 		assets.reserve(m_Registry.size());
 		for (const auto& [handle, metadata] : m_Registry)
 			assets.push_back(metadata);
+		// Ordered by the UTF-8 text the registry stores (byte order is code point order), so the file lists entries
+		// in the same order on every platform; path::operator< compares UTF-16 on Windows and bytes elsewhere.
 		std::sort(assets.begin(), assets.end(), [](const AssetMetadata& a, const AssetMetadata& b) {
-			if (a.FilePath != b.FilePath)
-				return a.FilePath < b.FilePath;
+			const std::string pathA = ToUtf8(a.FilePath), pathB = ToUtf8(b.FilePath);
+			if (pathA != pathB)
+				return pathA < pathB;
 			return static_cast<uint64_t>(a.Handle) < static_cast<uint64_t>(b.Handle);
 		});
 		return assets;

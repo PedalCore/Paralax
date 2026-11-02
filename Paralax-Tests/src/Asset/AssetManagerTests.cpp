@@ -165,8 +165,9 @@ TEST_CASE("AssetManager: non-ASCII file names round-trip through import, the reg
 	CHECK(Paralax::Testing::ReadFileText(registryFile) == registry);
 }
 
-TEST_CASE("AssetManager: a registry path that is not valid UTF-8 is refused without throwing")
+TEST_CASE("AssetManager: invalid UTF-8 anywhere in the registry makes it malformed, refused without throwing")
 {
+	// JSON text must be UTF-8, so the parser rejects the whole file before any path is converted.
 	const std::filesystem::path directory = MakeProject("AssetRegistryInvalidUtf8");
 	std::ofstream(directory / AssetManager::RegistryFileName, std::ios::binary)
 		<< R"({"Paralax": {"Type": "AssetRegistry", "Version": 1}, "Assets": [{"Handle": "123456", "Type": "Texture", "Path": "Textures/Brick)"
@@ -178,6 +179,65 @@ TEST_CASE("AssetManager: a registry path that is not valid UTF-8 is refused with
 	REQUIRE(assets);
 	CHECK(assets->GetRegisteredAssets().empty());
 	CHECK(log.Contains(spdlog::level::err, "malformed"));
+}
+
+TEST_CASE("AssetManager: a registry path with JSON-escaped non-ASCII characters names the UTF-8 file")
+{
+	// "画像" is "画像": the escapes decode to UTF-8 text, which becomes the path through FromUtf8.
+	const std::string name = "Textures/\xE7\x94\xBB\xE5\x83\x8F.png";
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("AssetRegistryEscaped");
+	REQUIRE(Image(2, 2).SavePNG(directory / FromUtf8(name)));
+	std::ofstream(directory / AssetManager::RegistryFileName, std::ios::binary)
+		<< R"({"Paralax": {"Type": "AssetRegistry", "Version": 1}, "Assets": [{"Handle": "123456", "Type": "Texture", "Path": "Textures/画像.png"}]})";
+
+	AssetManager assets(directory);
+	const AssetHandle handle(123456);
+	REQUIRE(assets.GetMetadata(handle));
+	CHECK(ToUtf8(assets.GetMetadata(handle)->FilePath) == name);
+	CHECK(assets.GetHandleForPath(FromUtf8(name)) == handle);
+	CHECK(assets.GetAsset<TextureAsset>(handle) != nullptr);
+	// Saved back as UTF-8, not escaped.
+	REQUIRE(assets.SaveRegistry());
+	CHECK(Paralax::Testing::ReadFileText(directory / AssetManager::RegistryFileName).find("\"Path\": \"" + name + "\"") != std::string::npos);
+}
+
+TEST_CASE("AssetManager: a file name that is not UTF-8 is refused at import, and the registry is unchanged")
+{
+	if constexpr (sizeof(std::filesystem::path::value_type) != 1)
+	{
+		// Windows names are UTF-16, so the only names without a UTF-8 form hold unpaired surrogates, which the same
+		// check refuses but which this test cannot create portably.
+		MESSAGE("Only POSIX file names can be bytes that are not UTF-8; nothing to check here");
+	}
+	else
+	{
+		// The registry stores UTF-8, so the name would be written with U+FFFD and point at no file after a reload.
+		const std::filesystem::path directory = MakeProject("AssetNotUtf8");
+		AssetManager assets(directory);
+		REQUIRE(assets.ImportAsset("Brick.pxmat").IsValid());
+		const std::filesystem::path registryFile = directory / AssetManager::RegistryFileName;
+		const std::string registry = Paralax::Testing::ReadFileText(registryFile);
+		const std::string name = "Textures/Brick\xFF.png";
+		REQUIRE(Image(2, 2).SavePNG(directory / FromUtf8(name)));
+
+		Paralax::Testing::ScopedLogCapture log;
+		AssetHandle handle = 0;
+		CHECK_NOTHROW(handle = assets.ImportAsset(directory / FromUtf8(name)));
+		CHECK_FALSE(handle.IsValid());
+		CHECK_FALSE(assets.ImportAsset(FromUtf8(name)).IsValid());
+		// The message shows U+FFFD where the name is not UTF-8.
+		CHECK(log.Contains(spdlog::level::err, "'Textures/Brick\xEF\xBF\xBD.png' is not a valid UTF-8 file name; rename it"));
+
+		std::string reason;
+		CHECK_FALSE(assets.ToRegistryPath(FromUtf8(name), &reason));
+		CHECK(reason.find("UTF-8") != std::string::npos);
+		reason.clear();
+		CHECK_FALSE(assets.ToRegistryPath("../Outside.png", &reason));
+		CHECK(reason.empty()); // Outside the directory is not a naming problem.
+
+		CHECK(assets.GetRegisteredAssets().size() == 1);
+		CHECK(Paralax::Testing::ReadFileText(registryFile) == registry);
+	}
 }
 
 TEST_CASE("AssetManager: memory assets, reloading and removal")

@@ -53,12 +53,14 @@ namespace Paralax::Editor {
 		}
 		if (!m_Project)
 			return path;
-		// ToRegistryPath resolves ".." and symlinks before checking containment.
+		// ToRegistryPath resolves ".." and symlinks before checking containment, and refuses names that are not
+		// UTF-8 (so SaveScene never writes a scene the registry could not record).
 		const AssetManager& assets = m_Project->GetAssetManager();
-		std::optional<std::filesystem::path> registryPath = assets.ToRegistryPath(path);
+		std::string nameError;
+		std::optional<std::filesystem::path> registryPath = assets.ToRegistryPath(path, &nameError);
 		if (!registryPath)
 		{
-			outError = fmt::format("'{}' is outside the project's asset directory", ToUtf8(path));
+			outError = nameError.empty() ? fmt::format("'{}' is outside the project's asset directory", ToUtf8(path)) : nameError;
 			return std::nullopt;
 		}
 		return assets.ToAbsolutePath(*registryPath);

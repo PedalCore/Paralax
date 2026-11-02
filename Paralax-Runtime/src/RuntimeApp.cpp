@@ -131,10 +131,14 @@ namespace Paralax {
 			{
 				// Arguments are in the native narrow encoding (the ANSI code page on Windows); logs are UTF-8.
 				const std::filesystem::path scenePath(*scene);
-				std::optional<std::filesystem::path> registryPath = project.GetAssetManager().ToRegistryPath(scenePath);
+				std::string nameError;
+				std::optional<std::filesystem::path> registryPath = project.GetAssetManager().ToRegistryPath(scenePath, &nameError);
 				if (!registryPath)
 				{
-					PX_CORE_ERROR("--scene '{}' is not inside the project's assets", ToUtf8(scenePath));
+					if (!nameError.empty())
+						PX_CORE_ERROR("--scene: {}", nameError);
+					else
+						PX_CORE_ERROR("--scene '{}' is not inside the project's assets", ToUtf8(scenePath));
 					return nullptr;
 				}
 				path = project.GetAssetManager().ToAbsolutePath(*registryPath);

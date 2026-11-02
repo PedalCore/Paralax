@@ -9,8 +9,9 @@ namespace Paralax {
 
 	// A JSON document as the engine writes it to a file: tab-indented, with a trailing newline. nlohmann's dump()
 	// throws on a string that is not valid UTF-8 (an entity name set from a script, say); here such bytes become
-	// U+FFFD instead, so saving never throws and the file always loads. Paths never need that: they are written
-	// with ToUtf8 (PathEncoding.h), which is UTF-8 on every platform.
+	// U+FFFD instead, so saving never throws and the file always loads. Paths should never need that: they are
+	// written with ToUtf8, and only names that are well-formed UTF-8 are accepted into documents (see
+	// PathEncoding.h), so a path is never altered on the way to the file. Pure; safe to call from any thread.
 	std::string FormatJsonDocument(const nlohmann::json& document);
 
 	// The deepest array/object nesting accepted in any JSON document the engine reads from a file or the network.

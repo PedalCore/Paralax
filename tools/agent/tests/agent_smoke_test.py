@@ -168,7 +168,8 @@ def exercise_mcp(info_file: Path, output: Path) -> None:
     assert bridge.stdin and bridge.stdout
 
     def request(message_id: int, method: str, params: dict) -> dict:
-        bridge.stdin.write(json.dumps({"jsonrpc": "2.0", "id": message_id, "method": method, "params": params}) + "\n")
+        # Unescaped, so non-ASCII text reaches the bridge as raw UTF-8, as MCP clients send it.
+        bridge.stdin.write(json.dumps({"jsonrpc": "2.0", "id": message_id, "method": method, "params": params}, ensure_ascii=False) + "\n")
         bridge.stdin.flush()
         response = json.loads(bridge.stdout.readline())
         check(response.get("id") == message_id, f"mismatched response {response}")
@@ -191,6 +192,18 @@ def exercise_mcp(info_file: Path, output: Path) -> None:
 
         captured = request(5, "tools/call", {"name": "render_capture", "arguments": {"path": str(output / "McpCapture.png"), "width": 64, "height": 64}})["result"]
         check(any(c["type"] == "image" and c["mimeType"] == "image/png" for c in captured["content"]), "capture image not attached")
+
+        # Non-ASCII names and paths cross the bridge's stdio in both directions as UTF-8 (on Windows its pipes would
+        # otherwise use the ANSI code page) and the editor's path conversions.
+        name = "Ziegel-é-日本"
+        named = request(6, "tools/call", {"name": "entity_create", "arguments": {"name": name}})["result"]
+        check(not named.get("isError"), f"entity_create with a non-ASCII name failed: {named}")
+        fetched = request(7, "tools/call", {"name": "entity_get", "arguments": {"id": named["structuredContent"]["id"]}})["result"]
+        check(fetched["structuredContent"].get("name") == name, f"the non-ASCII name changed on the way: {fetched}")
+        scene = output.resolve() / "Szene-é-日本.pxscene"
+        saved = request(8, "tools/call", {"name": "scene_save", "arguments": {"path": str(scene)}})["result"]
+        check(not saved.get("isError") and Path(saved["structuredContent"]["path"]) == scene and scene.is_file(),
+              f"scene_save to a non-ASCII path failed: {saved}")
     finally:
         bridge.stdin.close()
         bridge.wait(30)

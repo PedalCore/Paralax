@@ -16,6 +16,7 @@ Only the Python standard library is used.
 from __future__ import annotations
 
 import argparse
+import io
 import itertools
 import json
 import os
@@ -27,6 +28,20 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Optional, Sequence
+
+
+def use_utf8_stdio() -> None:
+    """Reads and writes the standard streams as UTF-8, the encoding of every editor message and result.
+
+    On Windows, redirected pipes otherwise use the ANSI code page, which cannot encode most non-ASCII paths and names
+    (printing one raises UnicodeEncodeError). Call it before anything is read or written.
+    """
+    if isinstance(sys.stdin, io.TextIOWrapper):
+        sys.stdin.reconfigure(encoding="utf-8")
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(encoding="utf-8", newline="\n")  # One message per line, never "\r\n".
+    if isinstance(sys.stderr, io.TextIOWrapper):
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
 class AgentError(RuntimeError):
@@ -181,6 +196,7 @@ class EditorSession(AgentClient):
 
 
 def main(argv: Sequence[str]) -> int:
+    use_utf8_stdio()
     parser = argparse.ArgumentParser(description="Run a command in a running Paralax editor.")
     parser.add_argument("--info", required=True, help="the editor's AgentServer.json")
     parser.add_argument("method", help="command name, e.g. entity.create (use 'help' to list them)")

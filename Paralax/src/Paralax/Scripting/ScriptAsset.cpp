@@ -2,7 +2,6 @@
 #include "Paralax/Scripting/ScriptAsset.h"
 
 #include "Paralax/Core/PathEncoding.h"
-
 #include "Paralax/Scene/SceneSerializer.h"
 
 namespace Paralax {

@@ -107,4 +107,7 @@ windowed one.
 - Paths in commands are untrusted. They resolve inside the project's `Assets/` folder (or the project, for outputs);
   `project.export` is the one command that writes outside it, and it only replaces an empty folder or its own earlier
   export. Paths in parameters and results are UTF-8 strings separated by `/` on every platform, as in project files.
+  Only files whose names are valid UTF-8 can be imported or saved into a project. Paths on the editor's command line
+  (`--project`, `--export`, `--scene`) are different on Windows: they must be representable in the system code page.
+  For anything else, open the project from a path that is, and give the rest to commands as project-relative paths.
 - Commands that edit the scene are undoable, and they are rolled back if they fail partway.

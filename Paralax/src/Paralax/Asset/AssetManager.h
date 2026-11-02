@@ -97,8 +97,10 @@ namespace Paralax {
 		bool LoadRegistry();
 
 		// Converts between absolute paths and registry paths (relative, '/' separators). Returns nullopt for
-		// paths outside the asset directory.
-		std::optional<std::filesystem::path> ToRegistryPath(const std::filesystem::path& path) const;
+		// paths outside the asset directory, and for names that are not well-formed UTF-8 (the registry and scenes
+		// store paths as UTF-8, so such a name would point at no file once read back); outError, if given, then
+		// says why the name was refused (it stays empty for a path outside the directory).
+		std::optional<std::filesystem::path> ToRegistryPath(const std::filesystem::path& path, std::string* outError = nullptr) const;
 		std::filesystem::path ToAbsolutePath(const std::filesystem::path& registryPath) const;
 
 	private:

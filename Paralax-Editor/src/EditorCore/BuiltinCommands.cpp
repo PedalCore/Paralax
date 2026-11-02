@@ -429,9 +429,10 @@ namespace Paralax::Editor {
 							   std::filesystem::path path = FromUtf8(params["path"].get<std::string>());
 							   if (path.extension() != ".pxmat")
 								   path += ".pxmat";
-							   const std::optional<std::filesystem::path> registryPath = context.GetAssets().ToRegistryPath(path);
+							   std::string nameError;
+							   const std::optional<std::filesystem::path> registryPath = context.GetAssets().ToRegistryPath(path, &nameError);
 							   if (!registryPath)
-								   return CommandResult::Fail("The path must be inside the project's Assets folder");
+								   return CommandResult::Fail(nameError.empty() ? std::string("The path must be inside the project's Assets folder") : nameError);
 							   std::error_code existsError;
 							   if (std::filesystem::exists(context.GetAssets().ToAbsolutePath(*registryPath), existsError))
 								   return CommandResult::Fail(fmt::format("'{}' already exists; use material.set to change it", ToUtf8(*registryPath)));

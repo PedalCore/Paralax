@@ -54,7 +54,7 @@ namespace {
 
 	std::string ExecutableName(const std::string& stem)
 	{
-		return stem + GetExecutablePath().extension().string();
+		return stem + ToUtf8(GetExecutablePath().extension());
 	}
 
 }
@@ -93,7 +93,7 @@ TEST_CASE("ProjectCommands: project.export writes only the runtime, resources, p
 	const CommandResult result = fixture.Context.Execute("project.export", {{"output", "../Build"}});
 	REQUIRE_MESSAGE(result.Success, result.Error);
 	const std::filesystem::path output = fixture.Root / "Build";
-	CHECK(std::filesystem::equivalent(std::filesystem::path(result.Result["path"].get<std::string>()), output));
+	CHECK(std::filesystem::equivalent(FromUtf8(result.Result["path"].get<std::string>()), output));
 	CHECK(std::filesystem::is_regular_file(output / ExecutableName("My_Game")));
 	CHECK(std::filesystem::is_regular_file(output / "My Game.pxproj"));
 	CHECK(std::filesystem::is_regular_file(output / "Assets" / "Scenes" / "Main.pxscene"));
@@ -293,11 +293,11 @@ TEST_CASE("ProjectCommands: project.export needs a project with a start scene")
 {
 	const std::filesystem::path root = Paralax::Testing::CreateTestDirectory("ProjectExportNoScene");
 	EditorContext empty;
-	CHECK_FALSE(empty.Execute("project.export", {{"output", (root / "Build").generic_string()}}).Success);
+	CHECK_FALSE(empty.Execute("project.export", {{"output", ToUtf8(root / "Build")}}).Success);
 
 	EditorContext context(Project::Create(root / "Game", "Game"));
 	REQUIRE(context.GetProject());
-	const CommandResult result = context.Execute("project.export", {{"output", (root / "Build").generic_string()}});
+	const CommandResult result = context.Execute("project.export", {{"output", ToUtf8(root / "Build")}});
 	CHECK_FALSE(result.Success);
 	CHECK(result.Error.find("start scene") != std::string::npos);
 	CHECK_FALSE(std::filesystem::exists(root / "Build"));

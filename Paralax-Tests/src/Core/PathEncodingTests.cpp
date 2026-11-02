@@ -114,11 +114,40 @@ TEST_CASE("PathEncoding: malformed UTF-8 is replaced one maximal subpart at a ti
 	CHECK(Utf8ToUtf16("\xF4\x90\x80\x80") == std::u16string{Replacement, Replacement, Replacement, Replacement});
 	CHECK(Utf8ToUtf16("\xF5\x80") == std::u16string{Replacement, Replacement});
 	CHECK(Utf8ToUtf16("\x80\xBF") == std::u16string{Replacement, Replacement});
+	// The mixed example of Unicode's Table 3-8: truncated sequences of each length, a lead byte followed by ASCII,
+	// and stray continuation bytes.
+	CHECK(Utf8ToUtf16("\x61\xF1\x80\x80\xE1\x80\xC2\x62\x80\x63\x80\xBF\x64") ==
+		  std::u16string{u'a', Replacement, Replacement, Replacement, u'b', Replacement, u'c', Replacement, Replacement, u'd'});
+	// Just outside each class of lead byte's allowed second byte, so no prefix is valid.
+	CHECK(Utf8ToUtf16("\xF0\x80\x80\x80") == std::u16string{Replacement, Replacement, Replacement, Replacement});
+	CHECK(Utf8ToUtf16("\xC1\xBF") == std::u16string{Replacement, Replacement});
+	CHECK(Utf8ToUtf16("\xE0\x9F\xBF") == std::u16string{Replacement, Replacement, Replacement});
+	// An encoded surrogate cut short at the end of the input.
+	CHECK(Utf8ToUtf16("\xED\xA0") == std::u16string{Replacement, Replacement});
 	// The boundaries of the ranges that are well formed.
 	CHECK(Utf8ToUtf16("\xED\x9F\xBF") == std::u16string{0xD7FF});
 	CHECK(Utf8ToUtf16("\xEE\x80\x80") == std::u16string{0xE000});
 	CHECK(Utf8ToUtf16("\xF4\x8F\xBF\xBF") == std::u16string{0xDBFF, 0xDFFF});
 	CHECK(Utf8ToUtf16(Emoji) == std::u16string{0xD83D, 0xDE00});
+}
+
+TEST_CASE("PathEncoding: IsWellFormedUtf8 accepts exactly the sequences Unicode allows")
+{
+	CHECK(IsWellFormedUtf8(""));
+	CHECK(IsWellFormedUtf8("Textures/Brick_01.png"));
+	CHECK(IsWellFormedUtf8(BrickName));
+	CHECK(IsWellFormedUtf8(Emoji));
+	CHECK(IsWellFormedUtf8(ReplacementUtf8)); // A real U+FFFD is a character like any other.
+	CHECK(IsWellFormedUtf8("\xED\x9F\xBF"
+						   "\xEE\x80\x80"
+						   "\xF4\x8F\xBF\xBF")); // The edges of the allowed ranges.
+	for (std::string_view text : {"\xFF", "Brick\xFF.png", "Niveau-\xE9.pxscene", "\xC3", "a\xE6\x97", "\xC0\xAF", "\xC1\xBF", "\xE0\x9F\xBF",
+								  "\xED\xA0\x80", "\xF0\x80\x80\x80", "\xF4\x90\x80\x80", "\xF5\x80\x80\x80", "\x80"})
+	{
+		const std::string bytes(text);
+		CAPTURE(bytes);
+		CHECK_FALSE(IsWellFormedUtf8(text));
+	}
 }
 
 TEST_CASE("PathEncoding: unpaired UTF-16 surrogates become U+FFFD")
@@ -150,6 +179,7 @@ TEST_CASE("PathEncoding: UTF-8 and UTF-16 transcoding round-trips every code poi
 		}
 	}
 	const std::string utf8 = Utf16ToUtf8(all);
+	CHECK(IsWellFormedUtf8(utf8));
 	CHECK(Utf8ToUtf16(utf8) == all);
 	// An independent reference: the standard library's own UTF-16 to UTF-8 conversion.
 	const std::u8string reference = std::filesystem::path(all).u8string();

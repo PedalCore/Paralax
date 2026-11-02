@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from paralax_agent import AgentClient, AgentError, EditorSession  # noqa: E402
+from paralax_agent import AgentClient, AgentError, EditorSession, use_utf8_stdio  # noqa: E402
 
 PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_VERSIONS = {"2024-11-05", "2025-03-26", "2025-06-18"}
@@ -130,6 +130,7 @@ def handle(bridge: Bridge, message: dict) -> None:
 
 
 def main(argv: list[str]) -> int:
+    use_utf8_stdio()  # MCP's stdio transport is UTF-8.
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--info", help="AgentServer.json of a running editor")
