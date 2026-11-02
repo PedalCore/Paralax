@@ -21,6 +21,16 @@ namespace {
 		return names;
 	}
 
+	bool NearMatrix(const glm::mat4& a, const glm::mat4& b)
+	{
+		for (int i = 0; i < 4; i++)
+		{
+			if (!glm::all(glm::epsilonEqual(a[i], b[i], 1e-4f)))
+				return false;
+		}
+		return true;
+	}
+
 	// The UUIDs a view over these components visits, in its order.
 	template<typename... Components>
 	std::vector<UUID> ViewOrder(Scene& scene)
@@ -31,28 +41,26 @@ namespace {
 		return order;
 	}
 
-	// Every view the engine uses (and those over the core components) visits both scenes' entities in one order.
-	void CheckSameViewOrders(Scene& copy, Scene& source)
+	// The views the renderer uses (and those over the core components) visit both scenes' entities in one order.
+	void CheckSameViewOrders(Scene& scene, Scene& expected)
 	{
-		CHECK(ViewOrder<IDComponent>(copy) == ViewOrder<IDComponent>(source));
-		CHECK(ViewOrder<TagComponent>(copy) == ViewOrder<TagComponent>(source));
-		CHECK(ViewOrder<TransformComponent>(copy) == ViewOrder<TransformComponent>(source));
-		CHECK(ViewOrder<RelationshipComponent>(copy) == ViewOrder<RelationshipComponent>(source));
-		CHECK(ViewOrder<DirectionalLightComponent>(copy) == ViewOrder<DirectionalLightComponent>(source));
-		CHECK(ViewOrder<SkyLightComponent>(copy) == ViewOrder<SkyLightComponent>(source));
-		CHECK(ViewOrder<PointLightComponent>(copy) == ViewOrder<PointLightComponent>(source));
-		CHECK(ViewOrder<TransformComponent, PointLightComponent>(copy) == ViewOrder<TransformComponent, PointLightComponent>(source));
-		CHECK(ViewOrder<DirectionalLightComponent, SkyLightComponent>(copy) == ViewOrder<DirectionalLightComponent, SkyLightComponent>(source));
+		CHECK(ViewOrder<IDComponent>(scene) == ViewOrder<IDComponent>(expected));
+		CHECK(ViewOrder<TagComponent>(scene) == ViewOrder<TagComponent>(expected));
+		CHECK(ViewOrder<TransformComponent>(scene) == ViewOrder<TransformComponent>(expected));
+		CHECK(ViewOrder<DirectionalLightComponent>(scene) == ViewOrder<DirectionalLightComponent>(expected));
+		CHECK(ViewOrder<SkyLightComponent>(scene) == ViewOrder<SkyLightComponent>(expected));
+		CHECK(ViewOrder<PointLightComponent>(scene) == ViewOrder<PointLightComponent>(expected));
+		CHECK(ViewOrder<TransformComponent, PointLightComponent>(scene) == ViewOrder<TransformComponent, PointLightComponent>(expected));
 	}
 
-	bool NearMatrix(const glm::mat4& a, const glm::mat4& b)
+	// The scene as it comes back from its own serialization: as a saved file opens, the exported runtime loads it, and
+	// undo, redo and rollback restore it.
+	Scope<Scene> Reload(Scene& scene)
 	{
-		for (int i = 0; i < 4; i++)
-		{
-			if (!glm::all(glm::epsilonEqual(a[i], b[i], 1e-4f)))
-				return false;
-		}
-		return true;
+		auto reloaded = CreateScope<Scene>(scene.GetName());
+		std::string error;
+		REQUIRE_MESSAGE(SceneSerializer::Deserialize(*reloaded, SceneSerializer::Serialize(scene), error), error);
+		return reloaded;
 	}
 
 }
@@ -314,32 +322,26 @@ TEST_CASE("Scene: very deep hierarchies are handled iteratively (no stack overfl
 	CHECK(scene.GetEntityCount() == 0);
 }
 
-TEST_CASE("Scene: a copy's views visit entities in the source's order, even after edits reordered its storage")
+TEST_CASE("Scene: a copy's views visit entities as a reload of the scene does, whatever order edits left in memory")
 {
-	// The renderer takes "the first" directional or sky light from a view and sums lights in view order, so play mode
-	// (a copy) must iterate exactly as the editor's scene does, both for a freshly loaded scene and after editing.
-	Scene authored("Lights");
+	// Play mode runs on a copy, while opening the saved file, the exported runtime and undo, redo and rollback all build
+	// the scene from its serialization. The renderer takes "the first" directional or sky light from a view and sums
+	// lights in view order, so a playtest is lit as the shipped game only if the copy iterates as a reload does, not as
+	// the editor's own pools happen to (their order is never saved).
+	Scene source("Lights");
 	Entity previous;
 	for (int i = 0; i < 16; i++)
 	{
-		Entity light = authored.CreateEntity("Light" + std::to_string(i));
+		Entity light = source.CreateEntity("Light" + std::to_string(i));
 		light.AddComponent<DirectionalLightComponent>().Intensity = static_cast<float>(i);
 		if (i % 2 == 0)
 			light.AddComponent<SkyLightComponent>();
 		if (i % 3 == 1)
-			REQUIRE(authored.SetParent(light, previous));
+			REQUIRE(source.SetParent(light, previous));
 		previous = light;
 	}
-	Scene source;
-	std::string error;
-	REQUIRE(SceneSerializer::Deserialize(source, SceneSerializer::Serialize(authored), error));
-	{
-		Ref<Scene> copy = Scene::Copy(source);
-		CheckSameViewOrders(*copy, source);
-	}
-
 	// Edits that leave the pools out of hierarchy order: a duplicate (appended to every pool, placed mid-hierarchy),
-	// reparenting and moving siblings (the hierarchy changes, the pools do not), a component added to a later entity
+	// reparenting and moving siblings (the hierarchy changes, the pools do not), components added to a later entity
 	// before an earlier one, and a destruction (each pool moves its last entry into the hole).
 	Entity first = *source.FindEntityByName("Light0");
 	Entity middle = *source.FindEntityByName("Light8");
@@ -351,19 +353,26 @@ TEST_CASE("Scene: a copy's views visit entities in the source's order, even afte
 	last.AddComponent<PointLightComponent>();
 	first.AddComponent<PointLightComponent>();
 	source.DestroyEntity(*source.FindEntityByName("Light6"));
-	// The edits really did move storage away from hierarchy order: the same scene loaded from a file (stored in
-	// hierarchy order, as a copy made in hierarchy order would be) visits its lights differently.
-	Scene reloaded;
-	REQUIRE(SceneSerializer::Deserialize(reloaded, SceneSerializer::Serialize(source), error));
-	REQUIRE(ViewOrder<DirectionalLightComponent>(source) != ViewOrder<DirectionalLightComponent>(reloaded));
-	REQUIRE(ViewOrder<PointLightComponent>(source) != ViewOrder<PointLightComponent>(reloaded));
+
+	Scope<Scene> reloaded = Reload(source);
+	// The edits did leave the editor's pools in another order than a reload's, so the checks below tell the two apart.
+	REQUIRE(ViewOrder<DirectionalLightComponent>(source) != ViewOrder<DirectionalLightComponent>(*reloaded));
+	REQUIRE(ViewOrder<PointLightComponent>(source) != ViewOrder<PointLightComponent>(*reloaded));
 
 	Ref<Scene> copy = Scene::Copy(source);
-	CheckSameViewOrders(*copy, source);
+	CheckSameViewOrders(*copy, *reloaded);
 	CHECK(NamesInOrder(*copy) == NamesInOrder(source));
-	// A copy of the copy (a scene switch back to the level) is the same again.
+	// A copy of the copy (a scene switch back to the level) iterates the same way again.
 	Ref<Scene> again = Scene::Copy(*copy);
-	CheckSameViewOrders(*again, source);
+	CheckSameViewOrders(*again, *reloaded);
+
+	// Two suns, the second moved in front of the first: play mode picks the same one as the reloaded scene.
+	Scene suns("Suns");
+	suns.CreateEntity("A").AddComponent<DirectionalLightComponent>();
+	Entity b = suns.CreateEntity("B");
+	b.AddComponent<DirectionalLightComponent>();
+	suns.SetSiblingIndex(b, 0);
+	CHECK(ViewOrder<DirectionalLightComponent>(*Scene::Copy(suns)) == ViewOrder<DirectionalLightComponent>(*Reload(suns)));
 }
 
 TEST_CASE("Scene: Copy and Duplicate preserve component values exactly, even outside editor ranges")

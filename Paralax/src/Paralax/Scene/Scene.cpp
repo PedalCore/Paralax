@@ -5,7 +5,6 @@
 #include "Paralax/Scene/Entity.h"
 
 #include <algorithm>
-#include <unordered_map>
 #include <unordered_set>
 
 namespace Paralax {
@@ -51,39 +50,36 @@ namespace Paralax {
 		destination->m_ViewportWidth = source.m_ViewportWidth;
 		destination->m_ViewportHeight = source.m_ViewportHeight;
 
-		// The copy reproduces the source's storage: each component pool holds its entities in the same order, so any
-		// view visits the copy's entities in the order it visits the source's. Renderers take "the first" directional
-		// or sky light from a view and sum lights in view order, and play mode (a copy) must not disagree with the
-		// editor about either, whatever edits have shuffled the editor scene's pools.
-		//
-		// Core components (ID, tag, transform, relationship) are added together when an entity is created and never
-		// removed on their own, so their pools share one order: creating the copies in that order reproduces it.
+		// Recreate every entity with its UUID, then copy all components exactly (typed copies, no JSON). Entities are
+		// created in hierarchy order, the order a scene file lists them in, so the copy's registry stores them as a
+		// scene loaded from its serialization does. That is the order to match, not the source's own storage: opening
+		// the file, the exported runtime and undo, redo and rollback all build the scene from its serialization, and
+		// the editor's in-memory order (shuffled by duplicates, destruction and late additions) is never saved.
+		// Renderers take "the first" directional or sky light from a view and sum lights in view order, so a playtest
+		// must be lit as the shipped game is. Iterative: hierarchies can be very deep.
 		const entt::registry& sourceRegistry = source.m_Registry;
-		std::unordered_map<entt::entity, entt::entity> counterparts;
-		counterparts.reserve(source.m_EntityMap.size());
-		if (const entt::sparse_set* core = sourceRegistry.storage<IDComponent>())
+		std::vector<UUID> stack(source.m_RootEntities.rbegin(), source.m_RootEntities.rend());
+		while (!stack.empty())
 		{
-			// A storage's iterators run from its last element to its first; the reverse ones run in storage order.
-			for (auto it = core->rbegin(); it != core->rend(); ++it)
-			{
-				const entt::entity sourceHandle = *it;
-				Entity copy = destination->CreateEntityWithUUID(sourceRegistry.get<IDComponent>(sourceHandle).ID);
-				copy.GetComponent<RelationshipComponent>() = sourceRegistry.get<RelationshipComponent>(sourceHandle);
-				counterparts.emplace(sourceHandle, copy.GetHandle());
-			}
-		}
+			const UUID uuid = stack.back();
+			stack.pop_back();
+			const auto it = source.m_EntityMap.find(uuid);
+			PX_CORE_VERIFY(it != source.m_EntityMap.end(), "Scene::Copy: the hierarchy names an entity {} that does not exist", static_cast<uint64_t>(uuid));
+			const entt::entity sourceHandle = it->second;
 
-		// Then every reflected component, pool by pool in the source pool's order: exact typed copies, no JSON. The
-		// tag and transform copied this way replace the copy's own in place, keeping the core order.
-		for (const ComponentInfo& info : ComponentRegistry::GetAll())
-		{
-			for (entt::entity sourceHandle : info.StorageOrder(sourceRegistry))
+			Entity copy = destination->CreateEntityWithUUID(uuid);
+			copy.GetComponent<RelationshipComponent>() = sourceRegistry.get<RelationshipComponent>(sourceHandle);
+			for (const ComponentInfo& info : ComponentRegistry::GetAll())
 			{
-				const auto it = counterparts.find(sourceHandle);
-				PX_CORE_VERIFY(it != counterparts.end(), "Scene::Copy: a {} component belongs to no entity", info.Name);
-				info.Copy(sourceRegistry, sourceHandle, destination->m_Registry, it->second);
+				if (info.Has(sourceRegistry, sourceHandle))
+					info.Copy(sourceRegistry, sourceHandle, destination->m_Registry, copy.GetHandle());
 			}
+
+			// Push children in reverse so they are created in their sibling order.
+			const std::vector<UUID>& children = sourceRegistry.get<RelationshipComponent>(sourceHandle).Children;
+			stack.insert(stack.end(), children.rbegin(), children.rend());
 		}
+		PX_CORE_ASSERT(destination->m_EntityMap.size() == source.m_EntityMap.size(), "Scene::Copy: the hierarchy does not reach every entity");
 
 		destination->m_RootEntities = source.m_RootEntities;
 		return destination;
