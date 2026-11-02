@@ -3,6 +3,7 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <algorithm>
 #include <cmath>
 
 namespace Paralax {
@@ -46,6 +47,9 @@ namespace Paralax {
 		// An infinite ratio would make the orthographic extents infinite (and the projection NaN).
 		if (!(aspectRatio > 0.0f) || !std::isfinite(aspectRatio))
 			aspectRatio = 1.0f;
+		// Past these, the orthographic extents (huge ratios) or the perspective's horizontal scale (tiny ones)
+		// overflow; no viewport is that far from square.
+		aspectRatio = std::clamp(aspectRatio, 1e-4f, 1e4f);
 
 		if (HasValidClipPlanes())
 			m_ReportedClipPlanes.reset();

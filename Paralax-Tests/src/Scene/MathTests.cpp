@@ -182,6 +182,17 @@ TEST_CASE("SceneCamera: clip planes that cannot form a projection fall back to t
 		CHECK(orthographicDefaults.GetProjection(aspectRatio) == orthographicDefaults.GetProjection(1.0f));
 		CHECK(defaults.GetProjection(aspectRatio) == defaults.GetProjection(1.0f));
 	}
+	// Extreme but positive ratios are clamped to [1e-4, 1e4]: a huge one made the orthographic extents infinite, and a
+	// tiny one the perspective's horizontal scale.
+	for (float aspectRatio : {std::numeric_limits<float>::max(), 1e38f, 1e30f, 1e-30f, 1e-38f, std::numeric_limits<float>::denorm_min()})
+	{
+		CAPTURE(aspectRatio);
+		CHECK(AllFinite(orthographicDefaults.GetProjection(aspectRatio)));
+		CHECK(AllFinite(defaults.GetProjection(aspectRatio)));
+	}
+	CHECK(defaults.GetProjection(1e30f) == defaults.GetProjection(1e4f));
+	CHECK(orthographicDefaults.GetProjection(1e-30f) == orthographicDefaults.GetProjection(1e-4f));
+	CHECK(defaults.GetProjection(2.0f) != defaults.GetProjection(1e4f)); // Ordinary ratios are untouched.
 }
 
 TEST_CASE("SceneCamera: invalid clip planes are warned about once per camera, and again only after they change")
@@ -215,14 +226,22 @@ TEST_CASE("SceneCamera: invalid clip planes are warned about once per camera, an
 	camera.PerspectiveFar = 5.0f;
 	(void)camera.GetProjection(1.5f);
 	CHECK(warnings() == 4);
-	// NaN planes are one setting, not a new one every frame; switching projection is a change.
+	// NaN planes are one setting, not a new one every frame.
 	camera.PerspectiveNear = std::numeric_limits<float>::quiet_NaN();
 	(void)camera.GetProjection(1.5f);
 	(void)camera.GetProjection(1.5f);
 	CHECK(warnings() == 5);
-	camera.Projection = SceneCamera::ProjectionType::Orthographic;
-	camera.OrthographicFar = camera.OrthographicNear;
-	(void)camera.GetProjection(1.5f);
-	(void)camera.GetProjection(1.5f);
+
+	// Switching projection is a change even when the planes are the same numbers: near = far = 10 in both.
+	SceneCamera switching;
+	switching.PerspectiveNear = 10.0f;
+	switching.PerspectiveFar = 10.0f;
+	switching.OrthographicNear = 10.0f;
+	switching.OrthographicFar = 10.0f;
+	(void)switching.GetProjection(1.5f);
 	CHECK(warnings() == 6);
+	switching.Projection = SceneCamera::ProjectionType::Orthographic;
+	(void)switching.GetProjection(1.5f);
+	(void)switching.GetProjection(1.5f);
+	CHECK(warnings() == 7);
 }
