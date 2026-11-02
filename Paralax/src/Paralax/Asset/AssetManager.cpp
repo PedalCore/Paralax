@@ -8,6 +8,7 @@
 #include "Paralax/Asset/TextureAsset.h"
 #include "Paralax/Audio/AudioClip.h"
 #include "Paralax/Core/EngineResources.h"
+#include "Paralax/Core/JsonText.h"
 #include "Paralax/Scene/Prefab.h"
 #include "Paralax/Scene/SceneSerializer.h"
 #include "Paralax/Scripting/ScriptAsset.h"
@@ -550,6 +551,11 @@ namespace Paralax {
 		if (!ReadTextFile(path, text))
 		{
 			PX_CORE_ERROR("Cannot read asset registry '{}'", path.string());
+			return false;
+		}
+		if (JsonExceedsDepth(text, MaxJsonDepth))
+		{
+			PX_CORE_ERROR("Asset registry '{}' nests too deeply", path.string());
 			return false;
 		}
 		const json document = json::parse(text, nullptr, false);

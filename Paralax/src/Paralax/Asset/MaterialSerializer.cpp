@@ -1,6 +1,7 @@
 #include "pxpch.h"
 #include "Paralax/Asset/MaterialSerializer.h"
 
+#include "Paralax/Core/JsonText.h"
 #include "Paralax/Scene/SceneSerializer.h"
 
 namespace Paralax {
@@ -74,6 +75,11 @@ namespace Paralax {
 		if (!ReadTextFile(path, text))
 		{
 			PX_CORE_ERROR("Cannot open material '{}'", path.string());
+			return nullptr;
+		}
+		if (JsonExceedsDepth(text, MaxJsonDepth))
+		{
+			PX_CORE_ERROR("Material '{}' nests too deeply", path.string());
 			return nullptr;
 		}
 		const json document = json::parse(text, nullptr, false);

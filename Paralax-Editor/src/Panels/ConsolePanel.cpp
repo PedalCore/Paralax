@@ -2,6 +2,8 @@
 
 #include "EditorCore/EditorContext.h"
 
+#include <Paralax/Core/JsonText.h>
+
 #include <imgui.h>
 #include <imgui_stdlib.h>
 
@@ -61,20 +63,30 @@ namespace Paralax::Editor {
 			const std::string line = m_Command;
 			const size_t space = line.find(' ');
 			const std::string name = line.substr(0, space);
-			nlohmann::json params = nlohmann::json::object();
-			if (space != std::string::npos)
-				params = nlohmann::json::parse(line.substr(space + 1), nullptr, false);
-			if (params.is_discarded())
+			const std::string parameters = space == std::string::npos ? std::string() : line.substr(space + 1);
+			// Like the agent server, deep nesting is refused on the text before parsing: copying or dumping the
+			// parsed value would overflow the stack.
+			if (JsonExceedsDepth(parameters, MaxJsonDepth))
 			{
-				PX_ERROR("Command parameters are not valid JSON");
+				PX_ERROR("Command parameters nest deeper than {} levels", MaxJsonDepth);
 			}
-			else if (!name.empty())
+			else
 			{
-				const CommandResult result = context.Execute(name, params);
-				if (result.Success)
-					PX_INFO("{} -> {}", name, result.Result.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
-				else
-					PX_ERROR("{} failed: {}", name, result.Error);
+				nlohmann::json params = nlohmann::json::object();
+				if (space != std::string::npos)
+					params = nlohmann::json::parse(parameters, nullptr, false);
+				if (params.is_discarded())
+				{
+					PX_ERROR("Command parameters are not valid JSON");
+				}
+				else if (!name.empty())
+				{
+					const CommandResult result = context.Execute(name, params);
+					if (result.Success)
+						PX_INFO("{} -> {}", name, result.Result.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+					else
+						PX_ERROR("{} failed: {}", name, result.Error);
+				}
 			}
 			m_Command.clear();
 			ImGui::SetKeyboardFocusHere(-1);

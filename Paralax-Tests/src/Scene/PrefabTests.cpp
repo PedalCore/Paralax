@@ -110,6 +110,10 @@ TEST_CASE("Prefab: hostile and malformed prefab files are rejected")
 	CHECK_FALSE(load("TwoRoots.pxprefab", twoRoots.dump()));
 	CHECK_FALSE(load("NoRoots.pxprefab", noRoots.dump()));
 	CHECK_FALSE(PrefabAsset::LoadFromFile(directory / "Missing.pxprefab"));
+	// A field nested 20,000 levels deep is refused before parsing (copying or dumping it would overflow the stack).
+	CHECK_FALSE(load("Deep.pxprefab", R"({"Paralax": {"Type": "Prefab", "Version": 1}, "Entities": [{"ID": "1", "Parent": "0", "Components": {"Tag": {"Tag": )" +
+										  Paralax::Testing::DeeplyNestedJson(20000) + "}}}]}"));
+	CHECK(log.Contains(spdlog::level::err, "nests too deeply"));
 	CHECK(load("Valid.pxprefab", valid.dump()));
 
 	std::string error;

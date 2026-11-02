@@ -178,6 +178,21 @@ namespace Paralax::Testing {
 		return directory;
 	}
 
+	// A JSON value nested `depth` levels deep, alternating arrays and objects around a number. Hostile input for
+	// every loader: nlohmann parses it iteratively, but copying, dumping or walking the parsed value would overflow
+	// the stack, so loaders must refuse it on the text before parsing.
+	inline std::string DeeplyNestedJson(size_t depth)
+	{
+		std::string text;
+		text.reserve(depth * 4 + 1);
+		for (size_t level = 0; level < depth; level++)
+			text += level % 2 == 0 ? "[" : "{\"k\":";
+		text += "0";
+		for (size_t level = depth; level-- > 0;)
+			text += level % 2 == 0 ? "]" : "}";
+		return text;
+	}
+
 	// Sets (or, with std::nullopt, unsets) an environment variable for the lifetime of the object.
 	class ScopedEnvironmentVariable
 	{

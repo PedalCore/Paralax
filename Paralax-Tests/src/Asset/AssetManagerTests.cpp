@@ -210,6 +210,14 @@ TEST_CASE("AssetManager: malformed and out-of-project registry entries are skipp
 	// The built-in range belongs to the built-ins, never to the registry.
 	CHECK_FALSE(assets.IsRegistered(AssetHandle(20)));
 	CHECK(assets.GetAssetType(AssetHandle(20)) == AssetType::None);
+
+	// A registry nesting 20,000 levels deep is refused before parsing, so nothing from it is registered.
+	const std::string deepRegistry = R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[{"Handle":"5003","Type":"Material","Path":"Brick.pxmat","Extra":)" +
+									 Paralax::Testing::DeeplyNestedJson(20000) + "}]}";
+	std::ofstream(directory / AssetManager::RegistryFileName) << deepRegistry;
+	AssetManager deep(directory);
+	CHECK_FALSE(deep.IsRegistered(AssetHandle(5003)));
+	CHECK(capture.Contains(spdlog::level::err, "nests too deeply"));
 }
 
 TEST_CASE("AssetManager: relative lookups are normalised")
@@ -229,6 +237,33 @@ TEST_CASE("MaterialSerializer: wrongly typed headers fail without throwing")
 	CHECK_NOTHROW(CHECK_FALSE(MaterialSerializer::Deserialize(material, nlohmann::json{{"Paralax", {{"Type", "Material"}, {"Version", "x"}}}}, error)));
 	CHECK_NOTHROW(CHECK_FALSE(MaterialSerializer::Deserialize(material, nlohmann::json{{"Paralax", {{"Type", 3}}}}, error)));
 	CHECK_NOTHROW(CHECK_FALSE(MaterialSerializer::Deserialize(material, nlohmann::json{{"Paralax", "Material"}}, error)));
+}
+
+TEST_CASE("MaterialSerializer: hostile and malformed material files are rejected")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("MaterialHostile");
+	Paralax::Testing::ScopedLogCapture log;
+	auto load = [&](const char* name, const std::string& text) {
+		std::ofstream(directory / name, std::ios::binary) << text;
+		return MaterialSerializer::LoadFromFile(directory / name);
+	};
+
+	CHECK_FALSE(MaterialSerializer::LoadFromFile(directory / "Missing.pxmat"));
+	CHECK_FALSE(load("Broken.pxmat", "{ not json"));
+	CHECK(log.Contains(spdlog::level::err, "not valid JSON"));
+	CHECK_FALSE(load("Scene.pxmat", R"({"Paralax": {"Type": "Scene", "Version": 1}})"));
+
+	// Deserialize copies the document, which recurses once per level: a field nested 20,000 levels deep is refused
+	// on the text, before parsing.
+	CHECK_FALSE(load("Deep.pxmat", R"({"Paralax": {"Type": "Material", "Version": 1}, "Metallic": )" + Paralax::Testing::DeeplyNestedJson(20000) + "}"));
+	CHECK(log.Contains(spdlog::level::err, "nests too deeply"));
+
+	MaterialAsset material;
+	material.MetallicFactor = 0.25f;
+	REQUIRE(MaterialSerializer::SaveToFile(material, directory / "Valid.pxmat"));
+	Ref<MaterialAsset> loaded = MaterialSerializer::LoadFromFile(directory / "Valid.pxmat");
+	REQUIRE(loaded);
+	CHECK(loaded->MetallicFactor == 0.25f);
 }
 
 TEST_CASE("AssetManager: the built-in catalog loads unique handles with matching types")

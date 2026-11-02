@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Paralax/Core/Base.h>
+#include <Paralax/Core/JsonText.h>
 #include <Paralax/Network/TcpSocket.h>
 
 #include <nlohmann/json.hpp>
@@ -72,7 +73,8 @@ namespace Paralax::Editor {
 		static constexpr int NotAuthenticated = -32001;
 		static constexpr int ServerStopping = -32002;
 
-		static constexpr int MaxJsonDepth = 64;
+		// The engine-wide limit, shared with the file loaders.
+		static constexpr int MaxJsonDepth = Paralax::MaxJsonDepth;
 		static constexpr size_t MaxBatchSize = 256;
 
 	private:

@@ -84,6 +84,8 @@ TEST_CASE("Project: Load rejects hostile and malformed project files")
 		{"VersionZero", R"({"Paralax": {"Type": "Project", "Version": 0}})"},
 		{"VersionTooNew", R"({"Paralax": {"Type": "Project", "Version": 2}})"},
 		{"VersionString", R"({"Paralax": {"Type": "Project", "Version": "1"}})"},
+		// Nested 20,000 levels deep: refused before parsing, since copying or dumping it would overflow the stack.
+		{"Deep", R"({"Paralax": {"Type": "Project", "Version": 1}, "Name": )" + Paralax::Testing::DeeplyNestedJson(20000) + "}"},
 	};
 	for (const auto& [name, text] : cases)
 	{
@@ -92,6 +94,7 @@ TEST_CASE("Project: Load rejects hostile and malformed project files")
 		CAPTURE(name);
 		CHECK_FALSE(Project::Load(file));
 	}
+	CHECK(log.Contains(spdlog::level::err, "nests too deeply"));
 
 	CHECK_FALSE(Project::Load(root / "Missing.pxproj"));
 	std::filesystem::create_directories(root / "EmptyDir");

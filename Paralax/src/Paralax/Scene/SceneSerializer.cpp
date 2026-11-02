@@ -1,6 +1,7 @@
 #include "pxpch.h"
 #include "Paralax/Scene/SceneSerializer.h"
 
+#include "Paralax/Core/JsonText.h"
 #include "Paralax/Scene/ComponentRegistry.h"
 #include "Paralax/Scene/Entity.h"
 
@@ -273,6 +274,11 @@ namespace Paralax {
 		if (!ReadTextFile(path, text))
 		{
 			PX_CORE_ERROR("Cannot open scene '{}'", path.string());
+			return nullptr;
+		}
+		if (JsonExceedsDepth(text, MaxJsonDepth))
+		{
+			PX_CORE_ERROR("Scene '{}' nests too deeply", path.string());
 			return nullptr;
 		}
 

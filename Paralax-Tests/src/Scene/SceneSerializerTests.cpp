@@ -142,6 +142,14 @@ TEST_CASE("SceneSerializer: LoadFromFile reports missing files and malformed JSO
 	REQUIRE(WriteFileAtomically(directory / "broken.pxscene", "{ not json"));
 	CHECK(SceneSerializer::LoadFromFile(directory / "broken.pxscene") == nullptr);
 	CHECK(capture.Contains(spdlog::level::err, "not valid JSON"));
+
+	// A hostile field value nested 20,000 levels deep is refused before parsing: reporting it as a wrong type would
+	// dump it, which recurses once per level and overflows the stack.
+	const std::string deep = R"({"Paralax": {"Type": "Scene", "Version": 1}, "Entities": [{"ID": "1", "Parent": "0", "Components": {"Tag": {"Tag": )" +
+							 Paralax::Testing::DeeplyNestedJson(20000) + "}}}]}";
+	REQUIRE(WriteFileAtomically(directory / "deep.pxscene", deep));
+	CHECK(SceneSerializer::LoadFromFile(directory / "deep.pxscene") == nullptr);
+	CHECK(capture.Contains(spdlog::level::err, "nests too deeply"));
 }
 
 TEST_CASE("SceneSerializer: wrongly typed headers are rejected without throwing")

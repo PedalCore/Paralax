@@ -1,6 +1,7 @@
 #include "pxpch.h"
 #include "Paralax/Scene/Prefab.h"
 
+#include "Paralax/Core/JsonText.h"
 #include "Paralax/Scene/Components.h"
 #include "Paralax/Scene/SceneSerializer.h"
 
@@ -51,6 +52,11 @@ namespace Paralax {
 		if (!ReadTextFile(path, text))
 		{
 			PX_CORE_ERROR("Cannot open prefab '{}'", path.string());
+			return nullptr;
+		}
+		if (JsonExceedsDepth(text, MaxJsonDepth))
+		{
+			PX_CORE_ERROR("Prefab '{}' nests too deeply", path.string());
 			return nullptr;
 		}
 		const nlohmann::json document = nlohmann::json::parse(text, nullptr, false);

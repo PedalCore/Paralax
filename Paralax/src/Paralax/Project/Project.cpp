@@ -1,6 +1,7 @@
 #include "pxpch.h"
 #include "Paralax/Project/Project.h"
 
+#include "Paralax/Core/JsonText.h"
 #include "Paralax/Scene/SceneSerializer.h"
 
 #include <nlohmann/json.hpp>
@@ -95,6 +96,11 @@ namespace Paralax {
 		if (!ReadTextFile(file, text))
 		{
 			PX_CORE_ERROR("Cannot read project '{}'", file.string());
+			return nullptr;
+		}
+		if (JsonExceedsDepth(text, MaxJsonDepth))
+		{
+			PX_CORE_ERROR("Project '{}' nests too deeply", file.string());
 			return nullptr;
 		}
 		const json document = json::parse(text, nullptr, false);

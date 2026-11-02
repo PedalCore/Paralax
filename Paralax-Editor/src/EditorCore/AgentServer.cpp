@@ -2,6 +2,7 @@
 
 #include "EditorCore/EditorContext.h"
 
+#include <Paralax/Core/JsonText.h>
 #include <Paralax/Core/Log.h>
 
 #include <chrono>
@@ -49,39 +50,6 @@ namespace Paralax::Editor {
 		bool IsNotification(const json& request)
 		{
 			return request.is_object() && !request.contains("id");
-		}
-
-		// Returns true if the JSON text nests arrays/objects deeper than maxDepth. nlohmann parses iteratively but
-		// copies recursively, so hostile nesting must be rejected before parsing. Brackets inside strings are skipped.
-		bool ExceedsDepth(std::string_view text, int maxDepth)
-		{
-			int depth = 0;
-			bool inString = false;
-			for (size_t i = 0; i < text.size(); i++)
-			{
-				const char c = text[i];
-				if (inString)
-				{
-					if (c == '\\')
-						i++;
-					else if (c == '"')
-						inString = false;
-				}
-				else if (c == '"')
-				{
-					inString = true;
-				}
-				else if (c == '[' || c == '{')
-				{
-					if (++depth > maxDepth)
-						return true;
-				}
-				else if (c == ']' || c == '}')
-				{
-					depth--;
-				}
-			}
-			return false;
 		}
 
 		// The id of a request, if it has a valid one (null otherwise).
@@ -218,7 +186,8 @@ namespace Paralax::Editor {
 				continue;
 
 			json response;
-			if (ExceedsDepth(*line, MaxJsonDepth))
+			// Refused on the text, before parsing: copying or dumping a deeply nested value would overflow the stack.
+			if (JsonExceedsDepth(*line, MaxJsonDepth))
 			{
 				response = MakeError(nullptr, InvalidRequest, fmt::format("JSON nesting deeper than {} levels", MaxJsonDepth));
 			}
