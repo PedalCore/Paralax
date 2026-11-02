@@ -4,6 +4,7 @@
 
 #include <Paralax/Core/Application.h>
 #include <Paralax/Core/Input.h>
+#include <Paralax/Core/PathEncoding.h>
 #include <Paralax/Events/KeyEvent.h>
 
 #include <atomic>
@@ -586,6 +587,18 @@ TEST_CASE("ApplyCommandLineOptions: --headless followed by a positional argument
 	REQUIRE(ApplyCommandLineOptions(specification));
 	CHECK(specification.Window.Headless);
 	CHECK(specification.CommandLineArgs.GetPositional() == std::vector<std::string>{"project.pxproj"});
+}
+
+TEST_CASE("ApplyCommandLineOptions: --screenshot decodes a non-ASCII path from UTF-8")
+{
+	// "Bild-é-日本-Ω.png" as UTF-8 bytes, as GetProcessArguments gives it on every platform. On Windows,
+	// path(std::string) would read those bytes in the ANSI code page instead.
+	const std::string name = "Bild-\xC3\xA9-\xE6\x97\xA5\xE6\x9C\xAC-\xCE\xA9.png";
+	ApplicationSpecification specification;
+	specification.CommandLineArgs = CommandLine({"--screenshot", "Captures/" + name});
+	REQUIRE(ApplyCommandLineOptions(specification));
+	CHECK(specification.ScreenshotPath == std::filesystem::path(u8"Captures/Bild-\u00E9-\u65E5\u672C-\u03A9.png"));
+	CHECK(ToUtf8(specification.ScreenshotPath) == "Captures/" + name);
 }
 
 TEST_CASE("ApplyCommandLineOptions: --headless accepts explicit boolean values")

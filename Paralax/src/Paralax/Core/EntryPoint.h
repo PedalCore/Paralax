@@ -14,7 +14,10 @@ int main(int argc, char** argv)
 
 	int exitCode = EXIT_SUCCESS;
 	{
-		Paralax::Scope<Paralax::Application> app = Paralax::CreateApplication(Paralax::CommandLine(argc, argv, Paralax::GetStandardFlagOptions()));
+		// In the engine's path encoding: UTF-8 on Windows (where argv is in the ANSI code page), argv's own bytes on
+		// POSIX. Paths given here are decoded with FromUtf8 like paths everywhere else.
+		const Paralax::CommandLine args = Paralax::CommandLine::FromProcessArguments(Paralax::GetProcessArguments(argc, argv), Paralax::GetStandardFlagOptions());
+		Paralax::Scope<Paralax::Application> app = Paralax::CreateApplication(args);
 		if (app && app->IsInitialized())
 		{
 			app->Run();

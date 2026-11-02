@@ -218,6 +218,7 @@ namespace Paralax {
 	//   --validation             enable graphics validation; validation errors make the process exit non-zero
 	//   --gpu <name>             prefer the graphics adapter whose name contains <name>
 	//   --screenshot <file.png>  save the final frame of the run (use with --frames)
+	// Values are in the engine's path encoding, as GetProcessArguments gives them: paths are decoded with FromUtf8.
 	// Returns false (and logs an error) if an option is malformed; the specification is then left unchanged.
 	bool ApplyCommandLineOptions(ApplicationSpecification& specification);
 

@@ -146,8 +146,7 @@ namespace Paralax {
 			const CommandLine& args = specification.CommandLineArgs;
 			if (std::optional<std::string> scene = args.GetOption("scene"))
 			{
-				// Arguments are in the native narrow encoding (the ANSI code page on Windows); logs are UTF-8.
-				const std::filesystem::path scenePath(*scene);
+				const std::filesystem::path scenePath = FromUtf8(*scene);
 				if (!m_Context.OpenScene(scenePath))
 					PX_CORE_ERROR("Could not open scene '{}'", ToUtf8(scenePath));
 			}
@@ -174,10 +173,9 @@ namespace Paralax {
 			if (std::optional<std::string> output = args.GetOption("export"))
 			{
 				// On the command line a relative path means the working directory (the command itself takes relative
-				// paths from the project directory). Arguments arrive in the native narrow encoding (the ANSI code
-				// page on Windows), so the path is built from it directly; commands take UTF-8.
+				// paths from the project directory).
 				std::error_code error;
-				const std::filesystem::path absolute = std::filesystem::absolute(std::filesystem::path(*output), error);
+				const std::filesystem::path absolute = std::filesystem::absolute(FromUtf8(*output), error);
 				const Editor::CommandResult result = m_Context.Execute("project.export", {{"output", ToUtf8(absolute)}});
 				if (result.Success)
 					PX_CORE_INFO("Exported the game to '{}'", result.Result["path"].get<std::string>());
@@ -192,7 +190,7 @@ namespace Paralax {
 
 			if (agentServer)
 			{
-				std::filesystem::path infoFile = args.GetOption("agent-info").value_or("");
+				std::filesystem::path infoFile = FromUtf8(args.GetOption("agent-info").value_or(""));
 				if (infoFile.empty())
 					infoFile = (m_Context.GetProject() ? m_Context.GetProject()->GetDirectory() : std::filesystem::current_path()) / ".paralax" / "AgentServer.json";
 				m_AgentServerLayer = PushOverlay<AgentServerLayer>(m_Context, std::move(agentServer), std::move(agentWake), std::move(infoFile));
@@ -233,14 +231,14 @@ namespace Paralax {
 		Ref<Project> project;
 		if (std::optional<std::string> path = args.GetOption("new-project"))
 		{
-			const std::filesystem::path directory(*path);
+			const std::filesystem::path directory = FromUtf8(*path);
 			project = Project::Create(directory, ToUtf8(directory.filename()));
 			if (!project)
 				return nullptr;
 		}
 		else if (std::optional<std::string> existing = args.GetOption("project"))
 		{
-			project = Project::Load(*existing);
+			project = Project::Load(FromUtf8(*existing));
 			if (!project)
 				return nullptr;
 		}
