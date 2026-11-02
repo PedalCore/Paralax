@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Paralax/Core/Assert.h>
+#include <Paralax/Core/Environment.h>
 #include <Paralax/Core/Log.h>
 #include <Paralax/Core/UUID.h>
 
@@ -219,35 +220,26 @@ namespace Paralax::Testing {
 		return text;
 	}
 
-	// Sets (or, with std::nullopt, unsets) an environment variable for the lifetime of the object.
+	// Sets (or, with std::nullopt, unsets) an environment variable for the lifetime of the object, then restores the
+	// value it had. Values are in the engine's string encoding, as SetProcessEnvironmentVariable takes them (on Windows
+	// an empty value unsets the variable). Throws std::runtime_error, failing the test, if the variable cannot be set.
 	class ScopedEnvironmentVariable
 	{
 	public:
-		ScopedEnvironmentVariable(std::string name, std::optional<std::string> value)
+		ScopedEnvironmentVariable(std::string name, const std::optional<std::string>& value)
 			: m_Name(std::move(name))
+			, m_Previous(GetProcessEnvironmentVariable(m_Name))
 		{
-			if (const char* previous = std::getenv(m_Name.c_str()))
-				m_Previous = previous;
-			Set(value);
+			if (!SetProcessEnvironmentVariable(m_Name, value))
+				throw std::runtime_error("Could not set the environment variable " + m_Name);
 		}
-		~ScopedEnvironmentVariable() { Set(m_Previous); }
+		// Unchecked: a destructor cannot fail the test, and the value being restored is one the variable held.
+		~ScopedEnvironmentVariable() { SetProcessEnvironmentVariable(m_Name, m_Previous); }
 
 		ScopedEnvironmentVariable(const ScopedEnvironmentVariable&) = delete;
 		ScopedEnvironmentVariable& operator=(const ScopedEnvironmentVariable&) = delete;
 
 	private:
-		void Set(const std::optional<std::string>& value)
-		{
-#if defined(_WIN32)
-			_putenv_s(m_Name.c_str(), value ? value->c_str() : "");
-#else
-			if (value)
-				setenv(m_Name.c_str(), value->c_str(), 1);
-			else
-				unsetenv(m_Name.c_str());
-#endif
-		}
-
 		std::string m_Name;
 		std::optional<std::string> m_Previous;
 	};

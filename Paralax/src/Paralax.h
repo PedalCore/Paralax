@@ -5,6 +5,7 @@
 #include "Paralax/Core/Application.h"
 #include "Paralax/Core/Base.h"
 #include "Paralax/Core/CommandLine.h"
+#include "Paralax/Core/Environment.h"
 #include "Paralax/Core/Input.h"
 #include "Paralax/Core/KeyCodes.h"
 #include "Paralax/Core/Layer.h"

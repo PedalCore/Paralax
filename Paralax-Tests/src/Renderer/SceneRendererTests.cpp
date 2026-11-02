@@ -5,6 +5,7 @@
 
 #include <Paralax/Asset/AssetManager.h>
 #include <Paralax/Asset/MaterialAsset.h>
+#include <Paralax/Core/PathEncoding.h>
 #include <Paralax/Renderer/GraphicsDevice.h>
 #include <Paralax/Renderer/SceneRenderer.h>
 #include <Paralax/Renderer/TextureReadback.h>
@@ -494,7 +495,7 @@ TEST_CASE("SceneRenderer: missing built-in environment uses the procedural sky a
 	auto& graphics = *Testing::GetTestGraphicsDevice();
 	const auto initialErrors = graphics.GetValidationErrorCount();
 	{
-		Testing::ScopedEnvironmentVariable resources("PARALAX_RESOURCE_DIR", Testing::CreateTestDirectory("MissingRendererResources").string());
+		Testing::ScopedEnvironmentVariable resources("PARALAX_RESOURCE_DIR", ToUtf8(Testing::CreateTestDirectory("MissingRendererResources")));
 		AssetManager assets;
 		Scene scene("HDRFallback");
 		BuildTestScene(scene, assets);

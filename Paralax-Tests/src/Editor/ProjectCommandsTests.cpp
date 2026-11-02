@@ -39,7 +39,7 @@ namespace {
 			: Root(Paralax::Testing::CreateTestDirectory(name))
 			, Directory(Root / "Game")
 			, Resources(Root / "EngineResources")
-			, ResourceOverride("PARALAX_RESOURCE_DIR", Resources.string())
+			, ResourceOverride("PARALAX_RESOURCE_DIR", ToUtf8(Resources))
 			, Context(Project::Create(Directory, projectName))
 		{
 			WriteText(Resources / "Environments" / "Sky.hdr", "not really an image");

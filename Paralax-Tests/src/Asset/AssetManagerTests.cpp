@@ -635,7 +635,7 @@ TEST_CASE("AssetManager: missing built-in resources are reported once and retry 
 {
 	const auto resourceDirectory = GetEngineResourceDirectory();
 	const auto missing = Testing::CreateTestDirectory("MissingEnvironmentResources");
-	Testing::ScopedEnvironmentVariable overrideDirectory("PARALAX_RESOURCE_DIR", missing.string());
+	Testing::ScopedEnvironmentVariable overrideDirectory("PARALAX_RESOURCE_DIR", ToUtf8(missing));
 	Testing::ScopedLogCapture log;
 	AssetManager assets;
 	const AssetHandle handle(AssetManager::BuiltinSkyEnvironment);
@@ -649,7 +649,7 @@ TEST_CASE("AssetManager: missing built-in resources are reported once and retry 
 		errors += entry.Level == spdlog::level::err ? 1 : 0;
 	CHECK(errors == 1);
 	{
-		Testing::ScopedEnvironmentVariable restored("PARALAX_RESOURCE_DIR", resourceDirectory.string());
+		Testing::ScopedEnvironmentVariable restored("PARALAX_RESOURCE_DIR", ToUtf8(resourceDirectory));
 		CHECK_FALSE(assets.GetAsset(handle)); // A repaired path alone does not bypass the failure cache.
 		REQUIRE(assets.LoadRegistry());
 		REQUIRE(assets.GetAsset<TextureAsset>(handle));
