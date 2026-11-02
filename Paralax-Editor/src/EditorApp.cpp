@@ -136,7 +136,9 @@ namespace Paralax {
 	class EditorApp final : public Application
 	{
 	public:
-		EditorApp(const ApplicationSpecification& specification, Ref<Project> project, Scope<Editor::AgentServer> agentServer, std::shared_ptr<AgentServerWake> agentWake)
+		// agentInfoFile is where the agent server, if there is one, publishes its connection details.
+		EditorApp(const ApplicationSpecification& specification, Ref<Project> project, Scope<Editor::AgentServer> agentServer, std::shared_ptr<AgentServerWake> agentWake,
+				  std::filesystem::path agentInfoFile)
 			: Application(specification)
 			, m_ConsoleSink(std::make_shared<Editor::ConsoleSink>())
 			, m_Context(std::move(project))
@@ -191,12 +193,7 @@ namespace Paralax {
 			}
 
 			if (agentServer)
-			{
-				std::filesystem::path infoFile = FromUtf8(args.GetOption("agent-info").value_or(""));
-				if (infoFile.empty())
-					infoFile = (m_Context.GetProject() ? m_Context.GetProject()->GetDirectory() : std::filesystem::current_path()) / ".paralax" / "AgentServer.json";
-				m_AgentServerLayer = PushOverlay<AgentServerLayer>(m_Context, std::move(agentServer), std::move(agentWake), std::move(infoFile));
-			}
+				m_AgentServerLayer = PushOverlay<AgentServerLayer>(m_Context, std::move(agentServer), std::move(agentWake), std::move(agentInfoFile));
 		}
 
 		~EditorApp() override
@@ -264,6 +261,7 @@ namespace Paralax {
 		// once its layer is attached, after the application has installed the log sinks.
 		Scope<Editor::AgentServer> agentServer;
 		auto agentWake = std::make_shared<AgentServerWake>();
+		std::filesystem::path agentInfoFile;
 		bool malformedPort = false;
 		if (std::optional<uint64_t> port = args.GetUnsignedOption("agent-port", &malformedPort); port || malformedPort)
 		{
@@ -272,6 +270,12 @@ namespace Paralax {
 				PX_CORE_ERROR("--agent-port expects a port number between 0 and 65535");
 				return nullptr;
 			}
+			// For the same reason, an editor that would have nowhere to publish the connection details (and so the
+			// token no agent can connect without) does not start either. The error is logged.
+			std::optional<std::filesystem::path> infoFile = Editor::ResolveAgentInfoPath(FromUtf8(args.GetOption("agent-info").value_or("")), project ? project->GetDirectory() : std::filesystem::path());
+			if (!infoFile)
+				return nullptr;
+			agentInfoFile = std::move(*infoFile);
 			Editor::AgentServerSpecification serverSpecification;
 			serverSpecification.Port = static_cast<uint16_t>(*port);
 			serverSpecification.OnRequestQueued = [agentWake] { (*agentWake)(); };
@@ -280,7 +284,7 @@ namespace Paralax {
 				return nullptr;
 		}
 
-		return CreateScope<EditorApp>(specification, project, std::move(agentServer), std::move(agentWake));
+		return CreateScope<EditorApp>(specification, project, std::move(agentServer), std::move(agentWake), std::move(agentInfoFile));
 	}
 
 }
