@@ -2,6 +2,7 @@
 
 #include <Paralax/Core/UUID.h>
 
+#include <random>
 #include <thread>
 #include <unordered_set>
 #include <vector>
@@ -31,6 +32,28 @@ TEST_CASE("UUID: hashing matches the hash of the underlying value")
 {
 	const UUID id(42);
 	CHECK(std::hash<UUID>()(id) == std::hash<uint64_t>()(42));
+}
+
+TEST_CASE("UUID: the fallback seed differs between calls and threads and seeds a working generator")
+{
+	// The seed stands in for std::random_device where the OS has no entropy to give: it must at least never repeat
+	// between calls, so two processes or threads started together do not generate the same identifiers.
+	std::unordered_set<uint64_t> seeds;
+	for (int i = 0; i < 1000; i++)
+		CHECK(seeds.insert(UUID::FallbackSeed()).second);
+
+	std::vector<uint64_t> fromThreads(4);
+	std::vector<std::thread> threads;
+	for (size_t t = 0; t < fromThreads.size(); t++)
+		threads.emplace_back([&fromThreads, t] { fromThreads[t] = UUID::FallbackSeed(); });
+	for (auto& thread : threads)
+		thread.join();
+	for (uint64_t seed : fromThreads)
+		CHECK(seeds.insert(seed).second);
+
+	std::mt19937_64 engine(UUID::FallbackSeed());
+	std::uniform_int_distribution<uint64_t> distribution(1, UINT64_MAX);
+	CHECK(UUID(distribution(engine)).IsValid());
 }
 
 TEST_CASE("UUID: generation is thread-safe and unique across threads")

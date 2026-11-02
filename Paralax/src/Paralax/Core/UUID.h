@@ -6,7 +6,9 @@
 namespace Paralax {
 
 	// 64-bit randomly generated identifier, used to identify entities and assets persistently.
-	// The value 0 is reserved as "invalid" and is never generated. Generation is thread-safe.
+	// The value 0 is reserved as "invalid" and is never generated. Generation is thread-safe. The generator is
+	// seeded from the OS entropy source; where there is none (std::random_device throws, e.g. in a hardened
+	// container) it falls back to FallbackSeed and logs that once, rather than failing.
 	class UUID
 	{
 	public:
@@ -18,6 +20,10 @@ namespace Paralax {
 
 		constexpr bool IsValid() const { return m_UUID != 0; }
 		constexpr operator uint64_t() const { return m_UUID; }
+
+		// The seed used without an OS entropy source: the clocks, a stack address, the thread and a counter, mixed.
+		// Weaker than the OS source, but different on every call. Public so tests can check it.
+		static uint64_t FallbackSeed();
 
 	private:
 		uint64_t m_UUID;
