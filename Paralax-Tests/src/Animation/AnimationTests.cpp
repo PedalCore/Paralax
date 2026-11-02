@@ -304,6 +304,55 @@ TEST_CASE("AnimationSystem: looping backwards wraps, seeks past the end wrap lik
 	CHECK(pose.GetComponent<TransformComponent>().Translation.x == 2.0f);
 }
 
+TEST_CASE("AnimationSystem: a component removed and added again, paused at the same time, poses its targets again")
+{
+	AnimationFixture fixture({Channel(AnimationProperty::Translation, AnimationInterpolation::Linear, {0.0f, 1.0f}, {glm::vec4(0.0f), glm::vec4(1.0f, 0.0f, 0.0f, 0.0f)}, {"Arm"})}, 1.0f);
+	Entity body = fixture.Animated("Body");
+	Entity arm = fixture.World.CreateEntity("Arm");
+	fixture.World.SetParent(arm, body, false);
+	auto pause = [&](float time) {
+		auto& component = body.GetComponent<AnimationComponent>();
+		component.Playing = false;
+		component.Time = time;
+	};
+	auto armX = [&] { return arm.GetComponent<TransformComponent>().Translation.x; };
+	Paralax::Testing::ScopedLogCapture capture;
+	auto warnings = [&] {
+		size_t count = 0;
+		for (const auto& entry : capture.GetEntries())
+			count += entry.Message.find("not below it") != std::string::npos ? 1 : 0;
+		return count;
+	};
+
+	pause(0.5f);
+	fixture.World.OnRuntimeStart();
+	CHECK(armX() == doctest::Approx(0.5));
+
+	// Without the component the arm is free; posed by hand, it stays there.
+	body.RemoveComponent<AnimationComponent>();
+	fixture.Update(1, 1.0f / 60.0f);
+	arm.GetComponent<TransformComponent>().Translation.x = 7.0f;
+	fixture.Update(1, 1.0f / 60.0f);
+	CHECK(armX() == 7.0f);
+
+	// Added again, paused at the very time last applied: a new component shows its pose.
+	body.AddComponent<AnimationComponent>().Clip = fixture.Clip->Handle;
+	pause(0.5f);
+	fixture.Update(1, 1.0f / 60.0f);
+	CHECK(armX() == doctest::Approx(0.5));
+	CHECK(warnings() == 0);
+
+	// A problem with the new component is reported, even if the old one had reported the same problem.
+	arm.GetComponent<TagComponent>().Name = "Elbow";
+	fixture.Update(1, 1.0f / 60.0f);
+	CHECK(warnings() == 1);
+	body.RemoveComponent<AnimationComponent>();
+	fixture.Update(1, 1.0f / 60.0f);
+	body.AddComponent<AnimationComponent>().Clip = fixture.Clip->Handle;
+	fixture.Update(1, 1.0f / 60.0f);
+	CHECK(warnings() == 2);
+}
+
 TEST_CASE("AnimationSystem: a renamed or moved target is let go, and a problem fixed and back is reported again")
 {
 	AnimationFixture fixture({Channel(AnimationProperty::Translation, AnimationInterpolation::Linear, {0.0f, 1.0f}, {glm::vec4(0.0f), glm::vec4(1.0f, 0.0f, 0.0f, 0.0f)}, {"Arm"})}, 1.0f);

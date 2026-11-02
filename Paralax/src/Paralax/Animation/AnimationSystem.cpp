@@ -201,10 +201,19 @@ namespace Paralax {
 		{
 			// Hierarchy order, so two clips animating the same entity resolve the same way every time.
 			std::vector<Entity> animated;
+			std::unordered_set<uint64_t> hosts;
 			scene.ForEachEntity([&](Entity entity) {
 				if (entity.HasComponent<AnimationComponent>())
+				{
 					animated.push_back(entity);
+					hosts.insert(entity.GetUUID());
+				}
 			});
+			// A removed component takes its state with it: added again (even paused, at the time last applied), it is
+			// posed afresh like a new one, and a problem with it is reported again.
+			std::erase_if(Bindings, [&](const auto& entry) { return !hosts.contains(entry.first); });
+			std::erase_if(ReportedClip, [&](uint64_t host) { return !hosts.contains(host); });
+			std::erase_if(ReportedTargets, [&](uint64_t host) { return !hosts.contains(host); });
 			for (Entity entity : animated)
 			{
 				if (scene.IsValid(entity) && entity.HasComponent<AnimationComponent>())
