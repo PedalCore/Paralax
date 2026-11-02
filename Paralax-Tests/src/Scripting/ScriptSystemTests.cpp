@@ -718,14 +718,29 @@ TEST_CASE("ScriptSystem: pattern matching that could backtrack for too long is r
 	CHECK(fixture.Eval("string.find(string.rep('a', 100000) .. 'x', 'x', 1, true)") == "100001\t100001");
 }
 
-TEST_CASE("ScriptSystem: string-key iteration order is the same in every run")
+TEST_CASE("ScriptSystem: string- and integer-key iteration order is the same in every run")
 {
-	auto order = [] {
+	auto order = [](const char* fill) {
 		ScriptFixture fixture;
 		fixture.Start();
-		return fixture.Eval("local t = {} for i = 1, 40 do t['k' .. i] = i end local s = '' for k in pairs(t) do s = s .. k .. ',' end return s");
+		return fixture.Eval(std::string("local t = {} ") + fill + " local s = '' for k in pairs(t) do s = s .. tostring(k) .. ',' end return s");
 	};
-	CHECK(order() == order());
+	// String keys hash with the seed pinned in cmake/LuaDeterminism.h.
+	CHECK(order("for i = 1, 40 do t['k' .. i] = i end") == order("for i = 1, 40 do t['k' .. i] = i end"));
+	// Integer keys hash by value, including sparse and negative ones that live in the hash part rather than the array.
+	const char* integers = "for i = 1, 40 do t[(i * 7919) % 1009] = i end t[-5] = 0 t[1 << 40] = 0 t[math.maxinteger] = 0";
+	CHECK(order(integers) == order(integers));
+	// Not pinned, by design: tables, functions and userdata (entities, components, script instances) hash by their
+	// address, which ASLR and every allocation made before them decide, so pairs() over such keys has no reproducible
+	// order. docs/Scripting.md (Determinism) tells scripts to keep such sets in arrays instead, which is ordered:
+	const char* entities = "for i = 1, 5 do t[#t + 1] = Scene.CreateEntity('e' .. i) end t.names = '' for _, e in ipairs(t) do t.names = t.names .. e.name end";
+	auto arrayOrder = [&] {
+		ScriptFixture fixture;
+		fixture.Start();
+		return fixture.Eval(std::string("local t = {} ") + entities + " return t.names");
+	};
+	CHECK(arrayOrder() == "e1e2e3e4e5");
+	CHECK(arrayOrder() == arrayOrder());
 }
 
 TEST_CASE("ScriptSystem: names, tags and entity creation are bounded")

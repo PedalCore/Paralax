@@ -257,7 +257,21 @@ on with the new clip from its start; pausing play mode in the editor pauses soun
   `:Cross(v)` and `:Distance(v)`.
 - Quaternions: `quat.FromEuler(vec3 radians)`, `quat.AngleAxis(radians, axis)`, `q:ToEuler()`, `q * q2`,
   `q * vec3` (rotates the vector), `:Normalized()`, `:Inverse()`, `:Slerp(q2, t)`.
-- `math.random` is deterministic for a run. `math.randomseed(n)` reseeds it.
+- `math.random(...)` is deterministic for a run (see below). `math.randomseed(n)` reseeds it.
+
+## Determinism
+
+Under a fixed timestep (play mode and exported games) a run is reproducible: scripts see time only through `Time`,
+`math.random` starts from the same seed, and physics, animation and sound follow simulated time. Two things in Lua
+itself need care:
+
+- `pairs` and `next` visit a table in hash order. That order is the same in every run for string keys (the hash seed
+  is fixed) and for integer keys, but tables, functions and userdata (entities, components, script instances) hash by
+  their memory address, which differs from run to run. Never let gameplay depend on the order of `pairs` over such
+  keys: keep sets of entities or script instances in arrays (`table.insert`, remove by index) and walk them with
+  `ipairs`, or key them by a string or integer of your own. Ids of entities created while playing are random, so
+  sorting by `entity.id` is no substitute; only ids saved in the scene file are stable.
+- `tostring` of a plain table or a function contains its address, so it is not a usable key or sort value either.
 
 ## Modules
 
