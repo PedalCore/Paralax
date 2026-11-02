@@ -5,7 +5,7 @@ import Common.Fullscreen;
 struct TonemapConstants
 {
 	float Exposure;
-	uint Operator; // 0 AgX, 1 ACES (fitted), 2 none (clamp)
+	uint Operator; // 0 AgX, 1 ACES (fitted), 2 none (clamp), 3 raw diagnostic (no dither)
 	float2 Padding;
 };
 [[vk::push_constant]] ConstantBuffer<TonemapConstants> g_Tonemap;
@@ -64,6 +64,8 @@ FullscreenVertex TonemapVS(uint vertexID: SV_VertexID)
 float4 TonemapPS(FullscreenVertex input) : SV_Target
 {
 	float3 hdr = g_HDR.SampleLevel(g_PointClamp, input.UV, 0.0).rgb * g_Tonemap.Exposure;
+	if (g_Tonemap.Operator == 3)
+		return float4(hdr, 1.0);
 	float3 color;
 	if (g_Tonemap.Operator == 0)
 		color = AgX(hdr);

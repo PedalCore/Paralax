@@ -120,6 +120,87 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
     except AgentError:
         pass
 
+    # GI diagnostic updates are counted independently of application frames.
+    state_keys = {"enabled", "supported", "frozen", "historyValid", "updates", "queued", "origin", "spacing", "counts", "frame"}
+    check(set(editor.call("render.gi.state")) == state_keys, "GI state schema changed")
+    for method, params in [("render.gi.step", {"frames": 1}), ("render.gi.reset", {})]:
+        try:
+            editor.call(method, params)
+            raise AssertionError("GI without a volume should fail")
+        except AgentError:
+            pass
+    editor.call("entity.create", name="GI volume", components={
+        "Transform": {"Translation": [-2, -1, -2]},
+        "GIVolume": {"ProbeSpacing": 2., "ProbeCountX": 3, "ProbeCountY": 3, "ProbeCountZ": 3}})
+    editor.call("render.settings.set", settings={"GIFreeze": True})
+    editor.call("render.capture", path=str(output / "GIInit.png"), width=64, height=64)
+    state = editor.call("render.gi.state")
+    if not state["supported"]:
+        check(not state["historyValid"], "unsupported GI should not have history")
+        for method, params in [("render.gi.reset", {}), ("render.gi.step", {"frames": 1}),
+                               ("render.gi.inspect", {"position": [0, 1, 0], "normal": [0, 1, 0], "view": [0, 0, 1]})]:
+            try:
+                editor.call(method, params)
+                raise AssertionError("unsupported GI diagnostics should fail")
+            except AgentError:
+                pass
+        check((output / "GIInit.png").stat().st_size > 100, "forward fallback capture failed")
+        return
+    check(state["historyValid"], f"GI did not initialize: {state}")
+    for frames in [0, -1, 1025, 18446744073709551615]:
+        try:
+            editor.call("render.gi.step", frames=frames)
+            raise AssertionError("out-of-range GI steps should fail")
+        except AgentError:
+            pass
+    stepped = editor.call("render.gi.step", frames=20)
+    check(stepped["updates"] == stepped["before"] + 20 and stepped["queued"] == 0, "GI step count is not exact")
+    first = output / "GIFrozenA.png"
+    second = output / "GIFrozenB.png"
+    editor.call("render.capture", path=str(first), width=64, height=64)
+    editor.call("render.capture", path=str(second), width=64, height=64)
+    check(first.read_bytes() == second.read_bytes(), "frozen captures changed")
+    before = editor.call("render.gi.state")["updates"]
+    editor.call("render.capture", path=str(second), width=64, height=64, giWarmupFrames=3)
+    check(editor.call("render.gi.state")["updates"] == before + 3, "capture warmup count is not exact")
+    query = editor.call("render.gi.inspect", position=[0, 1, 0], normal=[0, 1, 0], view=[0, 0, 1])
+    check(len(query["neighbours"]) == 8, "inspection must describe eight neighbours")
+    check(all("normalizedWeight" in n and "rawVariance" in n and "distanceSupportMass" in n and "distanceExpectedMass" in n and "distanceConfidence" in n for n in query["neighbours"]), "inspection data missing")
+    check(all(key in query for key in ("surfaceRejected", "surfaceExact", "biasedRejected", "biasedExact", "surfaceReliable", "biasedReliable")), "exact visibility aggregates missing")
+    for neighbour in query["neighbours"]:
+        for ray_key in ("surfaceRay", "biasedRay"):
+            check(all(key in neighbour[ray_key] for key in ("origin", "end", "length", "epsilon", "hitPosition", "hitDistance", "triangle", "material", "blocked", "backface", "reliable")), "visibility ray data missing")
+    near = editor.call("render.gi.inspect", position=[0, 1, 0], normal=[0, 1, 0], view=[0, 0, 1], viewDistance=0.02)
+    check(abs(near["neighbours"][0]["biasedRay"]["origin"][2] - 0.01) < 0.0001, "near-view bias must stop halfway to the camera")
+    for params in [dict(position=[100, 100, 100], normal=[0, 1, 0], view=[0, 0, 1]),
+                   dict(position=[0, 1, 0], normal=[0, 0, 0], view=[0, 0, 1]),
+                   dict(position=[0, 1, 0], normal=[0, 1, 0], view=[0, 0, 1], viewDistance=-1)]:
+        try:
+            editor.call("render.gi.inspect", params)
+            raise AssertionError("invalid GI query should fail")
+        except AgentError:
+            pass
+    editor.call("render.gi.reset")
+    # Background rendering may perform the documented initial fill immediately after reset.
+    check(editor.call("render.gi.state")["updates"] <= 1, "reset did not reset the update counter")
+    editor.call("render.settings.set", settings={"GIFreeze": False})
+    try:
+        editor.call("render.gi.step", frames=1)
+        raise AssertionError("unfrozen stepping should fail")
+    except AgentError:
+        pass
+    editor.call("render.settings.set", settings={"GIFreeze": True})
+    editor.call("play.start", paused=False)
+    for method, params in [("render.gi.reset", {}), ("render.gi.step", {"frames": 1}),
+                           ("render.capture", {"path": str(second), "width": 64, "height": 64}),
+                           ("render.gi.inspect", {"position": [0, 1, 0], "normal": [0, 1, 0], "view": [0, 0, 1]})]:
+        try:
+            editor.call(method, params)
+            raise AssertionError("diagnostics must reject unpaused play")
+        except AgentError:
+            pass
+    editor.call("play.stop")
+
 
 def exercise_project(editor: AgentClient, project: Path) -> None:
     """The game-building loop an agent follows: script, prefab, play, inspect, save, capture."""

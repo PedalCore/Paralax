@@ -13,7 +13,10 @@
 #include <Paralax/Renderer/TextureReadback.h>
 #include <Paralax/Scene/Entity.h>
 
+#include <glm/gtc/packing.hpp>
+
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <optional>
@@ -48,8 +51,8 @@ namespace {
 	std::vector<glm::vec4> ReadProbe(nvrhi::IDevice* device, nvrhi::ITexture* texture, uint32_t layer = 0)
 	{
 		nvrhi::TextureDesc desc;
-		desc.width = 8;
-		desc.height = 8;
+		desc.width = texture->getDesc().width;
+		desc.height = texture->getDesc().height;
 		desc.format = nvrhi::Format::RGBA32_FLOAT;
 		desc.initialState = nvrhi::ResourceStates::CopyDest;
 		desc.keepInitialState = true;
@@ -67,11 +70,19 @@ namespace {
 		size_t pitch = 0;
 		const auto* bytes = static_cast<const uint8_t*>(device->mapStagingTexture(staging, nvrhi::TextureSlice(), nvrhi::CpuAccessMode::Read, &pitch));
 		REQUIRE(bytes);
-		std::vector<glm::vec4> result(64);
-		for (size_t y = 0; y < 8; ++y)
-			std::memcpy(result.data() + y * 8, bytes + y * pitch, 8 * sizeof(glm::vec4));
+		std::vector<glm::vec4> result(desc.width * desc.height);
+		for (size_t y = 0; y < desc.height; ++y)
+			std::memcpy(result.data() + y * desc.width, bytes + y * pitch, desc.width * sizeof(glm::vec4));
 		device->unmapStagingTexture(staging);
 		return result;
+	}
+
+	void WriteUniformDistance(nvrhi::ICommandList* commands, nvrhi::ITexture* texture, uint32_t layer, glm::vec4 value)
+	{
+		const auto& desc = texture->getDesc();
+		value.z = 1.0f; // Unit support keeps these explicitly seeded normalized moments unchanged.
+		const std::vector<glm::vec4> pixels(desc.width * desc.height, value);
+		commands->writeTexture(texture, layer, 0, pixels.data(), desc.width * sizeof(glm::vec4));
 	}
 
 	struct ProbeFixture
@@ -206,6 +217,287 @@ namespace {
 		GraphicsDeviceInfo m_Info;
 	};
 
+}
+
+TEST_CASE("ProbeGI: visibility reconstruction remains continuous as all weights become small")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.NormalBias = fixture.Specification.ViewBias = 0.0f;
+	REQUIRE(fixture.Update(scene, assets));
+	auto sample = [&](float excess, uint32_t activeMask = 1) {
+		const float mean = glm::length(fixture.Specification.Origin) - excess;
+		fixture.Commands->open();
+		for (uint32_t layer = 0; layer < 8; ++layer)
+		{
+			std::array<glm::vec4, 64> irradiance, distance;
+			irradiance.fill(glm::vec4(1.0f));
+			distance.fill(glm::vec4(mean, mean * mean + 0.00001f, 0.0f, (activeMask & (1u << layer)) != 0 ? 1.0f : 0.0f));
+			fixture.Commands->writeTexture(fixture.GI.GetIrradiance(), layer, 0, irradiance.data(), 8 * sizeof(glm::vec4));
+			WriteUniformDistance(fixture.Commands, fixture.GI.GetDistance(), layer, distance[0]);
+		}
+		fixture.Commands->close();
+		fixture.Device->executeCommandList(fixture.Commands);
+		auto result = fixture.GI.Inspect({}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f});
+		REQUIRE(result);
+		return *result;
+	};
+	const auto near = sample(0.008f), far = sample(0.010f);
+	CAPTURE(near.Summary.x);
+	CAPTURE(far.Summary.x);
+	CAPTURE(near.Irradiance.r);
+	CAPTURE(far.Irradiance.r);
+	CHECK(std::abs(near.Irradiance.r - far.Irradiance.r) < 0.2f);
+	CHECK(sample(-0.01f, 255).Irradiance.r > 0.99f);
+	CHECK(sample(1.0f, 255).Irradiance.r < 0.001f);
+	CHECK(sample(-0.01f, 0).Irradiance.r == 0.0f);
+	float previous = 1.0f;
+	for (int step = 0; step <= 40; ++step)
+	{
+		const float value = sample(static_cast<float>(step) * 0.001f, 255).Irradiance.r;
+		CHECK(std::isfinite(value));
+		CHECK(value <= previous + 0.001f);
+		previous = value;
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: normal bias preserves valid neighbour support across a probe grid plane")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.Origin = {};
+	fixture.Specification.Counts = {3, 3, 3};
+	fixture.Specification.NormalBias = 0.05f;
+	fixture.Specification.ViewBias = 0.0f;
+	REQUIRE(fixture.Update(scene, assets));
+	fixture.Commands->open();
+	for (uint32_t layer = 0; layer < 27; ++layer)
+	{
+		std::array<glm::vec4, 64> irradiance, distance;
+		irradiance.fill(glm::vec4(1.0f));
+		distance.fill(glm::vec4(3.0f, 9.0f, 0.0f, (layer / 3) % 3 == 2 ? 1.0f : 0.0f));
+		fixture.Commands->writeTexture(fixture.GI.GetIrradiance(), layer, 0, irradiance.data(), 8 * sizeof(glm::vec4));
+		WriteUniformDistance(fixture.Commands, fixture.GI.GetDistance(), layer, distance[0]);
+	}
+	fixture.Commands->close();
+	fixture.Device->executeCommandList(fixture.Commands);
+	const auto onPlane = fixture.GI.Inspect({0.5f, 1.0f, 0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f});
+	const auto abovePlane = fixture.GI.Inspect({0.5f, 1.0001f, 0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f});
+	REQUIRE(onPlane);
+	REQUIRE(abovePlane);
+	CAPTURE(onPlane->Summary.x);
+	CAPTURE(abovePlane->Summary.x);
+	CHECK(onPlane->Irradiance.r == doctest::Approx(1.0).epsilon(0.001));
+	CHECK(std::abs(onPlane->Irradiance.r - abovePlane->Irradiance.r) < 0.001f);
+	// Cross the actual biased cell boundary with vanishing eligible support on the far side.
+	const auto belowBiasedPlane = fixture.GI.Inspect({0.5f, 0.95f - 1e-6f, 0.5f}, {0, 1, 0}, {0, 0, 1});
+	const auto aboveBiasedPlane = fixture.GI.Inspect({0.5f, 0.95f + 1e-6f, 0.5f}, {0, 1, 0}, {0, 0, 1});
+	REQUIRE(belowBiasedPlane);
+	REQUIRE(aboveBiasedPlane);
+	CHECK(belowBiasedPlane->Irradiance.r == 0.0f);
+	CHECK(aboveBiasedPlane->Irradiance.r < 0.03f);
+	for (const auto& [position, normal] : {std::pair{glm::vec3(0), glm::vec3(-1, 0, 0)},
+										   std::pair{glm::vec3(2), glm::vec3(1, 0, 0)}, std::pair{glm::vec3(0, 2, 0), glm::vec3(0, 1, 0)},
+										   std::pair{glm::vec3(0, 2.0f - 1e-6f, 0), glm::vec3(0, -1, 0)}})
+	{
+		const auto edge = fixture.GI.Inspect(position, normal, {0, 0, 1});
+		REQUIRE(edge);
+		CHECK(std::isfinite(edge->Irradiance.r));
+		for (const auto& neighbour : edge->Neighbours)
+		{
+			CHECK(neighbour.Metadata.x < 27);
+			CHECK(std::isfinite(neighbour.Weights.y));
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: inspection reports shared GPU weights and rejects invalid queries")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.NormalBias = fixture.Specification.ViewBias = 0.0f;
+	CHECK_FALSE(fixture.GI.Inspect({}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}));
+	REQUIRE(fixture.Update(scene, assets));
+	auto query = fixture.GI.Inspect({}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f});
+	REQUIRE(query);
+	CHECK(query->Irradiance.r == doctest::Approx(0.2).epsilon(0.001));
+	CHECK(query->Irradiance.g == doctest::Approx(0.4).epsilon(0.001));
+	CHECK(query->Irradiance.b == doctest::Approx(0.8).epsilon(0.001));
+	CHECK(query->Summary.y == 8.0f);
+	float sum = 0.0f;
+	for (uint32_t i = 0; i < 8; ++i)
+	{
+		const auto& neighbour = query->Neighbours[i];
+		CHECK(neighbour.Metadata.x == i);
+		CHECK(neighbour.Metadata.y == 1);
+		CHECK(neighbour.Moments.x == doctest::Approx(3.0).epsilon(0.001));
+		CHECK(neighbour.Moments.y == doctest::Approx(9.0).epsilon(0.001));
+		sum += neighbour.IrradianceWeight.w;
+	}
+	CHECK(sum == doctest::Approx(1.0).epsilon(0.0001));
+	query = fixture.GI.Inspect(fixture.Specification.Origin, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f});
+	REQUIRE(query);
+	CHECK(query->Neighbours[0].IrradianceWeight.w > 0.9f);
+	CHECK_FALSE(fixture.GI.Inspect({100.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}));
+	CHECK_FALSE(fixture.GI.Inspect({}, {}, {0.0f, 0.0f, 1.0f}));
+	CHECK_FALSE(fixture.GI.Inspect({}, {0.0f, 1.0f, 0.0f}, {std::numeric_limits<float>::quiet_NaN(), 0.0f, 1.0f}));
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: exact inspection distinguishes blocked neighbours and bias crossing thin geometry")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	auto material = CreateRef<MaterialAsset>();
+	material->Handle = AssetHandle(60119);
+	bool maskedHole = false;
+	glm::vec3 translation(0.0f);
+	SUBCASE("opaque wall") {}
+	SUBCASE("large translation on an unrelated axis")
+	{
+		translation.z = 500000.0f;
+	}
+	SUBCASE("alpha mask hole")
+	{
+		maskedHole = true;
+		material->Alpha = AlphaMode::Mask;
+		material->BaseColorFactor.a = 0.0f;
+	}
+	assets.AddMemoryAsset(material);
+	AddCube(scene, translation, {0.04f, 4.0f, 4.0f}, material->Handle);
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.Origin += translation;
+	fixture.Specification.NormalBias = 0.0f;
+	fixture.Specification.ViewBias = 0.25f;
+	REQUIRE(fixture.Update(scene, assets));
+	// Deliberately false moments model a leak; only segment visibility should reject the far side.
+	fixture.Commands->open();
+	for (uint32_t layer = 0; layer < 8; ++layer)
+	{
+		std::array<glm::vec4, 64> irradiance, distance;
+		irradiance.fill(glm::vec4(layer % 2 == 0 ? 0.1f : 10.0f));
+		distance.fill({3.0f, 9.0f, 0.0f, 1.0f});
+		fixture.Commands->writeTexture(fixture.GI.GetIrradiance(), layer, 0, irradiance.data(), 8 * sizeof(glm::vec4));
+		WriteUniformDistance(fixture.Commands, fixture.GI.GetDistance(), layer, distance[0]);
+	}
+	fixture.Commands->close();
+	fixture.Device->executeCommandList(fixture.Commands);
+	const auto before = ReadProbe(fixture.Device, fixture.GI.GetIrradiance());
+	const uint32_t updates = fixture.GI.GetUpdateCount();
+	const auto query = fixture.GI.Inspect(translation + glm::vec3(-0.1f, 0.0f, 0.0f), {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f});
+	REQUIRE(query);
+	CHECK(query->Irradiance.r > 5.0f);
+	for (uint32_t i = 0; i < 8; ++i)
+	{
+		const auto& neighbour = query->Neighbours[i];
+		CHECK(neighbour.SurfaceRay.Metadata.z == (i % 2 != 0 && !maskedHole ? 1 : 0));
+		CHECK(neighbour.BiasedRay.Metadata.z == (i % 2 == 0 && !maskedHole ? 1 : 0));
+		CHECK((neighbour.SurfaceRay.Metadata.w & 2) == 0);
+		CHECK((neighbour.BiasedRay.Metadata.w & 2) == 0);
+		CHECK(neighbour.SurfaceRay.OriginLength.x == doctest::Approx(-0.1));
+		CHECK(neighbour.BiasedRay.OriginLength.x == doctest::Approx(0.15));
+		if (neighbour.SurfaceRay.Metadata.z != 0)
+		{
+			CHECK(neighbour.SurfaceRay.HitPositionDistance.x == doctest::Approx(-0.02).epsilon(0.001));
+			CHECK(neighbour.SurfaceRay.HitPositionDistance.w < neighbour.SurfaceRay.OriginLength.w);
+			CHECK(neighbour.SurfaceRay.Metadata.w == 0);
+		}
+		if (neighbour.BiasedRay.Metadata.z != 0)
+			CHECK(neighbour.BiasedRay.HitPositionDistance.x == doctest::Approx(0.02).epsilon(0.001));
+	}
+	CHECK(query->SurfaceRejected.r == doctest::Approx(static_cast<double>(maskedHole ? query->Irradiance.r : 0.1f)).epsilon(0.001));
+	CHECK(query->SurfaceExact.r == doctest::Approx(static_cast<double>(query->SurfaceRejected.r)).epsilon(0.001));
+	CHECK(query->BiasedRejected.r == doctest::Approx(static_cast<double>(maskedHole ? query->Irradiance.r : 10.0f)).epsilon(0.001));
+	CHECK(query->BiasedExact.r == doctest::Approx(static_cast<double>(query->BiasedRejected.r)).epsilon(0.001));
+	const auto coincident = fixture.GI.Inspect(fixture.Specification.Origin, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f});
+	REQUIRE(coincident);
+	CHECK(coincident->Neighbours[0].SurfaceRay.OriginLength.w == 0.0f);
+	CHECK(coincident->Neighbours[0].SurfaceRay.Metadata.z == 0);
+	CHECK(fixture.GI.GetUpdateCount() == updates);
+	CHECK(ReadProbe(fixture.Device, fixture.GI.GetIrradiance()) == before);
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: inspection marks unresolvable segments indeterminate")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.NormalBias = fixture.Specification.ViewBias = 0.0f;
+	bool largeCoordinate = false;
+	SUBCASE("short segments") {}
+	SUBCASE("normal offset lost to floating point rounding")
+	{
+		largeCoordinate = true;
+		fixture.Specification.Origin.x = 500000.0f;
+	}
+	REQUIRE(fixture.Update(scene, assets));
+	if (largeCoordinate)
+	{
+		const auto query = fixture.GI.Inspect(fixture.Specification.Origin + glm::vec3(0.25f), {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f});
+		REQUIRE(query);
+		for (const auto& neighbour : query->Neighbours)
+			CHECK((neighbour.SurfaceRay.Metadata.w & 2) != 0);
+		CHECK(query->SurfaceExact.w == 0.0f);
+	}
+	else
+		for (float distance : {0.0001f, 0.00025f})
+		{
+			const auto query = fixture.GI.Inspect(fixture.Specification.Origin + glm::vec3(distance, 0.0f, 0.0f), {-1.0f, 0.0f, 0.0f}, {-1.0f, 0.0f, 0.0f});
+			REQUIRE(query);
+			CHECK((query->Neighbours[0].SurfaceRay.Metadata.w & 2) != 0);
+		}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: frozen updates preserve history and an explicit reset refills once")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.FreezeUpdates = true;
+	REQUIRE(fixture.Update(scene, assets));
+	CHECK(fixture.GI.GetUpdateCount() == 1);
+	const auto before = ReadProbe(fixture.Device, fixture.GI.GetIrradiance());
+	fixture.ViewData.EnvironmentParams.x = 0.0f;
+	for (int frame = 0; frame < 3; ++frame)
+		REQUIRE(fixture.Update(scene, assets));
+	CHECK(fixture.GI.GetUpdateCount() == 1);
+	CHECK(ReadProbe(fixture.Device, fixture.GI.GetIrradiance()) == before);
+	fixture.GI.ResetHistory();
+	REQUIRE(fixture.Update(scene, assets));
+	CHECK(fixture.GI.GetUpdateCount() == 1);
+	CHECK(ReadProbe(fixture.Device, fixture.GI.GetIrradiance())[27].b == 0.0f);
+	CHECK(graphics.GetValidationErrorCount() == errors);
 }
 
 TEST_CASE("ProbeGI: stable updates reuse bindings and resource replacement invalidates both directions")
@@ -616,7 +908,7 @@ TEST_CASE("ProbeGI: reflected controls round trip and reject invalid settings")
 			CHECK_FALSE(Reflection::SetField(field, &settings, "bad", error));
 			if (std::string_view(field.Name) != "GIEnabled")
 			{
-				CHECK_FALSE(Reflection::SetField(field, &settings, -1, error));
+				CHECK_FALSE(Reflection::SetField(field, &settings, -2, error));
 				CHECK_FALSE(Reflection::SetField(field, &settings, 100000, error));
 			}
 		}
@@ -943,5 +1235,544 @@ TEST_CASE("ProbeGI: forward shading rejects exterior probes across thin walls an
 		const auto blocked = ReadbackTexture(graphics.GetDevice(), output).GetPixel(32, 32);
 		CHECK(blocked.r < bounced.r / 2);
 	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: occluded neighbours do not dim reliable visible irradiance")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.NormalBias = fixture.Specification.ViewBias = 0.0f;
+	REQUIRE(fixture.Update(scene, assets));
+	for (bool wall : {false, true})
+	{
+		fixture.Commands->open();
+		for (uint32_t layer = 0; layer < 8; ++layer)
+		{
+			const float mean = wall && (layer & 2) == 0 ? 0.1f : 3.0f;
+			std::array<glm::vec4, 64> irradiance, distance;
+			irradiance.fill(glm::vec4(1.0f));
+			distance.fill(glm::vec4(mean, mean * mean, 0, 1));
+			fixture.Commands->writeTexture(fixture.GI.GetIrradiance(), layer, 0, irradiance.data(), 8 * sizeof(glm::vec4));
+			WriteUniformDistance(fixture.Commands, fixture.GI.GetDistance(), layer, distance[0]);
+		}
+		fixture.Commands->close();
+		fixture.Device->executeCommandList(fixture.Commands);
+		const auto query = fixture.GI.Inspect({}, {0, 1, 0}, {0, 0, 1});
+		REQUIRE(query);
+		CHECK(query->Irradiance.r == doctest::Approx(1.0).epsilon(0.001));
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: closed double-sided solids reject embedded probes independently of shading sidedness")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	for (bool doubleSided : {false, true})
+	{
+		AssetManager assets;
+		auto material = CreateRef<MaterialAsset>();
+		material->Handle = AssetHandle(61234);
+		material->DoubleSided = doubleSided;
+		assets.AddMemoryAsset(material);
+		Scene scene;
+		AddCube(scene, {}, glm::vec3(2.0f), material->Handle);
+		ProbeFixture fixture(graphics.GetDevice());
+		REQUIRE(fixture.Update(scene, assets));
+		for (uint32_t probe = 0; probe < 8; ++probe)
+		{
+			const auto moments = ReadProbe(fixture.Device, fixture.GI.GetDistance(), probe);
+			CHECK(moments[9].w == 0.0f);
+		}
+		const auto query = fixture.GI.Inspect({}, {0, 1, 0}, {0, 0, 1});
+		REQUIRE(query);
+		CHECK(query->Summary.y == 0.0f);
+		CHECK(glm::length(glm::vec3(query->Irradiance)) == 0.0f);
+		fixture.Specification.Origin = {1.1f, -0.5f, -0.5f};
+		REQUIRE(fixture.Update(scene, assets));
+		for (uint32_t probe = 0; probe < 8; ++probe)
+			CHECK(ReadProbe(fixture.Device, fixture.GI.GetDistance(), probe)[9].w == 1.0f);
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: small double-sided sheets shade both sides without invalidating surrounding probes")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	auto material = CreateRef<MaterialAsset>();
+	material->Handle = AssetHandle(61235);
+	material->DoubleSided = true;
+	material->EmissiveFactor = {2, 0, 0};
+	assets.AddMemoryAsset(material);
+	Scene scene;
+	Entity sheet = scene.CreateEntity("Two sided sheet");
+	sheet.GetTransform().Scale = glm::vec3(0.1f);
+	auto& mesh = sheet.AddComponent<MeshComponent>();
+	mesh.Mesh = AssetHandle(AssetManager::BuiltinPlane);
+	mesh.Materials = {material->Handle};
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.RaysPerProbe = 256;
+	fixture.ViewData.EnvironmentParams.x = 0;
+	REQUIRE(fixture.Update(scene, assets));
+	for (uint32_t probe = 0; probe < 8; ++probe)
+	{
+		const auto irradiance = ReadProbe(fixture.Device, fixture.GI.GetIrradiance(), probe);
+		float red = 0;
+		for (const auto& pixel : irradiance)
+		{
+			red += pixel.r;
+			CHECK(pixel.a == 1.0f);
+			CHECK(pixel.g == 0.0f);
+		}
+		CHECK(red > 0.1f);
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: asymmetric directional irradiance preserves world axes and octahedral seam continuity")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.RaysPerProbe = 256;
+	fixture.Specification.NormalBias = fixture.Specification.ViewBias = 0;
+	auto desc = fixture.Sky->getDesc();
+	desc.width = desc.height = 32;
+	fixture.Sky = fixture.Device->createTexture(desc);
+	REQUIRE(fixture.Sky);
+	fixture.Commands->open();
+	// Analytic first-order radiance: its cosine convolution is 0.5 + normal/6 in RGB.
+	for (uint32_t face = 0; face < 6; ++face)
+	{
+		std::array<glm::u8vec4, 32 * 32> texels;
+		for (uint32_t y = 0; y < 32; ++y)
+			for (uint32_t x = 0; x < 32; ++x)
+			{
+				const float u = (static_cast<float>(x) + 0.5f) / 16.0f - 1.0f;
+				const float v = (static_cast<float>(y) + 0.5f) / 16.0f - 1.0f;
+				const std::array<glm::vec3, 6> faces{{{1, -v, -u}, {-1, -v, u}, {u, 1, v}, {u, -1, -v}, {u, -v, 1}, {-u, -v, -1}}};
+				const glm::vec3 color = glm::vec3(0.5f) + 0.25f * glm::normalize(faces[face]);
+				texels[y * 32 + x] = glm::u8vec4(glm::round(color * 255.0f), 255);
+			}
+		fixture.Commands->writeTexture(fixture.Sky, face, 0, texels.data(), 32 * sizeof(glm::u8vec4));
+	}
+	fixture.Commands->close();
+	fixture.Device->executeCommandList(fixture.Commands);
+	REQUIRE(fixture.Update(scene, assets));
+	for (glm::vec3 axis : {glm::vec3(1, 0, 0), glm::vec3(0, 1, 0), glm::vec3(0, 0, 1)})
+		for (float sign : {-1.0f, 1.0f})
+		{
+			const glm::vec3 normal = axis * sign;
+			const auto query = fixture.GI.Inspect({}, normal, {0, 0, 1});
+			REQUIRE(query);
+			const glm::vec3 expected = glm::vec3(0.5f) + normal / 6.0f;
+			CHECK(glm::length(glm::vec3(query->Irradiance) - expected) < 0.035f);
+		}
+	for (glm::vec3 direction : {glm::vec3(0, 0, -1), glm::vec3(0, 1, -1), glm::vec3(1, 0, -1), glm::vec3(1, 1, 0), glm::vec3(-1, 1, 0)})
+		for (glm::vec3 epsilon : {glm::vec3(1e-5f, 0, 0), glm::vec3(0, 1e-5f, 0), glm::vec3(0, 0, 1e-5f)})
+		{
+			const auto left = fixture.GI.Inspect({}, direction - epsilon, {0, 0, 1});
+			const auto right = fixture.GI.Inspect({}, direction + epsilon, {0, 0, 1});
+			REQUIRE(left);
+			REQUIRE(right);
+			CHECK(glm::length(glm::vec3(left->Irradiance - right->Irradiance)) < 0.001f);
+		}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: mip filtering preserves sub-ray sky energy and bounds temporal variation")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.NormalBias = fixture.Specification.ViewBias = 0.0f;
+	// A bright texel smaller than one ray's angular footprint must contribute even in updates
+	// whose ray centres miss it. Build a box-filtered mip chain independently of the renderer.
+	constexpr uint32_t Size = 32, BrightX = 18, BrightY = 16;
+	constexpr float Radiance = 256.0f;
+	auto desc = fixture.Sky->getDesc();
+	desc.width = desc.height = Size;
+	desc.mipLevels = 6;
+	desc.format = nvrhi::Format::RGBA16_FLOAT;
+	fixture.Sky = fixture.Device->createTexture(desc);
+	REQUIRE(fixture.Sky);
+	fixture.Commands->open();
+	for (uint32_t face = 0; face < 6; ++face)
+	{
+		std::vector<glm::vec4> texels(Size * Size, glm::vec4(0.0f));
+		if (face == 2)
+			texels[BrightY * Size + BrightX] = glm::vec4(Radiance);
+		uint32_t size = Size;
+		for (uint32_t mip = 0; mip < desc.mipLevels; ++mip)
+		{
+			std::vector<glm::u16vec4> encoded(texels.size());
+			for (size_t i = 0; i < texels.size(); ++i)
+				for (int channel = 0; channel < 4; ++channel)
+					encoded[i][channel] = glm::packHalf1x16(texels[i][channel]);
+			fixture.Commands->writeTexture(fixture.Sky, face, mip, encoded.data(), size * sizeof(glm::u16vec4));
+			if (size == 1)
+				break;
+			const uint32_t nextSize = size / 2;
+			std::vector<glm::vec4> next(nextSize * nextSize);
+			for (uint32_t y = 0; y < nextSize; ++y)
+				for (uint32_t x = 0; x < nextSize; ++x)
+					next[y * nextSize + x] = (texels[2 * y * size + 2 * x] + texels[2 * y * size + 2 * x + 1] +
+											  texels[(2 * y + 1) * size + 2 * x] + texels[(2 * y + 1) * size + 2 * x + 1]) *
+											 0.25f;
+			texels = std::move(next);
+			size = nextSize;
+		}
+	}
+	fixture.Commands->close();
+	fixture.Device->executeCommandList(fixture.Commands);
+	const auto solidAngleIntegral = [](float u, float v) { return std::atan2(u * v, std::sqrt(u * u + v * v + 1.0f)); };
+	const float u0 = 2.0f * BrightX / Size - 1.0f, u1 = 2.0f * (BrightX + 1) / Size - 1.0f;
+	const float v0 = 2.0f * BrightY / Size - 1.0f, v1 = 2.0f * (BrightY + 1) / Size - 1.0f;
+	const float solidAngle = solidAngleIntegral(u1, v1) - solidAngleIntegral(u0, v1) - solidAngleIntegral(u1, v0) + solidAngleIntegral(u0, v0);
+	const float cosine = glm::normalize(glm::vec3((u0 + u1) * 0.5f, 1.0f, (v0 + v1) * 0.5f)).y;
+	const float expected = Radiance * solidAngle * cosine / 3.14159265358979323846f;
+	float minimum = std::numeric_limits<float>::max(), maximum = 0.0f, sum = 0.0f;
+	for (uint32_t frame = 0; frame < 8; ++frame)
+	{
+		REQUIRE(fixture.Update(scene, assets));
+		const auto query = fixture.GI.Inspect({}, {0, 1, 0}, {0, 0, 1});
+		REQUIRE(query);
+		const float value = query->Irradiance.r;
+		CAPTURE(frame);
+		CAPTURE(value);
+		CAPTURE(expected);
+		CHECK(std::isfinite(value));
+		CHECK(value > expected * 0.5f);
+		CHECK(value < expected * 1.5f);
+		minimum = std::min(minimum, value);
+		maximum = std::max(maximum, value);
+		sum += value;
+	}
+	CAPTURE(minimum);
+	CAPTURE(maximum);
+	CAPTURE(sum / 8.0f);
+	CAPTURE(expected);
+	// Finite ray quadrature and the broad mip footprint introduce integration error, but neither
+	// rare spikes nor a consistently dark result meet this energy and stability bound.
+	CHECK(std::abs(sum / 8.0f - expected) < expected * 0.3f);
+	// With only 64 rays, even footprint-filtered quadrature has variance. The normal temporal
+	// filter must suppress it while keeping the integral, rather than averaging rare huge spikes.
+	fixture.Specification.Hysteresis = 0.85f;
+	for (uint32_t frame = 0; frame < 32; ++frame)
+	{
+		REQUIRE(fixture.Update(scene, assets));
+		fixture.Device->waitForIdle();
+		fixture.Device->runGarbageCollection();
+	}
+	minimum = std::numeric_limits<float>::max();
+	maximum = 0.0f;
+	for (uint32_t frame = 0; frame < 8; ++frame)
+	{
+		REQUIRE(fixture.Update(scene, assets));
+		const auto query = fixture.GI.Inspect({}, {0, 1, 0}, {0, 0, 1});
+		REQUIRE(query);
+		minimum = std::min(minimum, query->Irradiance.r);
+		maximum = std::max(maximum, query->Irradiance.r);
+	}
+	CHECK(minimum > expected * 0.7f);
+	CHECK(maximum < expected * 1.3f);
+	CHECK(maximum - minimum < expected * 0.1f);
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+static void CheckFurnace(bool visibility)
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	auto material = CreateRef<MaterialAsset>();
+	material->Handle = AssetHandle(60120);
+	material->BaseColorFactor = glm::vec4(glm::vec3(0.5f), 1.0f);
+	material->MetallicFactor = 0.0f;
+	material->EmissiveFactor = {0.5f, 1.0f, 2.0f};
+	SUBCASE("single-sided walls")
+	{
+		material->DoubleSided = false;
+	}
+	SUBCASE("double-sided walls")
+	{
+		material->DoubleSided = true;
+	}
+	assets.AddMemoryAsset(material);
+	Enclose(scene, material->Handle);
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.ViewData.EnvironmentParams.x = 0.0f;
+	// Wall hit points must lie within the volume for bounce feedback. The centre probe is
+	// in air; the other probes lie inside the closed walls and classification rejects them.
+	fixture.Specification.Origin = glm::vec3(-2.0f);
+	fixture.Specification.Spacing = 2.0f;
+	fixture.Specification.Counts = glm::uvec3(3);
+	fixture.Specification.ProbesPerFrame = 27;
+	fixture.Specification.Hysteresis = 0.5f;
+	// Isolate estimator/feedback energy from the approximate distance-moment visibility filter.
+	// All rays from the central probe to these interior wall receivers are physically visible.
+	fixture.Specification.VisibilityWeighting = visibility;
+	fixture.Specification.BounceFeedback = false;
+	for (uint32_t frame = 0; frame < 4; ++frame)
+	{
+		REQUIRE(fixture.Update(scene, assets));
+		fixture.Device->waitForIdle();
+		fixture.Device->runGarbageCollection();
+	}
+	for (const auto& pixel : ReadProbe(fixture.Device, fixture.GI.GetIrradiance(), 13))
+		for (int channel = 0; channel < 3; ++channel)
+			CHECK(pixel[channel] == doctest::Approx(static_cast<double>(material->EmissiveFactor[channel])).epsilon(0.001));
+	for (uint32_t probe = 0; probe < 27; ++probe)
+		CHECK(ReadProbe(fixture.Device, fixture.GI.GetDistance(), probe)[0].w == (probe == 13 ? 1.0f : 0.0f));
+	fixture.Specification.BounceFeedback = true;
+	for (uint32_t frame = 0; frame < 64; ++frame)
+	{
+		REQUIRE(fixture.Update(scene, assets));
+		fixture.Device->waitForIdle();
+		fixture.Device->runGarbageCollection();
+		if (frame < 2 && !visibility)
+		{
+			const double factor = frame == 0 ? 1.24 : 1.4176;
+			for (const auto& pixel : ReadProbe(fixture.Device, fixture.GI.GetIrradiance(), 13))
+				for (int channel = 0; channel < 3; ++channel)
+					CHECK(pixel[channel] == doctest::Approx(static_cast<double>(material->EmissiveFactor[channel]) * factor).epsilon(0.02));
+		}
+	}
+	// Uniform emission and reflectance admit constant radiance everywhere in the enclosure:
+	// L = Le + rho*L. The tracer retains 96% of dielectric base colour for diffuse reflection.
+	const glm::vec3 expected = material->EmissiveFactor / (1.0f - 0.5f * 0.96f);
+	for (const auto& pixel : ReadProbe(fixture.Device, fixture.GI.GetIrradiance(), 13))
+	{
+		CHECK(pixel.a == 1.0f);
+		for (int channel = 0; channel < 3; ++channel)
+			CHECK(pixel[channel] == doctest::Approx(static_cast<double>(expected[channel])).epsilon(0.02));
+	}
+	const auto query = fixture.GI.Inspect({1.94f, 0.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}, {-1.0f, 0.0f, 0.0f});
+	REQUIRE(query);
+	for (const auto& neighbour : query->Neighbours)
+		if (neighbour.Metadata.y != 0)
+		{
+			CHECK(neighbour.SurfaceRay.Metadata.z == 0);
+			CHECK(neighbour.BiasedRay.Metadata.z == 0);
+		}
+	for (int channel = 0; channel < 3; ++channel)
+	{
+		CHECK(query->SurfaceExact[channel] == doctest::Approx(static_cast<double>(expected[channel])).epsilon(0.02));
+		CHECK(query->BiasedExact[channel] == doctest::Approx(static_cast<double>(expected[channel])).epsilon(0.02));
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: a uniform emissive furnace converges to its analytic diffuse bounce series")
+{
+	CheckFurnace(false);
+}
+
+TEST_CASE("ProbeGI: distance visibility preserves analytic furnace energy after convergence")
+{
+	CheckFurnace(true);
+}
+
+TEST_CASE("ProbeGI: view bias scales with spacing and stops before a near view origin")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.Origin = glm::vec3(-1.0f);
+	fixture.Specification.Spacing = 2.0f;
+	fixture.Specification.NormalBias = 0.0f;
+	REQUIRE(fixture.Update(scene, assets));
+	CHECK(fixture.GI.GetConstants().Tuning.y == doctest::Approx(0.4).epsilon(0.001));
+	for (float viewDistance : {0.0f, 0.06f, 1000000.0f})
+	{
+		const auto query = fixture.GI.Inspect({}, {0, 1, 0}, {1, 0, 0}, viewDistance);
+		REQUIRE(query);
+		CHECK(query->Neighbours[0].BiasedRay.OriginLength.x == doctest::Approx(static_cast<double>(std::min(0.4f, viewDistance * 0.5f))).epsilon(0.001));
+	}
+	CHECK_FALSE(fixture.GI.Inspect({}, {0, 1, 0}, {1, 0, 0}, -1.0f));
+	CHECK_FALSE(fixture.GI.Inspect({}, {0, 1, 0}, {1, 0, 0}, std::numeric_limits<float>::quiet_NaN()));
+	CHECK_FALSE(fixture.GI.Inspect({}, {0, 1, 0}, {1, 0, 0}, std::numeric_limits<float>::infinity()));
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: converged oblique wall corner rejects exterior probes across tested scales")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	float spacing = 1.75f, wallThickness = 0.1f;
+	bool nearProbe = false;
+	const glm::vec3 view(0.8f, 0.25f, -0.6f);
+	SUBCASE("reference scale") {}
+	SUBCASE("half-metre spacing")
+	{
+		spacing = 0.5f;
+	}
+	SUBCASE("four-metre spacing")
+	{
+		spacing = 4.0f;
+	}
+	SUBCASE("thicker wall and near interior probe")
+	{
+		wallThickness = 0.3f;
+		nearProbe = true;
+	}
+	const float worldScale = spacing / 1.75f;
+	AssetManager assets;
+	Scene scene;
+	auto material = CreateRef<MaterialAsset>();
+	material->Handle = AssetHandle(60121);
+	material->BaseColorFactor = glm::vec4(0.5f, 0.5f, 0.5f, 1.0f);
+	material->MetallicFactor = 0.0f;
+	material->EmissiveFactor = glm::vec3(0.005f);
+	assets.AddMemoryAsset(material);
+	const glm::vec3 low = glm::vec3(6.4f, 0.0f, -2.0f) * worldScale, high = glm::vec3(9.5f, 3.0f, 4.0f) * worldScale;
+	wallThickness *= worldScale;
+	for (int axis = 0; axis < 3; ++axis)
+		for (int side : {0, 1})
+		{
+			glm::vec3 position = (low + high) * 0.5f;
+			glm::vec3 scale = high - low + 2.0f * wallThickness;
+			position[axis] = side == 0 ? low[axis] - wallThickness * 0.5f : high[axis] + wallThickness * 0.5f;
+			scale[axis] = wallThickness;
+			AddCube(scene, position, scale, material->Handle);
+		}
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.Origin = glm::vec3(5.25f, -0.5f, 2.0f) * worldScale;
+	if (nearProbe)
+		fixture.Specification.Origin.z = high.z - 1.1f * spacing;
+	fixture.Specification.Counts = {2, 2, 3};
+	fixture.Specification.ProbesPerFrame = 12;
+	fixture.Specification.Spacing = spacing;
+	fixture.Specification.ViewBias = 0.2f;
+	fixture.Specification.RaysPerProbe = 128;
+	fixture.Specification.Hysteresis = 0.8f;
+	for (int frame = 0; frame < 64; ++frame)
+	{
+		REQUIRE(fixture.Update(scene, assets));
+		fixture.Device->waitForIdle();
+		fixture.Device->runGarbageCollection();
+	}
+	const auto query = fixture.GI.Inspect(glm::vec3(6.4f, 0.35f, 3.994f) * worldScale, {1, 0, 0}, view);
+	REQUIRE(query);
+	CHECK(query->SurfaceExact.g > 0.005f);
+	CAPTURE(spacing);
+	CAPTURE(wallThickness);
+	CAPTURE(nearProbe);
+	CAPTURE(query->Irradiance.g);
+	CAPTURE(query->SurfaceExact.g);
+
+	CHECK(std::abs(query->Irradiance.g - query->SurfaceExact.g) < 0.1f * query->SurfaceExact.g);
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: fine distance tiles retain sample mass and report cold sampling confidence")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.Origin = glm::vec3(-1.0f);
+	fixture.Specification.Counts = glm::uvec3(3);
+	fixture.Specification.ProbesPerFrame = 27;
+	fixture.Specification.RaysPerProbe = 32;
+	fixture.Specification.NormalBias = fixture.Specification.ViewBias = 0.0f;
+	REQUIRE(fixture.Update(scene, assets));
+	CHECK(fixture.GI.GetIrradiance()->getDesc().width == 8);
+	CHECK(fixture.GI.GetDistance()->getDesc().width == GPU::ProbeDistanceTileSize);
+	const auto pixels = ReadProbe(fixture.Device, fixture.GI.GetDistance(), 13);
+	float minimumMass = 1.0f, maximumMass = 0.0f;
+	for (const auto& value : pixels)
+	{
+		REQUIRE(value.z > 0.0f);
+		CHECK(value.x / value.z == doctest::Approx(3.0).epsilon(0.001));
+		CHECK(value.y / value.z == doctest::Approx(9.0).epsilon(0.001));
+		CHECK(value.w == 1.0f);
+		minimumMass = std::min(minimumMass, value.z);
+		maximumMass = std::max(maximumMass, value.z);
+	}
+	CHECK(minimumMass < maximumMass * 0.01f);
+	float minimumConfidence = 1.0f;
+	for (const glm::vec3 direction : {glm::vec3(1, 0, 0), glm::vec3(0, 1, 0), glm::vec3(0, 0, 1), glm::vec3(1, 1, 1)})
+	{
+		const auto query = fixture.GI.Inspect(glm::normalize(direction) * 0.25f, {0, 1, 0}, {0, 0, 1});
+		REQUIRE(query);
+		for (const auto& neighbour : query->Neighbours)
+			minimumConfidence = std::min(minimumConfidence, neighbour.Sampling.z);
+		CHECK(query->Irradiance.g == doctest::Approx(0.4).epsilon(0.001));
+	}
+	CHECK(minimumConfidence < 0.1f);
+	fixture.Commands->open();
+	const std::vector<glm::vec4> missing(pixels.size(), glm::vec4(0, 0, 0, 1));
+	for (uint32_t layer = 0; layer < 27; ++layer)
+		fixture.Commands->writeTexture(fixture.GI.GetDistance(), layer, 0, missing.data(), GPU::ProbeDistanceTileSize * sizeof(glm::vec4));
+	fixture.Commands->close();
+	fixture.Device->executeCommandList(fixture.Commands);
+	const auto missingQuery = fixture.GI.Inspect({}, {0, 1, 0}, {0, 0, 1});
+	REQUIRE(missingQuery);
+	CHECK(missingQuery->Summary.y == 0.0f);
+	CHECK(missingQuery->Irradiance.g == 0.0f);
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: inspection allocation failures preserve history and recover on retry")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	FailingProbeResources factory;
+	ProbeFixture fixture(graphics.GetDevice(), &factory);
+	REQUIRE(fixture.Update(scene, assets));
+	const auto before = ReadProbe(fixture.Device, fixture.GI.GetIrradiance());
+	const uint32_t updates = fixture.GI.GetUpdateCount();
+	for (auto kind : {FailingProbeResources::Kind::Buffer, FailingProbeResources::Kind::Bindings})
+		for (int index = 0; index < (kind == FailingProbeResources::Kind::Buffer ? 3 : 1); ++index)
+		{
+			factory.FailureKind = kind;
+			factory.Remaining = index;
+			factory.Failed = false;
+			CHECK_FALSE(fixture.GI.Inspect({}, {0, 1, 0}, {0, 0, 1}));
+			CHECK(factory.Failed);
+			CHECK(fixture.GI.HasHistory());
+			CHECK(fixture.GI.GetUpdateCount() == updates);
+			CHECK(ReadProbe(fixture.Device, fixture.GI.GetIrradiance()) == before);
+			factory.Remaining = -1;
+			REQUIRE(fixture.GI.Inspect({}, {0, 1, 0}, {0, 0, 1}));
+			CHECK(fixture.GI.GetUpdateCount() == updates);
+		}
 	CHECK(graphics.GetValidationErrorCount() == errors);
 }

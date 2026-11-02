@@ -25,6 +25,7 @@ public struct ViewConstants
 	public uint DebugView;
 	public float CascadeBlend;         // Fraction of each cascade blended into the next (last fades to unshadowed).
 	public float CascadeNear;          // First cascade start in view space.
+	public float4 Diagnostics;         // x: include environment specular
 };
 
 // Point and spot lights. Type: 0 = point, 1 = spot.

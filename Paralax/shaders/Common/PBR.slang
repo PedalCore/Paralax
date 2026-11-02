@@ -44,15 +44,22 @@ public struct SurfaceData
 	public float Alpha;
 };
 
-// Radiance reflected towards the viewer from one light arriving along L with the given radiance.
-public float3 EvaluateLight(SurfaceData surface, float3 L, float3 radiance)
+public struct LightContribution
 {
+	public float3 Diffuse;
+	public float3 Specular;
+};
+
+// Separate physical terms are also used by renderer diagnostics.
+public LightContribution EvaluateLightTerms(SurfaceData surface, float3 L, float3 radiance)
+{
+	LightContribution result = {};
 	float3 N = surface.Normal;
 	float3 V = surface.View;
 	float3 H = normalize(V + L);
 	float NdotL = saturate(dot(N, L));
 	if (NdotL <= 0.0)
-		return float3(0.0);
+		return result;
 	float NdotV = max(dot(N, V), 1e-4);
 	float NdotH = saturate(dot(N, H));
 	float VdotH = saturate(dot(V, H));
@@ -65,7 +72,9 @@ public float3 EvaluateLight(SurfaceData surface, float3 L, float3 radiance)
 	float3 specular = D * Vis * F;
 	float3 kd = (1.0 - F) * (1.0 - surface.Metallic);
 	float3 diffuse = kd * surface.BaseColor / PI;
-	return (diffuse + specular) * radiance * NdotL;
+	result.Diffuse = diffuse * radiance * NdotL;
+	result.Specular = specular * radiance * NdotL;
+	return result;
 }
 
 // Smooth distance falloff that reaches exactly zero at the light's range (inverse-square in between).

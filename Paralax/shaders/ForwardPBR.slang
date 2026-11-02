@@ -187,11 +187,30 @@ float3 RotateY(float3 v, float angle)
 	return float3(c * v.x + s * v.z, v.y, -s * v.x + c * v.z);
 }
 
-float3 EvaluateEnvironment(SurfaceData surface)
+struct EnvironmentContribution
 {
+	float3 Diffuse;
+	float3 Specular;
+	float3 Indirect;
+	float Coverage;
+};
+
+// Orthographic rays have a common direction and a view origin at infinity: no distance clamp.
+float4 ProbeCameraRay(float3 position)
+{
+	if (abs(g_View.Projection[3][3]) > 0.5)
+		return float4(normalize(g_View.View[2].xyz), 1000000.0);
+	float3 delta = g_View.CameraPosition.xyz - position;
+	float distance = length(delta);
+	return float4(delta / max(distance, 1e-6), distance);
+}
+
+EnvironmentContribution EvaluateEnvironment(SurfaceData surface)
+{
+	EnvironmentContribution result = {};
 	float intensity = g_View.EnvironmentParams.x;
 	if (intensity <= 0.0 && g_Probe.Origin.w == 0.0)
-		return float3(0.0);
+		return result;
 
 	float3 N = surface.Normal;
 	float3 V = surface.View;
@@ -215,10 +234,15 @@ float3 EvaluateEnvironment(SurfaceData surface)
 	float specularOcclusion = saturate(pow(NdotV + surface.Occlusion, exp2(-16.0 * surface.Roughness - 1.0)) - 1.0 + surface.Occlusion);
 	float3 kd = (1.0 - F) * (1.0 - surface.Metallic);
 	float3 diffuse = kd * irradiance * surface.BaseColor;
-	float4 indirect = SampleProbeGI(surface.Position, N, V, g_Probe, g_ProbeIrradiance, g_ProbeDistance);
+	float4 probeView = ProbeCameraRay(surface.Position);
+	float4 indirect = SampleProbeGI(surface.Position, N, probeView.xyz, g_Probe, g_ProbeIrradiance, g_ProbeDistance, probeView.w);
+	result.Coverage = indirect.a;
+	result.Specular = specular * specularOcclusion * intensity * g_View.Diagnostics.x;
 	if (indirect.a > 0.5)
-		return kd * indirect.rgb * surface.BaseColor * surface.Occlusion + specular * specularOcclusion * intensity;
-	return (diffuse * surface.Occlusion + specular * specularOcclusion) * intensity;
+		result.Indirect = kd * indirect.rgb * surface.BaseColor * surface.Occlusion;
+	else
+		result.Diffuse = diffuse * surface.Occlusion * intensity;
+	return result;
 }
 
 [shader("fragment")]
@@ -287,12 +311,14 @@ float4 MainPS(VertexOutput input, bool isFrontFace: SV_IsFrontFace) : SV_Target
 	surface.Emissive = emissive;
 	surface.Alpha = baseColor.a;
 
-	float3 color = surface.Emissive;
+	float3 directDiffuse = float3(0.0), directSpecular = float3(0.0);
 
 	if (g_View.SunDirection.w > 0.5)
 	{
 		float shadow = SunShadow(surface.Position, shadowNormal, receiverNormal, input.ViewDepth, input.Position.xy);
-		color += EvaluateLight(surface, -g_View.SunDirection.xyz, g_View.SunColor.rgb * shadow);
+		LightContribution contribution = EvaluateLightTerms(surface, -g_View.SunDirection.xyz, g_View.SunColor.rgb * shadow);
+		directDiffuse += contribution.Diffuse;
+		directSpecular += contribution.Specular;
 	}
 
 	for (uint i = 0; i < g_View.LightCount; i++)
@@ -310,19 +336,64 @@ float4 MainPS(VertexOutput input, bool isFrontFace: SV_IsFrontFace) : SV_Target
 			float cone = saturate((cd - light.DirectionCos.w) / max(light.Params.x - light.DirectionCos.w, 1e-4));
 			attenuation *= cone * cone;
 		}
-		color += EvaluateLight(surface, L, light.ColorIntensity.rgb * attenuation);
+		LightContribution contribution = EvaluateLightTerms(surface, L, light.ColorIntensity.rgb * attenuation);
+		directDiffuse += contribution.Diffuse;
+		directSpecular += contribution.Specular;
 	}
 
-	color += EvaluateEnvironment(surface);
+	EnvironmentContribution environment = EvaluateEnvironment(surface);
+	float3 color = surface.Emissive + directDiffuse + directSpecular + environment.Diffuse + environment.Specular + environment.Indirect;
 
 	if (g_View.DebugView == 1)
 		color = N * 0.5 + 0.5;
 	else if (g_View.DebugView == 2)
 		color = surface.BaseColor;
-	else if (g_View.DebugView == 3 || g_View.DebugView == 4)
+	else if (g_View.DebugView == 3 || g_View.DebugView == 10)
+		color = environment.Indirect;
+	else if (g_View.DebugView == 4)
+		color = float3(environment.Coverage);
+	else if (g_View.DebugView == 5)
+		color = directDiffuse;
+	else if (g_View.DebugView == 6)
+		color = directSpecular;
+	else if (g_View.DebugView == 7)
+		color = environment.Diffuse;
+	else if (g_View.DebugView == 8)
+		color = environment.Specular;
+	else if (g_View.DebugView == 9)
+		color = surface.Emissive;
+	else if (g_View.DebugView >= 11)
 	{
-		float4 indirect = SampleProbeGI(surface.Position, N, V, g_Probe, g_ProbeIrradiance, g_ProbeDistance);
-		color = g_View.DebugView == 3 ? indirect.rgb * surface.BaseColor * (1.0 - surface.Metallic) : float3(indirect.a);
+		float4 probeView = ProbeCameraRay(surface.Position);
+		ProbeSamplingPoint point = PrepareProbeSample(surface.Position, N, probeView.xyz, g_Probe, probeView.w);
+		float weightSum = 0.0, eligibleSupport = 0.0, support = 0.0, active = 0.0, selectedWeight = 0.0;
+		float3 selectedMoments = float3(0.0);
+		if (point.Inside)
+			for (uint corner = 0; corner < 8; ++corner)
+			{
+				ProbeNeighbour neighbour = GetProbeNeighbour(point, corner, g_Probe, g_ProbeDistance);
+				weightSum += neighbour.Weight;
+				eligibleSupport += neighbour.EligibleSupport;
+				support += neighbour.Support;
+				active += neighbour.Moments.w >= 0.5 ? 1.0 : 0.0;
+				if (g_Probe.Diagnostics.x >= 0.0 && neighbour.Index == uint(g_Probe.Diagnostics.x))
+				{
+					selectedWeight = neighbour.Weight;
+					selectedMoments = float3(neighbour.Moments.xy, neighbour.Variance);
+				}
+			}
+		if (g_View.DebugView == 11)
+			color = float3(weightSum);
+		else if (g_View.DebugView == 12)
+			color = float3(active / 8.0);
+		else if (g_View.DebugView == 13)
+			color = float3(selectedWeight * ProbeNormalization(weightSum, eligibleSupport, support));
+		else if (g_View.DebugView == 14)
+			color = float3(selectedMoments.x);
+		else if (g_View.DebugView == 15)
+			color = float3(selectedMoments.y);
+		else
+			color = float3(selectedMoments.z);
 	}
 
 	return float4(color, g_Material.AlphaMode == 2 ? surface.Alpha : 1.0);

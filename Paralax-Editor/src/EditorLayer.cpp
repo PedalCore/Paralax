@@ -237,6 +237,93 @@ namespace Paralax::Editor {
 														 {"lights", stats.Lights},
 														 {"staticLightingGenerations", stats.StaticLightingGenerations}});
 						   }});
+
+		auto giState = [this] {
+			const GIState state = m_Renderer->GetGIState();
+			return json{{"enabled", state.Enabled}, {"supported", state.Supported}, {"frozen", state.Frozen}, {"historyValid", state.HistoryValid}, {"updates", state.Updates}, {"queued", state.Queued}, {"origin", {state.Origin.x, state.Origin.y, state.Origin.z}}, {"spacing", state.Spacing}, {"counts", {state.Counts.x, state.Counts.y, state.Counts.z}}, {"frame", state.Frame}};
+		};
+		commands.Register({"render.gi.state", "Reports GI history and exact update counters without rendering.", {}, false, [this, giState](EditorContext&, const json&) {
+							   return m_Renderer ? CommandResult::Ok(giState()) : CommandResult::Fail("The renderer is not available");
+						   }});
+		commands.Register({"render.gi.reset", "Resets GI history. The next render performs one complete initial fill, even when frozen.", {}, false, [this, giState](EditorContext& context, const json&) {
+							   if (context.IsPlaying() && !context.IsPaused())
+								   return CommandResult::Fail("Pause play mode before GI diagnostics");
+							   if (!m_Renderer || !m_Renderer->ResetGIHistory())
+								   return CommandResult::Fail("GI requires an enabled, supported volume rendered at least once");
+							   return CommandResult::Ok(giState());
+						   }});
+		commands.Register({"render.gi.step", "Performs exactly frames GI updates without advancing simulation; requires GIFreeze.", {{"frames", "integer", "Number of updates (1..1024).", true}}, false, [this, giState](EditorContext& context, const json& params) {
+							   if (context.IsPlaying() && !context.IsPaused())
+								   return CommandResult::Fail("Pause play mode before GI diagnostics");
+							   if (!m_Renderer || !m_ViewportFramebuffer)
+								   return CommandResult::Fail("The renderer is not available");
+							   if (params["frames"] < 1 || params["frames"] > 1024)
+								   return CommandResult::Fail("frames must be 1..1024");
+							   const uint32_t frames = params["frames"].get<uint32_t>();
+							   const uint32_t before = m_Renderer->GetGIState().Updates;
+							   if (!m_Renderer->QueueGIUpdates(frames))
+								   return CommandResult::Fail("Set GIFreeze first; GI requires an enabled, supported volume rendered at least once");
+							   const float aspect = static_cast<float>(m_ViewportWidth) / static_cast<float>(m_ViewportHeight);
+							   for (uint32_t frame = 0; frame < frames; ++frame)
+							   {
+								   m_Renderer->Render(context.GetActiveScene(), GetViewportCamera(aspect), m_ViewportFramebuffer);
+								   auto& graphics = Application::Get().GetGraphicsDevice();
+								   graphics.WaitForIdle();
+								   graphics.CollectGarbage();
+							   }
+							   const GIState after = m_Renderer->GetGIState();
+							   if (after.Queued != 0 || after.Updates != before + frames)
+								   return CommandResult::Fail("GI did not complete the requested updates; inspect render.gi.state");
+							   json result = giState();
+							   result["before"] = before;
+							   return CommandResult::Ok(std::move(result));
+						   }});
+		commands.Register({"render.gi.inspect", "Synchronous GPU readback of eight probe neighbours; stalls the GPU and does not advance history.", {{"position", "array", "World receiver position.", true}, {"normal", "array", "World surface normal.", true}, {"view", "array", "World direction from receiver to camera.", true}, {"viewDistance", "number", "Optional receiver-to-camera distance in metres; omitted means unbounded (orthographic).", false}}, false, [this, vec3](EditorContext& context, const json& params) {
+							   if (context.IsPlaying() && !context.IsPaused())
+								   return CommandResult::Fail("Pause play mode before GI diagnostics");
+							   if (!m_Renderer)
+								   return CommandResult::Fail("The renderer is not available");
+							   const auto position = vec3(params["position"]), normal = vec3(params["normal"]), view = vec3(params["view"]);
+							   if (!position || !normal || !view || glm::length(*normal) < 1e-6f || glm::length(*view) < 1e-6f)
+								   return CommandResult::Fail("Expected finite position and nonzero normal/view vectors");
+							   float viewDistance = 1000000.0f;
+							   if (params.contains("viewDistance"))
+							   {
+								   if (!params["viewDistance"].is_number())
+									   return CommandResult::Fail("viewDistance must be a finite number of metres in [0,1000000]");
+								   viewDistance = params["viewDistance"].get<float>();
+								   if (!std::isfinite(viewDistance) || viewDistance < 0.0f || viewDistance > 1000000.0f)
+									   return CommandResult::Fail("viewDistance must be a finite number of metres in [0,1000000]");
+							   }
+							   const auto inspection = m_Renderer->InspectGI(*position, *normal, *view, viewDistance);
+							   if (!inspection)
+								   return CommandResult::Fail("No initialized GI data at this position, or GPU readback failed");
+							   auto vector = [](const glm::vec4& v) { return json::array({v.x, v.y, v.z}); };
+							   auto ray = [&vector](const GPU::ProbeVisibilityRay& value) {
+								   return json{{"origin", vector(value.OriginLength)}, {"end", vector(value.EndOffset)}, {"length", value.OriginLength.w}, {"epsilon", value.EndOffset.w}, {"hitPosition", vector(value.HitPositionDistance)}, {"hitDistance", value.HitPositionDistance.w}, {"triangle", value.Metadata.x}, {"material", value.Metadata.y}, {"blocked", value.Metadata.z != 0}, {"backface", (value.Metadata.w & 1) != 0}, {"reliable", (value.Metadata.w & 2) == 0}};
+							   };
+							   bool surfaceReliable = true, biasedReliable = true;
+							   json neighbours = json::array();
+							   for (const auto& neighbour : inspection->Neighbours)
+							   {
+								   if (neighbour.Metadata.y != 0 && neighbour.Weights.x > 0.0f)
+								   {
+									   surfaceReliable &= (neighbour.SurfaceRay.Metadata.w & 2) == 0;
+									   biasedReliable &= (neighbour.BiasedRay.Metadata.w & 2) == 0;
+								   }
+								   neighbours.push_back({{"index", neighbour.Metadata.x}, {"active", neighbour.Metadata.y != 0}, {"position", {neighbour.PositionDistance.x, neighbour.PositionDistance.y, neighbour.PositionDistance.z}}, {"distance", neighbour.PositionDistance.w}, {"meanDistance", neighbour.Moments.x}, {"secondMoment", neighbour.Moments.y}, {"distanceSupportMass", neighbour.Sampling.x}, {"distanceExpectedMass", neighbour.Sampling.y}, {"distanceConfidence", neighbour.Sampling.z}, {"rawVariance", neighbour.Moments.z}, {"variance", neighbour.Moments.w}, {"trilinear", neighbour.Weights.x}, {"facing", neighbour.Weights.y}, {"visibility", neighbour.Weights.z}, {"weight", neighbour.Weights.w}, {"normalizedWeight", neighbour.IrradianceWeight.w}, {"irradiance", {neighbour.IrradianceWeight.x, neighbour.IrradianceWeight.y, neighbour.IrradianceWeight.z}}, {"surfaceRay", ray(neighbour.SurfaceRay)}, {"biasedRay", ray(neighbour.BiasedRay)}});
+							   }
+							   return CommandResult::Ok({{"irradiance", {inspection->Irradiance.x, inspection->Irradiance.y, inspection->Irradiance.z}},
+														 {"surfaceReliable", surfaceReliable},
+														 {"biasedReliable", biasedReliable},
+														 {"surfaceRejected", vector(inspection->SurfaceRejected)},
+														 {"surfaceExact", vector(inspection->SurfaceExact)},
+														 {"biasedRejected", vector(inspection->BiasedRejected)},
+														 {"biasedExact", vector(inspection->BiasedExact)},
+														 {"weightSum", inspection->Summary.x},
+														 {"activeNeighbours", inspection->Summary.y},
+														 {"neighbours", std::move(neighbours)}});
+						   }});
 	}
 
 	void EditorLayer::EnsureViewportTarget(uint32_t width, uint32_t height)
@@ -303,6 +390,18 @@ namespace Paralax::Editor {
 		if (!m_Renderer)
 			return CommandResult::Fail("The renderer is not available");
 
+		if (m_Context.IsPlaying() && !m_Context.IsPaused())
+			return CommandResult::Fail("Pause play mode before capturing");
+		uint32_t warmup = 0;
+		if (params.contains("giWarmupFrames"))
+		{
+			if (params["giWarmupFrames"] < 0 || params["giWarmupFrames"] > 1024)
+				return CommandResult::Fail("giWarmupFrames must be 0..1024");
+			warmup = params["giWarmupFrames"].get<uint32_t>();
+			if (warmup > 0 && (!m_Renderer->GetGIState().Available || !m_Renderer->GetSettings().GIFreeze))
+				return CommandResult::Fail("Warmup requires GIFreeze and an enabled, supported volume rendered at least once");
+		}
+
 		const int64_t width = params.value("width", int64_t(1280));
 		const int64_t height = params.value("height", int64_t(720));
 		if (width < 16 || height < 16 || width > 8192 || height > 8192)
@@ -334,6 +433,22 @@ namespace Paralax::Editor {
 			return CommandResult::Fail("camera must be \"scene\" or \"editor\"");
 		}
 
+		if (warmup > 0)
+		{
+			const uint32_t before = m_Renderer->GetGIState().Updates;
+			if (!m_Renderer->QueueGIUpdates(warmup))
+				return CommandResult::Fail("Could not queue GI warmup updates");
+			for (uint32_t frame = 0; frame < warmup; ++frame)
+			{
+				m_Renderer->Render(scene, view, framebuffer);
+				auto& graphics = Application::Get().GetGraphicsDevice();
+				graphics.WaitForIdle();
+				graphics.CollectGarbage();
+			}
+			const GIState after = m_Renderer->GetGIState();
+			if (after.Queued != 0 || after.Updates != before + warmup)
+				return CommandResult::Fail("GI did not complete warmup; inspect render.gi.state");
+		}
 		m_Renderer->Render(scene, view, framebuffer);
 		Image image = ReadbackTexture(device, texture);
 		std::error_code error;

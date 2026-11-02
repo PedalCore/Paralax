@@ -501,7 +501,7 @@ namespace Paralax::Editor {
 						   }});
 
 		// --- Rendering -------------------------------------------------------------------------------
-		registry.Register({"render.capture", "Renders the scene to a PNG (from the primary camera, or the editor camera).", {{"path", "string", "Output PNG path.", true}, {"width", "integer", "Width in pixels (default 1280).", false}, {"height", "integer", "Height in pixels (default 720).", false}, {"camera", "string", "\"scene\" (primary camera) or \"editor\".", false}}, false, [](EditorContext& context, const json& params) {
+		registry.Register({"render.capture", "Renders the scene to a PNG (from the primary camera, or the editor camera).", {{"path", "string", "Output PNG path.", true}, {"width", "integer", "Width in pixels (default 1280).", false}, {"height", "integer", "Height in pixels (default 720).", false}, {"camera", "string", "\"scene\" (primary camera) or \"editor\".", false}, {"giWarmupFrames", "integer", "Exact GI updates before capture (0..1024); requires GIFreeze.", false}}, false, [](EditorContext& context, const json& params) {
 							   if (!context.GetCaptureHandler())
 								   return CommandResult::Fail("Rendering is not available (no graphics device)");
 							   return context.GetCaptureHandler()(params);

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace Paralax {
 
@@ -85,9 +86,11 @@ namespace Paralax {
 		nvrhi::BindingSetHandle bindings[2] = {m_ForwardBindings[0], m_ForwardBindings[1]};
 		for (uint32_t i = 0; i < 2; ++i)
 		{
+			desc.width = desc.height = 8;
 			desc.debugName = "ProbeIrradiance";
 			if (recreate)
 				irradiance[i] = m_Factory.CreateTexture(m_Device, desc);
+			desc.width = desc.height = GPU::ProbeDistanceTileSize;
 			desc.debugName = "ProbeDistanceMoments";
 			if (recreate)
 				distance[i] = m_Factory.CreateTexture(m_Device, desc);
@@ -166,6 +169,69 @@ namespace Paralax {
 		commands->writeBuffer(m_Constants, &m_Parameters, sizeof(m_Parameters));
 	}
 
+	std::optional<GPU::ProbeInspection> ProbeGI::Inspect(glm::vec3 position, glm::vec3 normal, glm::vec3 view, float viewDistance)
+	{
+		auto finite = [](glm::vec3 value) { return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z); };
+		if (!m_HasHistory || !std::isfinite(viewDistance) || viewDistance < 0.0f || viewDistance > 1000000.0f || !finite(position) || !finite(normal) || !finite(view) ||
+			glm::any(glm::greaterThan(glm::abs(position), glm::vec3(ProbeTraceScene::MaxCoordinate))) ||
+			!std::isfinite(glm::length(normal)) || !std::isfinite(glm::length(view)) || glm::length(normal) < 1e-6f || glm::length(view) < 1e-6f)
+			return std::nullopt;
+		const glm::vec3 gridPosition = (position - glm::vec3(m_Parameters.Origin)) / glm::vec3(m_Parameters.Spacing);
+		if (glm::any(glm::lessThan(gridPosition, glm::vec3(0.0f))) || glm::any(glm::greaterThan(gridPosition, glm::vec3(m_Parameters.Grid) - 1.0f)))
+			return std::nullopt;
+		struct InspectionConstants
+		{
+			GPU::ProbeGIConstants Probe;
+			glm::vec4 Position, Normal, View;
+		};
+		static_assert(sizeof(InspectionConstants) == 160);
+		const InspectionConstants parameters{m_Parameters, glm::vec4(position, 0.0f), glm::vec4(glm::normalize(normal), 0.0f), glm::vec4(glm::normalize(view), viewDistance)};
+		nvrhi::BindingLayoutDesc layoutDesc;
+		layoutDesc.visibility = nvrhi::ShaderType::Compute;
+		layoutDesc.bindings = {nvrhi::BindingLayoutItem::ConstantBuffer(0), nvrhi::BindingLayoutItem::ConstantBuffer(2),
+							   nvrhi::BindingLayoutItem::StructuredBuffer_SRV(0), nvrhi::BindingLayoutItem::StructuredBuffer_SRV(1),
+							   nvrhi::BindingLayoutItem::StructuredBuffer_SRV(2), nvrhi::BindingLayoutItem::StructuredBuffer_SRV(3),
+							   nvrhi::BindingLayoutItem::Texture_SRV(6), nvrhi::BindingLayoutItem::Texture_SRV(7), nvrhi::BindingLayoutItem::StructuredBuffer_UAV(3)};
+		auto layout = m_Device->createBindingLayout(layoutDesc);
+		auto shader = ShaderLibrary::CreateShader(m_Device, "ProbeGI", "InspectProbeGI", nvrhi::ShaderType::Compute);
+		if (!layout || !shader)
+			return std::nullopt;
+		auto pipeline = m_Device->createComputePipeline(nvrhi::ComputePipelineDesc().setComputeShader(shader).addBindingLayout(layout));
+		auto constants = m_Factory.CreateBuffer(m_Device, nvrhi::BufferDesc().setByteSize(sizeof(parameters)).setIsConstantBuffer(true).setInitialState(nvrhi::ResourceStates::ConstantBuffer).setKeepInitialState(true));
+		auto result = m_Factory.CreateBuffer(m_Device, nvrhi::BufferDesc().setByteSize(sizeof(GPU::ProbeInspection)).setStructStride(sizeof(GPU::ProbeInspection)).setCanHaveUAVs(true).setInitialState(nvrhi::ResourceStates::UnorderedAccess).setKeepInitialState(true));
+		auto staging = m_Factory.CreateBuffer(m_Device, nvrhi::BufferDesc().setByteSize(sizeof(GPU::ProbeInspection)).setCpuAccess(nvrhi::CpuAccessMode::Read).setInitialState(nvrhi::ResourceStates::CopyDest).setKeepInitialState(true));
+		auto commands = m_Device->createCommandList();
+		if (!pipeline || !constants || !result || !staging || !commands)
+			return std::nullopt;
+		nvrhi::BindingSetDesc bindingsDesc;
+		bindingsDesc.bindings = {nvrhi::BindingSetItem::ConstantBuffer(0, constants), nvrhi::BindingSetItem::ConstantBuffer(2, constants),
+								 nvrhi::BindingSetItem::StructuredBuffer_SRV(0, m_Nodes), nvrhi::BindingSetItem::StructuredBuffer_SRV(1, m_Triangles),
+								 nvrhi::BindingSetItem::StructuredBuffer_SRV(2, m_Materials), nvrhi::BindingSetItem::StructuredBuffer_SRV(3, m_Texels),
+								 nvrhi::BindingSetItem::Texture_SRV(6, GetIrradiance()), nvrhi::BindingSetItem::Texture_SRV(7, GetDistance()),
+								 nvrhi::BindingSetItem::StructuredBuffer_UAV(3, result)};
+		auto bindings = m_Factory.CreateBindingSet(m_Device, bindingsDesc, layout);
+		if (!bindings)
+			return std::nullopt;
+		commands->open();
+		commands->writeBuffer(constants, &parameters, sizeof(parameters));
+		nvrhi::ComputeState state;
+		state.pipeline = pipeline;
+		state.bindings = {bindings};
+		commands->setComputeState(state);
+		commands->dispatch(1, 1, 1);
+		commands->copyBuffer(staging, 0, result, 0, sizeof(GPU::ProbeInspection));
+		commands->close();
+		m_Device->executeCommandList(commands);
+		m_Device->waitForIdle();
+		const void* mapped = m_Device->mapBuffer(staging, nvrhi::CpuAccessMode::Read);
+		if (!mapped)
+			return std::nullopt;
+		GPU::ProbeInspection inspection;
+		std::memcpy(&inspection, mapped, sizeof(inspection));
+		m_Device->unmapBuffer(staging);
+		return inspection;
+	}
+
 	bool ProbeGI::Update(Scene& scene, AssetManager& assets, const ProbeGISpecification& spec, nvrhi::ICommandList* commands,
 						 nvrhi::IBuffer* viewConstants, nvrhi::IBuffer* lights, nvrhi::ITexture* environment, uint32_t lightCount)
 	{
@@ -180,7 +246,7 @@ namespace Paralax {
 			spec.RaysPerProbe < 32 || spec.RaysPerProbe > 256 || spec.ProbesPerFrame == 0 || spec.ProbesPerFrame > 1728 ||
 			!std::isfinite(spec.Hysteresis) || spec.Hysteresis < 0.0f || spec.Hysteresis > 0.99f ||
 			!std::isfinite(spec.NormalBias) || spec.NormalBias < 0.0f || spec.NormalBias > spec.Spacing * 0.5f ||
-			!std::isfinite(spec.ViewBias) || spec.ViewBias < 0.0f || spec.ViewBias > spec.Spacing * 0.5f)
+			!std::isfinite(spec.ViewBias) || spec.ViewBias < 0.0f || spec.ViewBias > 0.5f)
 			return false;
 		const uint32_t count = spec.Counts.x * spec.Counts.y * spec.Counts.z;
 		if (count > m_Limits.MaxTextureArrayLayers || uint64_t(count) * spec.RaysPerProbe * sizeof(glm::vec4) > m_Limits.MaxStorageBufferBytes)
@@ -207,7 +273,8 @@ namespace Paralax {
 			m_Origin = spec.Origin;
 			m_Spacing = spec.Spacing;
 		}
-		const uint32_t updates = reset ? count : std::min(spec.ProbesPerFrame, count);
+		const uint32_t updates = reset ? count : spec.FreezeUpdates ? 0
+																	: std::min(spec.ProbesPerFrame, count);
 		const uint64_t rayBytes = uint64_t(updates) * spec.RaysPerProbe * sizeof(glm::vec4);
 		if (!m_Rays || m_Rays->getDesc().byteSize < rayBytes)
 		{
@@ -220,9 +287,13 @@ namespace Paralax {
 		m_Parameters.Spacing = glm::vec4(glm::vec3(spec.Spacing), 100000.0f);
 		m_Parameters.Grid = glm::uvec4(spec.Counts, count);
 		m_Parameters.Update = {m_Cursor, updates, spec.RaysPerProbe, m_Frame};
-		m_Parameters.Scene = {static_cast<uint32_t>(m_Scene.GetNodes().size()), lightCount, 0, 0};
-		m_Parameters.Tuning = {spec.NormalBias, spec.ViewBias, reset ? 0.0f : spec.Hysteresis, spec.Spacing * 3.0f};
+		m_Parameters.Scene = {static_cast<uint32_t>(m_Scene.GetNodes().size()), lightCount, GPU::ProbeDistanceTileSize, 0};
+		m_Parameters.Tuning = {spec.NormalBias, spec.ViewBias * spec.Spacing, reset ? 0.0f : spec.Hysteresis, spec.Spacing * 3.0f};
+		m_Parameters.Diagnostics = {spec.DebugProbe >= 0 && static_cast<uint32_t>(spec.DebugProbe) < count ? static_cast<float>(spec.DebugProbe) : -1.0f,
+									spec.VisibilityWeighting ? 1.0f : 0.0f, spec.BounceFeedback ? 1.0f : 0.0f, 0.0f};
 		commands->writeBuffer(m_Constants, &m_Parameters, sizeof(m_Parameters));
+		if (updates == 0)
+			return true;
 		const uint32_t next = 1 - m_Current;
 		// Filtering copies unchanged probes. Separate read/write volumes prevent bounce-order dependence.
 		nvrhi::BindingSetDesc set;
@@ -252,9 +323,12 @@ namespace Paralax {
 		state.bindings = {bindings};
 		commands->setComputeState(state);
 		commands->dispatch((spec.RaysPerProbe + 63) / 64, updates, 1);
+		// Both dispatches reuse the same bindings, so NVRHI does not infer the ray-buffer UAV
+		// dependency. The next setComputeState commits this barrier before filtering reads the rays.
+		commands->setBufferState(m_Rays, nvrhi::ResourceStates::UnorderedAccess);
 		state.pipeline = m_FilterPipeline;
 		commands->setComputeState(state);
-		commands->dispatch(count, 1, 1);
+		commands->dispatch(GPU::ProbeDistanceTileSize / 8, GPU::ProbeDistanceTileSize / 8, count);
 		m_Current = next;
 		m_Cursor = (m_Cursor + updates) % count;
 		++m_Frame;
