@@ -202,6 +202,49 @@ TEST_CASE("Application graphics: Shutdown fails the run with exit code 3 for val
 	}
 }
 
+TEST_CASE("Application graphics: if an OnDetach fails partway through Shutdown, the remaining layers are destroyed before the device")
+{
+	Paralax::Testing::ReleaseTestGraphicsDevice();
+	if (!Paralax::Testing::RequireTestGraphicsDevice())
+		return;
+	Paralax::Testing::ReleaseTestGraphicsDevice();
+
+	// Never detached (Shutdown stops above it); records whether the device outlived it, as its GPU objects need.
+	class DeviceProbeLayer : public Layer
+	{
+	public:
+		explicit DeviceProbeLayer(bool& destroyedBeforeDevice)
+			: m_DestroyedBeforeDevice(destroyedBeforeDevice)
+		{
+		}
+		~DeviceProbeLayer() override { m_DestroyedBeforeDevice = Application::Exists() && Application::Get().HasGraphics(); }
+
+	private:
+		bool& m_DestroyedBeforeDevice;
+	};
+
+	class FailingDetachLayer : public Layer
+	{
+	public:
+		void OnDetach() override { PX_VERIFY(!m_Fail, "deliberate OnDetach failure"); }
+
+	private:
+		bool m_Fail = true;
+	};
+
+	bool destroyedBeforeDevice = false;
+	{
+		Application app(GraphicsSpecification(1));
+		REQUIRE(app.IsInitialized());
+		app.PushLayer<DeviceProbeLayer>(destroyedBeforeDevice);
+		app.PushLayer<FailingDetachLayer>();
+		Paralax::Testing::ScopedAssertionCapture capture;
+		CHECK_THROWS_AS(app.Shutdown(), Paralax::Testing::AssertionFailedError);
+	}
+	CHECK(destroyedBeforeDevice);
+	CHECK_FALSE(Application::Exists());
+}
+
 TEST_CASE("Application graphics: disabled graphics never calls OnRender and has no device")
 {
 	class RenderCounter : public Layer

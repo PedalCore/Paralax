@@ -59,7 +59,7 @@ cmake --preset debug && cmake --build build/debug && ctest --preset debug -j8
   - Use `GPUTestContext.h`. GPU tests run on lavapipe headless with validation, including the layer's synchronization validation (a resource read or written without a barrier ordering it after the previous access is a validation error), and must leave the validation error count unchanged. NVRHI re-places barriers for a draw or dispatch only when one of its binding sets changed or a copy, clear or write preceded it: two dispatches that share one binding set need an explicit `setBufferState`/`setTextureState` between them, committed by the next state-setting call (or `commitBarriers()`).
   - If no Vulkan device is available they pass with a warning, unless `PX_REQUIRE_GPU=1` is set, as it is on Linux CI.
   - Tests write images to `TestOutput/` in the test working directory. CI uploads them as artifacts.
-- **Automated runs.** `--validation` makes any validation error exit with code 3. The Xvfb smoke test exercises real swapchain presentation.
+- **Automated runs.** `--validation` makes a validation error fail the run with exit code 3, unless an earlier failure already set a code (for example 4 for script errors with `--fail-on-script-error`): the first code requested wins, and validation is checked last (see `Application::SetExitCode`). The Xvfb smoke test exercises real swapchain presentation.
 
 ## Scenes, components and assets
 

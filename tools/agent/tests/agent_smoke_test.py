@@ -226,7 +226,8 @@ def main() -> int:
             editor.process.wait()
         raise
     code = editor.quit()
-    # --validation turns any Vulkan validation error into exit code 3.
+    # With --validation a Vulkan validation error fails the run (exit code 3, unless an earlier failure already set a
+    # code), so 0 also means there were none.
     check(code == 0, f"editor exited with code {code}")
 
     project = output / "Project"

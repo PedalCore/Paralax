@@ -125,16 +125,16 @@ if(TARGET Paralax-Runtime)
 		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp")
 
 	# The converse, which proves the check above can fail: cut short, the feature script's OnDestroy reports that it
-	# did not finish, and the run must exit with exactly the script error code (not merely fail, or crash). It runs in
-	# its own directory so its Logs/Runtime.log does not interleave with the other runtime tests' when run in parallel.
-	set(PX_SHORT_FEATURE_TEST_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/TestOutput/FeatureTestShortRun")
-	file(MAKE_DIRECTORY "${PX_SHORT_FEATURE_TEST_DIRECTORY}")
+	# did not finish, and the run must exit with exactly the script error code (not merely fail, or crash). The runtime
+	# runs in its own directory (which the wrapper creates, so deleting TestOutput is harmless) so that its
+	# Logs/Runtime.log does not interleave with the other runtime tests' when run in parallel.
 	add_test(NAME "FeatureTest: a run too short to finish the feature scene exits with the script error code"
 		COMMAND "${CMAKE_COMMAND}" -DEXPECTED_EXIT_CODE=4 "-DEXPECTED_OUTPUT=did not run to completion" -DTIMEOUT_SECONDS=240
+			"-DWORKING_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/TestOutput/FeatureTestShortRun"
 			-P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/ExpectExitCode.cmake" --
 			$<TARGET_FILE:Paralax-Runtime> --project "${CMAKE_CURRENT_SOURCE_DIR}/FeatureTest" --headless --frames 10
 			--fixed-timestep 0.0166667 --fail-on-script-error
-		WORKING_DIRECTORY "${PX_SHORT_FEATURE_TEST_DIRECTORY}")
+		WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 	set_tests_properties("FeatureTest: a run too short to finish the feature scene exits with the script error code" PROPERTIES
 		TIMEOUT 300
 		LABELS "smoke;gpu"

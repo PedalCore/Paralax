@@ -141,6 +141,37 @@ namespace {
 		}
 	};
 
+	// Fails a verify in OnDetach after logging it (a test's assertion capture turns that into an exception), as a
+	// failing REQUIRE in a test layer's OnDetach would.
+	class FailingDetachLayer : public LifecycleLayer
+	{
+	public:
+		using LifecycleLayer::LifecycleLayer;
+		void OnDetach() override
+		{
+			LifecycleLayer::OnDetach();
+			PX_VERIFY(!m_Fail, "deliberate OnDetach failure");
+		}
+
+	private:
+		bool m_Fail = true;
+	};
+
+	// Also logs whether the application still existed when the layer was destroyed.
+	class DestructionProbeLayer : public LifecycleLayer
+	{
+	public:
+		DestructionProbeLayer(std::string name, std::vector<std::string>& log)
+			: LifecycleLayer(std::move(name), log)
+			, m_ProbeLog(log)
+		{
+		}
+		~DestructionProbeLayer() override { m_ProbeLog.push_back(GetName() + (Application::Exists() ? ":application exists" : ":application gone")); }
+
+	private:
+		std::vector<std::string>& m_ProbeLog;
+	};
+
 }
 
 TEST_CASE("Application: runs for MaxFrames with a fixed timestep")
@@ -671,6 +702,29 @@ TEST_CASE("Application: calls to Shutdown while it runs, from OnShutdown or a de
 	CHECK(shutdownCalls == 1);
 	CHECK(log == std::vector<std::string>{"OnShutdown", "Overlay:detach", "Reentrant:detach", "Bottom:detach",
 										  "Overlay:destroy", "Reentrant:destroy", "Bottom:destroy"});
+}
+
+TEST_CASE("Application: if an OnDetach fails partway through Shutdown, the destructor destroys the remaining layers without detaching any again")
+{
+	std::vector<std::string> log;
+	{
+		Application app(TestSpecification(1));
+		app.PushLayer<DestructionProbeLayer>("Bottom", log);
+		app.PushLayer<FailingDetachLayer>("Failing", log);
+		app.PushLayer<DestructionProbeLayer>("Top", log);
+		log.clear();
+		{
+			ScopedAssertionCapture capture;
+			CHECK_THROWS_AS(app.Shutdown(), AssertionFailedError);
+		}
+		// Shutdown stopped at the failure: Bottom was never detached, and nothing has been destroyed yet.
+		CHECK(log == std::vector<std::string>{"Top:detach", "Failing:detach"});
+		log.clear();
+	}
+	// ~Application destroys them itself, in reverse stack order, while it still exists: before it releases the device
+	// and window (see the graphics test of the same case) and unregisters. No layer is detached a second time.
+	CHECK(log == std::vector<std::string>{"Top:application exists", "Top:destroy", "Failing:destroy", "Bottom:application exists", "Bottom:destroy"});
+	CHECK_FALSE(Application::Exists());
 }
 
 TEST_CASE("Application: Shutdown from inside Run or a layer callback is a verified precondition")
