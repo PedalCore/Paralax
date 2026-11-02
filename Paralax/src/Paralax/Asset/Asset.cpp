@@ -1,6 +1,8 @@
 #include "pxpch.h"
 #include "Paralax/Asset/Asset.h"
 
+#include "Paralax/Core/PathEncoding.h"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -52,7 +54,7 @@ namespace Paralax {
 
 	AssetType AssetTypeFromExtension(const std::filesystem::path& path)
 	{
-		std::string extension = path.extension().string();
+		std::string extension = ToUtf8(path.extension());
 		std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
 		if (extension == ".png" || extension == ".jpg" || extension == ".jpeg" || extension == ".tga" || extension == ".bmp")

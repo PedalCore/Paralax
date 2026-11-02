@@ -2,6 +2,7 @@
 #include "Paralax/Scene/Prefab.h"
 
 #include "Paralax/Core/JsonText.h"
+#include "Paralax/Core/PathEncoding.h"
 #include "Paralax/Scene/Components.h"
 #include "Paralax/Scene/SceneSerializer.h"
 
@@ -45,30 +46,30 @@ namespace Paralax {
 		const uintmax_t size = std::filesystem::file_size(path, error);
 		if (error || size > MaxFileBytes)
 		{
-			PX_CORE_ERROR("Cannot load prefab '{}': {}", path.string(), error ? error.message() : "the file is too large");
+			PX_CORE_ERROR("Cannot load prefab '{}': {}", ToUtf8(path), error ? error.message() : "the file is too large");
 			return nullptr;
 		}
 		std::string text;
 		if (!ReadTextFile(path, text))
 		{
-			PX_CORE_ERROR("Cannot open prefab '{}'", path.string());
+			PX_CORE_ERROR("Cannot open prefab '{}'", ToUtf8(path));
 			return nullptr;
 		}
 		if (JsonExceedsDepth(text, MaxJsonDepth))
 		{
-			PX_CORE_ERROR("Prefab '{}' nests too deeply", path.string());
+			PX_CORE_ERROR("Prefab '{}' nests too deeply", ToUtf8(path));
 			return nullptr;
 		}
 		const nlohmann::json document = nlohmann::json::parse(text, nullptr, false);
 		if (document.is_discarded())
 		{
-			PX_CORE_ERROR("Prefab '{}' is not valid JSON", path.string());
+			PX_CORE_ERROR("Prefab '{}' is not valid JSON", ToUtf8(path));
 			return nullptr;
 		}
 		std::string message;
 		Ref<PrefabAsset> prefab = FromJson(document, message);
 		if (!prefab)
-			PX_CORE_ERROR("Cannot load prefab '{}': {}", path.string(), message);
+			PX_CORE_ERROR("Cannot load prefab '{}': {}", ToUtf8(path), message);
 		return prefab;
 	}
 
@@ -79,7 +80,7 @@ namespace Paralax {
 
 	bool PrefabAsset::SaveToFile(const std::filesystem::path& path) const
 	{
-		return WriteFileAtomically(path, ToJson().dump(1, '\t') + "\n");
+		return WriteFileAtomically(path, FormatJsonDocument(ToJson()));
 	}
 
 	Entity PrefabAsset::GetRoot() const

@@ -1,6 +1,7 @@
 #include "EditorCore/EditorContext.h"
 
 #include <Paralax/Core/EngineResources.h>
+#include <Paralax/Core/PathEncoding.h>
 #include <Paralax/Project/Project.h>
 #include <Paralax/Scene/SceneSerializer.h>
 
@@ -16,25 +17,14 @@ namespace Paralax::Editor {
 	namespace {
 
 		// Marks a directory as a Paralax export and lists the files it wrote (one generic relative path per line after
-		// the header). Only a marked directory is ever replaced, and only if it holds nothing but those files.
+		// the header, in UTF-8 on every platform, as ToUtf8 writes them). Only a marked directory is ever replaced,
+		// and only if it holds nothing but those files.
 		constexpr const char* ExportMarker = ".paralax-export";
 		constexpr std::string_view MarkerHeader = "Paralax export";
 		// Siblings of the output used while exporting: the new export is assembled in the staging directory and the
 		// previous one is moved aside, so a failure never leaves a half-written export in place.
 		constexpr const char* StagingSuffix = ".paralax-staging";
 		constexpr const char* RetiredSuffix = ".paralax-old";
-
-		// Paths travel as UTF-8 in commands; the conversions below never throw (unlike path::string() on Windows).
-		std::string ToUtf8(const std::filesystem::path& path)
-		{
-			const std::u8string text = path.generic_u8string();
-			return std::string(text.begin(), text.end());
-		}
-
-		std::filesystem::path FromUtf8(const std::string& text)
-		{
-			return std::filesystem::path(std::u8string(text.begin(), text.end()));
-		}
 
 		bool SameFile(const std::filesystem::path& a, const std::filesystem::path& b)
 		{
@@ -224,7 +214,7 @@ namespace Paralax::Editor {
 				return CommandResult::Fail("The output directory must not be inside the project or contain it");
 
 			const std::filesystem::path self = GetExecutablePath();
-			const std::filesystem::path runtime = self.parent_path() / ("Paralax-Runtime" + self.extension().string());
+			const std::filesystem::path runtime = self.parent_path() / FromUtf8("Paralax-Runtime" + ToUtf8(self.extension()));
 			if (!std::filesystem::is_regular_file(runtime, error))
 				return CommandResult::Fail(fmt::format("The runtime was not found at '{}'", ToUtf8(runtime)));
 			std::filesystem::path resources = GetEngineResourceDirectory();
@@ -269,7 +259,7 @@ namespace Paralax::Editor {
 				return CommandResult::Fail(message);
 			};
 			std::vector<std::string> files;
-			const std::string executable = ExecutableName(project->GetName()) + self.extension().string();
+			const std::string executable = ExecutableName(project->GetName()) + ToUtf8(self.extension());
 			std::filesystem::copy_file(runtime, staging / FromUtf8(executable), error);
 			if (error)
 				return abandon(fmt::format("Could not copy the runtime: {}", error.message()));
@@ -330,8 +320,8 @@ namespace Paralax::Editor {
 								   return CommandResult::Fail("No project is open");
 							   json startScene = nullptr;
 							   if (const AssetMetadata* metadata = project->GetAssetManager().GetMetadata(project->GetStartScene()))
-								   startScene = metadata->FilePath.generic_string();
-							   return CommandResult::Ok({{"name", project->GetName()}, {"directory", project->GetDirectory().generic_string()}, {"assets", project->GetAssetDirectory().generic_string()}, {"startScene", startScene}});
+								   startScene = ToUtf8(metadata->FilePath);
+							   return CommandResult::Ok({{"name", project->GetName()}, {"directory", ToUtf8(project->GetDirectory())}, {"assets", ToUtf8(project->GetAssetDirectory())}, {"startScene", startScene}});
 						   }});
 
 		registry.Register({"project.set_start_scene", "Sets the scene the game starts with (a saved .pxscene, relative to Assets) and saves the project.", {{"path", "string", "Scene file relative to Assets, e.g. Scenes/Main.pxscene.", true}}, false, [](EditorContext& context, const json& params) {
@@ -339,7 +329,7 @@ namespace Paralax::Editor {
 							   if (!project)
 								   return CommandResult::Fail("No project is open");
 							   std::string error;
-							   std::optional<std::filesystem::path> path = context.ResolveProjectPath(params["path"].get<std::string>(), error);
+							   std::optional<std::filesystem::path> path = context.ResolveProjectPath(FromUtf8(params["path"].get<std::string>()), error);
 							   if (!path)
 								   return CommandResult::Fail(error);
 							   if (AssetTypeFromExtension(*path) != AssetType::Scene)

@@ -126,7 +126,7 @@ namespace Paralax {
 		{
 			void* pointer = field.Access(object);
 			auto fail = [&](const char* expected) {
-				outError = fmt::format("Field '{}' expects {}, got {}", field.Name, expected, value.dump());
+				outError = fmt::format("Field '{}' expects {}, got {}", field.Name, expected, value.dump(-1, ' ', false, json::error_handler_t::replace));
 				return false;
 			};
 

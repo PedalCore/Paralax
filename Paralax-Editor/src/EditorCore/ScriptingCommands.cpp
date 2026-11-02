@@ -1,6 +1,8 @@
 #include "EditorCore/EditorContext.h"
 
 #include <Paralax/Asset/MeshImporter.h>
+#include <Paralax/Core/JsonText.h>
+#include <Paralax/Core/PathEncoding.h>
 #include <Paralax/Scene/Entity.h>
 #include <Paralax/Scene/ModelPrefab.h>
 #include <Paralax/Scene/Prefab.h>
@@ -44,7 +46,7 @@ return {name}
 		{
 			std::string name;
 			bool upper = true;
-			for (char c : path.stem().string())
+			for (char c : ToUtf8(path.stem()))
 			{
 				const bool alphanumeric = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
 				if (!alphanumeric)
@@ -69,7 +71,7 @@ return {name}
 				outError = "No project is open";
 				return std::nullopt;
 			}
-			std::filesystem::path path = requested;
+			std::filesystem::path path = FromUtf8(requested);
 			if (path.extension() != extension)
 				path += extension;
 			std::optional<std::filesystem::path> resolved = context.ResolveProjectPath(path, outError);
@@ -78,7 +80,7 @@ return {name}
 			std::error_code error;
 			if (std::filesystem::exists(*resolved, error))
 			{
-				outError = fmt::format("'{}' already exists", path.generic_string());
+				outError = fmt::format("'{}' already exists", ToUtf8(path));
 				return std::nullopt;
 			}
 			return resolved;
@@ -114,7 +116,7 @@ return {name}
 				handle = AssetHandle(id);
 			else
 			{
-				std::filesystem::path path = requested;
+				std::filesystem::path path = FromUtf8(requested);
 				if (path.extension() != ".lua")
 					path += ".lua";
 				std::optional<std::filesystem::path> resolved = context.ResolveProjectPath(path, outError);
@@ -135,7 +137,7 @@ return {name}
 			std::error_code error;
 			if (!std::filesystem::is_regular_file(*file, error))
 			{
-				outError = fmt::format("The script file '{}' is missing", metadata->FilePath.generic_string());
+				outError = fmt::format("The script file '{}' is missing", ToUtf8(metadata->FilePath));
 				return std::nullopt;
 			}
 			return std::pair{handle, *file};
@@ -150,7 +152,7 @@ return {name}
 			auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
 			if (ec == std::errc() && ptr == text.data() + text.size() && !text.empty())
 				return AssetHandle(value);
-			return context.GetAssets().GetHandleForPath(text);
+			return context.GetAssets().GetHandleForPath(FromUtf8(text));
 		}
 
 	}
@@ -179,7 +181,7 @@ return {name}
 							   const AssetHandle handle = ImportNewFile(context, *path);
 							   if (!handle.IsValid())
 								   return CommandResult::Fail("Import failed (see the log for details: console.get)");
-							   return CommandResult::Ok({{"handle", IdString(handle)}, {"path", context.GetAssets().GetMetadata(handle)->FilePath.generic_string()}});
+							   return CommandResult::Ok({{"handle", IdString(handle)}, {"path", ToUtf8(context.GetAssets().GetMetadata(handle)->FilePath)}});
 						   }});
 
 		registry.Register({"script.get", "Returns a script's source as it is on disk.", {{"path", "string", "Script relative to Assets (e.g. Scripts/Player.lua), or its handle.", true}}, false, [](EditorContext& context, const json& params) {
@@ -191,7 +193,7 @@ return {name}
 							   Ref<ScriptAsset> script = ScriptAsset::LoadFromFile(found->second);
 							   if (!script)
 								   return CommandResult::Fail("The script could not be read (see the log for details: console.get)");
-							   return CommandResult::Ok({{"handle", IdString(found->first)}, {"path", context.GetAssets().GetMetadata(found->first)->FilePath.generic_string()}, {"source", script->Source}});
+							   return CommandResult::Ok({{"handle", IdString(found->first)}, {"path", ToUtf8(context.GetAssets().GetMetadata(found->first)->FilePath)}, {"source", script->Source}});
 						   }});
 
 		registry.Register({"script.update", "Replaces an existing script's source on disk. A running game keeps the code it started with; the change applies from the next play.start (at once when not playing).", {{"path", "string", "Script relative to Assets, or its handle.", true}, {"source", "string", "The new Lua source; the chunk must return a table.", true}}, false, [](EditorContext& context, const json& params) {
@@ -280,18 +282,18 @@ return {name}
 							   std::string error;
 
 							   // Resolve everything that can fail cheaply before importing anything.
-							   const std::filesystem::path requested = params["model"].get<std::string>();
+							   const std::filesystem::path requested = FromUtf8(params["model"].get<std::string>());
 							   AssetHandle handle = ResolveAsset(context, params["model"]);
 							   std::filesystem::path registryPath;
 							   if (const AssetMetadata* metadata = handle.IsValid() ? assets.GetMetadata(handle) : nullptr)
 								   registryPath = metadata->FilePath;
 							   else
 								   registryPath = requested;
-							   std::string extension = registryPath.extension().string();
+							   std::string extension = ToUtf8(registryPath.extension());
 							   std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 							   if (extension != ".gltf" && extension != ".glb")
 								   return CommandResult::Fail("Not a model: expected a .gltf or .glb file in the project, or its handle");
-							   const std::string stem = registryPath.stem().string();
+							   const std::string stem = ToUtf8(registryPath.stem());
 							   const std::string destination = params.contains("path") ? params["path"].get<std::string>() : "Prefabs/" + stem + ".pxprefab";
 							   std::optional<std::filesystem::path> path = NewAssetPath(context, destination, ".pxprefab", error);
 							   if (!path)
@@ -332,7 +334,7 @@ return {name}
 							   Ref<PrefabAsset> prefab = BuildModelPrefab(model, rootName, error, &warnings);
 							   if (!prefab)
 								   return CommandResult::Fail(error);
-							   if (prefab->ToJson().dump(1, '\t').size() + 1 > PrefabAsset::MaxFileBytes)
+							   if (FormatJsonDocument(prefab->ToJson()).size() > PrefabAsset::MaxFileBytes)
 								   return CommandResult::Fail(fmt::format("The model has too many objects for one prefab ({} entities)", prefab->GetEntityCount()));
 							   std::error_code directoryError;
 							   std::filesystem::create_directories(path->parent_path(), directoryError);

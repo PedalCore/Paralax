@@ -1,6 +1,8 @@
 #include "pxpch.h"
 #include "Paralax/Audio/AudioClip.h"
 
+#include "Paralax/Core/PathEncoding.h"
+
 #include <miniaudio.h>
 
 #include <fstream>
@@ -9,8 +11,7 @@ namespace Paralax {
 
 	Ref<AudioClip> AudioClip::LoadFromFile(const std::filesystem::path& path)
 	{
-		const std::u8string utf8 = path.generic_u8string();
-		const std::string name(utf8.begin(), utf8.end());
+		const std::string name = ToUtf8(path);
 		std::error_code error;
 		const uintmax_t size = std::filesystem::file_size(path, error);
 		if (error || size == 0 || size > MaxEncodedBytes)

@@ -1,6 +1,7 @@
 #include "EditorCore/EditorContext.h"
 
 #include <Paralax/Core/Input.h>
+#include <Paralax/Core/PathEncoding.h>
 #include <Paralax/Events/ApplicationEvent.h>
 #include <Paralax/Scene/Entity.h>
 #include <Paralax/Scene/SceneSerializer.h>
@@ -57,7 +58,7 @@ namespace Paralax::Editor {
 		std::optional<std::filesystem::path> registryPath = assets.ToRegistryPath(path);
 		if (!registryPath)
 		{
-			outError = fmt::format("'{}' is outside the project's asset directory", path.generic_string());
+			outError = fmt::format("'{}' is outside the project's asset directory", ToUtf8(path));
 			return std::nullopt;
 		}
 		return assets.ToAbsolutePath(*registryPath);
@@ -71,7 +72,7 @@ namespace Paralax::Editor {
 			return std::nullopt;
 		}
 		auto hasExtension = [extension](const std::filesystem::path& candidate) {
-			std::string actual = candidate.extension().string();
+			std::string actual = ToUtf8(candidate.extension());
 			std::transform(actual.begin(), actual.end(), actual.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 			return actual == extension;
 		};
@@ -90,7 +91,7 @@ namespace Paralax::Editor {
 		const std::filesystem::path relative = resolved.lexically_relative(base);
 		if (relative.empty() || *relative.begin() == "..")
 		{
-			outError = fmt::format("'{}' is outside the project directory", path.generic_string());
+			outError = fmt::format("'{}' is outside the project directory", ToUtf8(path));
 			return std::nullopt;
 		}
 		return resolved;

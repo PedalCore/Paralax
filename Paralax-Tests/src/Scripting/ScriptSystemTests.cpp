@@ -5,6 +5,7 @@
 #include <Paralax/Asset/AssetManager.h>
 #include <Paralax/Audio/AudioSystem.h>
 #include <Paralax/Core/Input.h>
+#include <Paralax/Core/PathEncoding.h>
 #include <Paralax/Events/KeyEvent.h>
 #include <Paralax/Physics/PhysicsSystem.h>
 #include <Paralax/Scene/Components.h>
@@ -316,6 +317,15 @@ TEST_CASE("ScriptSystem: prefabs are instantiated by handle or path with a paren
 		CHECK(error.find("position must be finite") != std::string::npos);
 	}
 	CHECK(fixture.Eval("Scene.GetEntityCount()") == count);
+
+	// Paths from scripts are UTF-8 on every platform ("Kiste-é.pxprefab").
+	const std::string utf8Name = "Kiste-\xC3\xA9.pxprefab";
+	REQUIRE(prefab->SaveToFile(directory / FromUtf8(utf8Name)));
+	REQUIRE(fixture.Assets.ImportAsset(FromUtf8(utf8Name)).IsValid());
+	CHECK(fixture.Eval("Scene.Instantiate('" + utf8Name + "').name") == "Crate");
+	// Bytes that are not UTF-8 name no file, and are an error rather than an exception.
+	CHECK_FALSE(fixture.System->Evaluate("Scene.Instantiate('Kiste-\xFF.pxprefab')", error));
+	CHECK(error.find("no prefab") != std::string::npos);
 }
 
 TEST_CASE("ScriptSystem: a failing callback disables its instance with a traceback naming the script")
@@ -450,10 +460,15 @@ TEST_CASE("ScriptSystem: require loads project scripts once and detects cycles")
 	write("Scripts/Util.lua", "Loads = (Loads or 0) + 1\nreturn { Double = function(x) return x * 2 end }");
 	write("Scripts/A.lua", "return require('Scripts/B')");
 	write("Scripts/B.lua", "return require('Scripts/A')");
+	// A module named in UTF-8 ("Scripts/Hilfe-é.lua"), whatever the platform's narrow encoding.
+	const std::string utf8Module = "Scripts/Hilfe-\xC3\xA9";
+	std::ofstream(directory / FromUtf8(utf8Module + ".lua")) << "return 7";
 	ScriptFixture fixture({}, directory);
 	for (const char* name : {"Scripts/Util.lua", "Scripts/A.lua", "Scripts/B.lua"})
 		REQUIRE(fixture.Assets.ImportAsset(name).IsValid());
+	REQUIRE(fixture.Assets.ImportAsset(FromUtf8(utf8Module + ".lua")).IsValid());
 	fixture.Start();
+	CHECK(fixture.Eval("require('" + utf8Module + "')") == "7");
 
 	CHECK(fixture.Eval("require('Scripts/Util').Double(21)") == "42");
 	CHECK(fixture.Eval("require('Scripts/Util.lua').Double(1)") == "2");

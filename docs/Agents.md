@@ -106,5 +106,5 @@ windowed one.
   in a game replace the scene. Look entities up again (`scene.find`) after either.
 - Paths in commands are untrusted. They resolve inside the project's `Assets/` folder (or the project, for outputs);
   `project.export` is the one command that writes outside it, and it only replaces an empty folder or its own earlier
-  export.
+  export. Paths in parameters and results are UTF-8 strings separated by `/` on every platform, as in project files.
 - Commands that edit the scene are undoable, and they are rolled back if they fail partway.

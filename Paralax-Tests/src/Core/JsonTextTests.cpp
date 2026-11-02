@@ -4,6 +4,8 @@
 
 #include <Paralax/Core/JsonText.h>
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <string>
 #include <string_view>
@@ -93,4 +95,27 @@ TEST_CASE("JsonText: a negative depth limit fails the precondition")
 	CHECK(JsonExceedsDepth("[]", -1));
 	CHECK_FALSE(JsonExceedsDepth("42", -1));
 #endif
+}
+
+TEST_CASE("JsonText: FormatJsonDocument replaces invalid UTF-8 instead of throwing")
+{
+	const nlohmann::json document = {{"Name", std::string("Crate\xFF")}, {"Tag", std::string("\xC3")}};
+	// What it guards against: nlohmann's strict default throws on these bytes.
+	CHECK_THROWS_AS(static_cast<void>(document.dump(1, '\t')), nlohmann::json::type_error);
+
+	std::string text;
+	CHECK_NOTHROW(text = FormatJsonDocument(document));
+	const nlohmann::json parsed = nlohmann::json::parse(text, nullptr, false);
+	REQUIRE_FALSE(parsed.is_discarded());
+	CHECK(parsed["Name"] == "Crate\xEF\xBF\xBD");
+	CHECK(parsed["Tag"] == "\xEF\xBF\xBD");
+}
+
+TEST_CASE("JsonText: FormatJsonDocument writes valid documents as before, with UTF-8 unescaped")
+{
+	const nlohmann::json document = {{"Paralax", {{"Type", "AssetRegistry"}, {"Version", 1}}}, {"Path", "Textures/Brick-\xC3\xA9-\xE6\x97\xA5\xE6\x9C\xAC.png"}};
+	const std::string text = FormatJsonDocument(document);
+	CHECK(text == document.dump(1, '\t') + "\n");
+	CHECK(text.find("\"Path\": \"Textures/Brick-\xC3\xA9-\xE6\x97\xA5\xE6\x9C\xAC.png\"") != std::string::npos);
+	CHECK(nlohmann::json::parse(text) == document);
 }

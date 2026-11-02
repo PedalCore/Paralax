@@ -103,6 +103,9 @@ Field values are **copies**. `t.Translation.x = 1` changes only the copy, so ass
 | asset | handle as a string (`nil` clears it) |
 | asset array | array of handle strings |
 
+Asset paths (in `Scene.Instantiate`, `Scene.Load`, `Audio.PlayOneShot` and `require`) are relative to the project's
+`Assets/` folder, separated by `/`, and UTF-8 on every platform, like the paths in project files.
+
 ## Scene
 
 | Function | Description |

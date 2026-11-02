@@ -3,7 +3,14 @@
 
 #include "Paralax/Core/Assert.h"
 
+#include <nlohmann/json.hpp>
+
 namespace Paralax {
+
+	std::string FormatJsonDocument(const nlohmann::json& document)
+	{
+		return document.dump(1, '\t', false, nlohmann::json::error_handler_t::replace) + "\n";
+	}
 
 	bool JsonExceedsDepth(std::string_view text, int maxDepth)
 	{

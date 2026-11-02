@@ -142,3 +142,17 @@ TEST_CASE("Prefab: creating from an invalid entity fails verification")
 	scene.DestroyEntity(entity);
 	CHECK_THROWS_AS(PrefabAsset::CreateFromEntity(scene, entity), Paralax::Testing::AssertionFailedError);
 }
+
+TEST_CASE("Prefab: names that are not valid UTF-8 save without throwing and the file loads")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("PrefabInvalidUtf8");
+	Scene source;
+	Entity root = source.CreateEntity(std::string("Tower\xFF"));
+	Ref<PrefabAsset> prefab = PrefabAsset::CreateFromEntity(source, root);
+	bool saved = false;
+	CHECK_NOTHROW(saved = prefab->SaveToFile(directory / "Tower.pxprefab"));
+	REQUIRE(saved);
+	Ref<PrefabAsset> loaded = PrefabAsset::LoadFromFile(directory / "Tower.pxprefab");
+	REQUIRE(loaded);
+	CHECK(loaded->GetRootName() == "Tower\xEF\xBF\xBD");
+}

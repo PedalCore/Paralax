@@ -2,6 +2,8 @@
 
 #include "EditorCore/EditorContext.h"
 
+#include <Paralax/Core/PathEncoding.h>
+
 #include <imgui.h>
 
 namespace Paralax::Editor {
@@ -71,7 +73,7 @@ namespace Paralax::Editor {
 
 			for (const AssetMetadata& metadata : context.GetAssets().GetRegisteredAssets())
 			{
-				std::string name = metadata.FilePath.generic_string();
+				std::string name = ToUtf8(metadata.FilePath);
 				if (metadata.Parent.IsValid())
 					name += fmt::format(" > {} {}", AssetTypeToString(metadata.Type), static_cast<uint64_t>(metadata.Handle) % 10000);
 				bool doubleClicked = false;
@@ -79,7 +81,7 @@ namespace Paralax::Editor {
 				const bool isModel = metadata.Type == AssetType::Mesh && !metadata.Parent.IsValid();
 				AssetRow(std::string(AssetTypeToString(metadata.Type)).c_str(), name, metadata.Handle, &doubleClicked, isModel ? "Create Prefab From Model" : nullptr, &createPrefab);
 				if (doubleClicked && metadata.Type == AssetType::Scene)
-					context.Execute("scene.open", {{"path", metadata.FilePath.generic_string()}});
+					context.Execute("scene.open", {{"path", ToUtf8(metadata.FilePath)}});
 				// It writes files and registers assets (changing the list being drawn): run it after the panels.
 				if (createPrefab)
 					context.Defer("model.create_prefab", {{"model", std::to_string(static_cast<uint64_t>(metadata.Handle))}});

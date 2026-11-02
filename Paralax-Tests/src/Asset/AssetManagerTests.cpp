@@ -11,6 +11,9 @@
 #include <Paralax/Asset/TextureAsset.h>
 #include <Paralax/Renderer/Image.h>
 #include <Paralax/Core/EngineResources.h>
+#include <Paralax/Core/PathEncoding.h>
+#include <Paralax/Scene/Entity.h>
+#include <Paralax/Scene/SceneSerializer.h>
 
 #include <algorithm>
 #include <fstream>
@@ -103,6 +106,78 @@ TEST_CASE("AssetManager: rejects missing, unsupported and out-of-project files")
 
 	AssetManager noProject;
 	CHECK_FALSE(noProject.ImportAsset(directory / "Brick.pxmat").IsValid());
+}
+
+TEST_CASE("AssetManager: non-ASCII file names round-trip through import, the registry, reload and lookup")
+{
+	// "Brick-é-日本.png" and "Niveau-é-日本.pxscene", as UTF-8 bytes. On Windows the narrow conversions of
+	// std::filesystem::path would use the ANSI code page here (and throw for 日本), so this pins the UTF-8 ones.
+	const std::string textureName = "Textures/Brick-\xC3\xA9-\xE6\x97\xA5\xE6\x9C\xAC.png";
+	const std::string sceneName = "Scenes/Niveau-\xC3\xA9-\xE6\x97\xA5\xE6\x9C\xAC.pxscene";
+	const std::string entityName = "Ziegel-\xC3\xA9";
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("AssetNonAscii");
+	Image image(4, 4);
+	image.SetPixel(1, 1, {1, 2, 3, 255});
+	REQUIRE(image.SavePNG(directory / FromUtf8(textureName)));
+	Scene scene("Niveau");
+	scene.CreateEntity(entityName);
+	REQUIRE(SceneSerializer::SaveToFile(scene, directory / FromUtf8(sceneName)));
+
+	AssetHandle texture, level;
+	{
+		Paralax::Testing::ScopedLogCapture log;
+		AssetManager assets(directory);
+		texture = assets.ImportAsset(directory / FromUtf8(textureName));
+		level = assets.ImportAsset(FromUtf8(sceneName));
+		REQUIRE(texture.IsValid());
+		REQUIRE(level.IsValid());
+		CHECK(ToUtf8(assets.GetMetadata(texture)->FilePath) == textureName);
+		CHECK(assets.GetHandleForPath(FromUtf8(textureName)) == texture);
+		CHECK(assets.ImportAsset(FromUtf8(textureName)) == texture);
+		// Log messages carry the name as UTF-8 too.
+		CHECK(log.Contains(spdlog::level::info, "'" + textureName + "'"));
+	}
+
+	// The registry stores the names as UTF-8, unescaped, so it reads the same on every platform.
+	const std::filesystem::path registryFile = directory / AssetManager::RegistryFileName;
+	const std::string registry = Paralax::Testing::ReadFileText(registryFile);
+	CHECK(registry.find("\"Path\": \"" + textureName + "\"") != std::string::npos);
+	CHECK(registry.find("\"Path\": \"" + sceneName + "\"") != std::string::npos);
+
+	AssetManager reopened(directory);
+	CHECK(reopened.GetHandleForPath(FromUtf8(textureName)) == texture);
+	CHECK(reopened.GetHandleForPath(directory / FromUtf8(sceneName)) == level);
+	REQUIRE(reopened.GetMetadata(level));
+	CHECK(ToUtf8(reopened.GetMetadata(level)->FilePath) == sceneName);
+	Ref<TextureAsset> loadedTexture = reopened.GetAsset<TextureAsset>(texture);
+	REQUIRE(loadedTexture);
+	CHECK(loadedTexture->Mips[0][(1 * 4 + 1) * 4] == 1);
+	CHECK(reopened.ReloadAsset(texture));
+
+	Ref<Scene> loadedScene = SceneSerializer::LoadFromFile(reopened.ToAbsolutePath(reopened.GetMetadata(level)->FilePath));
+	REQUIRE(loadedScene);
+	CHECK(loadedScene->GetName() == "Niveau");
+	REQUIRE(loadedScene->GetRootEntities().size() == 1);
+	CHECK(loadedScene->GetEntityByUUID(loadedScene->GetRootEntities().front()).GetName() == entityName);
+
+	// Saving again writes the registry unchanged.
+	REQUIRE(reopened.SaveRegistry());
+	CHECK(Paralax::Testing::ReadFileText(registryFile) == registry);
+}
+
+TEST_CASE("AssetManager: a registry path that is not valid UTF-8 is refused without throwing")
+{
+	const std::filesystem::path directory = MakeProject("AssetRegistryInvalidUtf8");
+	std::ofstream(directory / AssetManager::RegistryFileName, std::ios::binary)
+		<< R"({"Paralax": {"Type": "AssetRegistry", "Version": 1}, "Assets": [{"Handle": "123456", "Type": "Texture", "Path": "Textures/Brick)"
+		<< "\xFF"
+		<< R"(.png"}]})";
+	Paralax::Testing::ScopedLogCapture log;
+	std::optional<AssetManager> assets;
+	CHECK_NOTHROW(assets.emplace(directory));
+	REQUIRE(assets);
+	CHECK(assets->GetRegisteredAssets().empty());
+	CHECK(log.Contains(spdlog::level::err, "malformed"));
 }
 
 TEST_CASE("AssetManager: memory assets, reloading and removal")

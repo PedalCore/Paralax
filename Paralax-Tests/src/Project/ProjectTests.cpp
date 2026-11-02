@@ -2,7 +2,10 @@
 
 #include "TestUtilities.h"
 
+#include <Paralax/Core/PathEncoding.h>
 #include <Paralax/Project/Project.h>
+
+#include <nlohmann/json.hpp>
 
 #include <fstream>
 
@@ -121,4 +124,25 @@ TEST_CASE("Project: Load ignores invalid optional fields")
 	REQUIRE(other);
 	CHECK(other->GetName() == "Game");
 	CHECK_FALSE(other->GetStartScene().IsValid());
+}
+
+TEST_CASE("Project: a project file with a non-ASCII name loads, is named after it in UTF-8 and saves")
+{
+	// "Проект": on an English Windows system the code page cannot represent it, so path::string() would throw.
+	const std::string stem = "\xD0\x9F\xD1\x80\xD0\xBE\xD0\xB5\xD0\xBA\xD1\x82";
+	const std::filesystem::path root = Paralax::Testing::CreateTestDirectory("ProjectNonAscii");
+	WriteText(root / FromUtf8(stem + Project::FileExtension), R"({"Paralax": {"Type": "Project", "Version": 1}, "StartScene": "0"})");
+
+	Ref<Project> project = Project::Load(root);
+	REQUIRE(project);
+	CHECK(project->GetName() == stem);
+	CHECK(ToUtf8(project->GetProjectFile().filename()) == stem + Project::FileExtension);
+	REQUIRE(project->Save());
+	const nlohmann::json document = nlohmann::json::parse(Paralax::Testing::ReadFileText(project->GetProjectFile()), nullptr, false);
+	REQUIRE(document.is_object());
+	CHECK(document["Name"] == stem);
+
+	Ref<Project> reloaded = Project::Load(project->GetProjectFile());
+	REQUIRE(reloaded);
+	CHECK(reloaded->GetName() == stem);
 }

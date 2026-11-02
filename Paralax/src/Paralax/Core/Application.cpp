@@ -2,6 +2,7 @@
 #include "Paralax/Core/Application.h"
 
 #include "Paralax/Core/Input.h"
+#include "Paralax/Core/PathEncoding.h"
 #include "Paralax/ImGui/ImGuiLayer.h"
 #include "Paralax/Renderer/TextureReadback.h"
 
@@ -48,7 +49,7 @@ namespace Paralax {
 			std::error_code error;
 			std::filesystem::current_path(m_Specification.WorkingDirectory, error);
 			if (error)
-				PX_CORE_ERROR("Failed to set working directory to '{}': {}", m_Specification.WorkingDirectory.string(), error.message());
+				PX_CORE_ERROR("Failed to set working directory to '{}': {}", ToUtf8(m_Specification.WorkingDirectory), error.message());
 		}
 
 		if (!m_Specification.LogFile.empty())
@@ -393,9 +394,9 @@ namespace Paralax {
 				{
 					Image image = ReadbackTexture(m_GraphicsDevice->GetDevice(), m_Swapchain->GetCurrentBackBuffer());
 					if (image.IsEmpty() || !image.SavePNG(m_PendingScreenshot))
-						PX_CORE_ERROR("Could not save the screenshot to '{}'", m_PendingScreenshot.string());
+						PX_CORE_ERROR("Could not save the screenshot to '{}'", ToUtf8(m_PendingScreenshot));
 					else
-						PX_CORE_INFO("Saved screenshot '{}'", m_PendingScreenshot.string());
+						PX_CORE_INFO("Saved screenshot '{}'", ToUtf8(m_PendingScreenshot));
 					m_PendingScreenshot.clear();
 				}
 				m_Swapchain->Present();

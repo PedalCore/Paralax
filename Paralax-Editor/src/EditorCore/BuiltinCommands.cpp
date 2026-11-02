@@ -2,6 +2,7 @@
 
 #include <Paralax/Asset/MaterialAsset.h>
 #include <Paralax/Asset/MaterialSerializer.h>
+#include <Paralax/Core/PathEncoding.h>
 #include <Paralax/Scene/ComponentRegistry.h>
 #include <Paralax/Scene/Entity.h>
 #include <Paralax/Scene/SceneSerializer.h>
@@ -51,7 +52,7 @@ namespace Paralax::Editor {
 
 		CommandResult EntityNotFound(const json& params)
 		{
-			return CommandResult::Fail(fmt::format("No entity with id {}", params.value("id", json()).dump()));
+			return CommandResult::Fail(fmt::format("No entity with id {}", params.value("id", json()).dump(-1, ' ', false, json::error_handler_t::replace)));
 		}
 
 		// Applies { "<Component>": { fields } } to an entity, adding missing components.
@@ -145,7 +146,7 @@ namespace Paralax::Editor {
 		// --- Scene -----------------------------------------------------------------------------------
 		registry.Register({"scene.info", "Name, file, entity count and state of the open scene.", {}, false, [](EditorContext& context, const json&) {
 							   Scene& scene = context.GetActiveScene();
-							   return CommandResult::Ok({{"name", scene.GetName()}, {"path", context.GetScenePath().generic_string()}, {"entities", scene.GetEntityCount()}, {"dirty", context.IsSceneDirty()}, {"playing", context.IsPlaying()}, {"canUndo", context.CanUndo()}, {"canRedo", context.CanRedo()}});
+							   return CommandResult::Ok({{"name", scene.GetName()}, {"path", ToUtf8(context.GetScenePath())}, {"entities", scene.GetEntityCount()}, {"dirty", context.IsSceneDirty()}, {"playing", context.IsPlaying()}, {"canUndo", context.CanUndo()}, {"canRedo", context.CanRedo()}});
 						   }});
 
 		registry.Register({"scene.new", "Replaces the open scene with an empty one (unsaved changes are lost).", {{"name", "string", "Scene name.", false}}, false, [](EditorContext& context, const json& params) {
@@ -155,7 +156,7 @@ namespace Paralax::Editor {
 						   }});
 
 		registry.Register({"scene.open", "Opens a .pxscene file (relative to the project's Assets folder; absolute paths must lie inside it).", {{"path", "string", "Scene file.", true}}, false, [](EditorContext& context, const json& params) {
-							   if (!context.OpenScene(params["path"].get<std::string>()))
+							   if (!context.OpenScene(FromUtf8(params["path"].get<std::string>())))
 								   return CommandResult::Fail("Could not open the scene (see the log for details: console.get)");
 							   return CommandResult::Ok({{"entities", context.GetEditorScene().GetEntityCount()}});
 						   }});
@@ -163,9 +164,9 @@ namespace Paralax::Editor {
 		registry.Register({"scene.save", "Saves the scene; 'path' (relative to Assets, and inside it) is required the first time.", {{"path", "string", "Destination .pxscene file.", false}}, false, [](EditorContext& context, const json& params) {
 							   if (context.IsPlaying())
 								   return CommandResult::Fail("Stop playing before saving");
-							   if (!context.SaveScene(params.value("path", "")))
+							   if (!context.SaveScene(FromUtf8(params.value("path", ""))))
 								   return CommandResult::Fail("Could not save the scene (no path, or the file could not be written)");
-							   json result = {{"path", context.GetScenePath().generic_string()}};
+							   json result = {{"path", ToUtf8(context.GetScenePath())}};
 							   // The file is saved either way, but a scene the registry does not list cannot be the start scene or
 							   // be found by handle in the next session.
 							   if (Project* project = context.GetProject(); project && !project->GetAssetManager().GetHandleForPath(context.GetScenePath()).IsValid())
@@ -401,7 +402,7 @@ namespace Paralax::Editor {
 							   json assets = json::array();
 							   for (const AssetMetadata& metadata : context.GetAssets().GetRegisteredAssets())
 							   {
-								   assets.push_back({{"handle", IdString(metadata.Handle)}, {"type", std::string(AssetTypeToString(metadata.Type))}, {"path", metadata.FilePath.generic_string()}, {"parent", IdString(metadata.Parent)}});
+								   assets.push_back({{"handle", IdString(metadata.Handle)}, {"type", std::string(AssetTypeToString(metadata.Type))}, {"path", ToUtf8(metadata.FilePath)}, {"parent", IdString(metadata.Parent)}});
 							   }
 							   json builtins = json::array();
 							   for (const BuiltinAssetInfo& info : AssetManager::GetBuiltinAssets())
@@ -412,7 +413,7 @@ namespace Paralax::Editor {
 		registry.Register({"asset.import", "Registers a file inside the project's Assets folder (path relative to Assets, or absolute).", {{"path", "string", "File to import.", true}}, false, [](EditorContext& context, const json& params) {
 							   if (!context.GetProject())
 								   return CommandResult::Fail("No project is open");
-							   const AssetHandle handle = context.GetAssets().ImportAsset(params["path"].get<std::string>());
+							   const AssetHandle handle = context.GetAssets().ImportAsset(FromUtf8(params["path"].get<std::string>()));
 							   if (!handle.IsValid())
 								   return CommandResult::Fail("Import failed (see the log for details: console.get)");
 							   return CommandResult::Ok({{"handle", IdString(handle)}});
@@ -425,7 +426,7 @@ namespace Paralax::Editor {
 							   std::string error;
 							   if (params.contains("fields") && !Reflection::FromJson(MaterialSerializer::GetMaterialFields(), "Material", &material, params["fields"], error))
 								   return CommandResult::Fail(error);
-							   std::filesystem::path path = params["path"].get<std::string>();
+							   std::filesystem::path path = FromUtf8(params["path"].get<std::string>());
 							   if (path.extension() != ".pxmat")
 								   path += ".pxmat";
 							   const std::optional<std::filesystem::path> registryPath = context.GetAssets().ToRegistryPath(path);
@@ -433,7 +434,7 @@ namespace Paralax::Editor {
 								   return CommandResult::Fail("The path must be inside the project's Assets folder");
 							   std::error_code existsError;
 							   if (std::filesystem::exists(context.GetAssets().ToAbsolutePath(*registryPath), existsError))
-								   return CommandResult::Fail(fmt::format("'{}' already exists; use material.set to change it", registryPath->generic_string()));
+								   return CommandResult::Fail(fmt::format("'{}' already exists; use material.set to change it", ToUtf8(*registryPath)));
 							   const std::filesystem::path file = context.GetAssets().ToAbsolutePath(*registryPath);
 							   if (!MaterialSerializer::SaveToFile(material, file))
 								   return CommandResult::Fail("Could not write the material file");

@@ -5,6 +5,7 @@
 
 #include <Paralax.h>
 #include <Paralax/Core/EntryPoint.h>
+#include <Paralax/Core/PathEncoding.h>
 #include <Paralax/Project/Project.h>
 
 #include <fstream>
@@ -88,18 +89,18 @@ namespace Paralax {
 				std::filesystem::permissions(m_InfoFile, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write, error);
 				if (error)
 				{
-					PX_CORE_ERROR("Could not restrict access to the agent connection file '{}': {}", m_InfoFile.string(), error.message());
+					PX_CORE_ERROR("Could not restrict access to the agent connection file '{}': {}", ToUtf8(m_InfoFile), error.message());
 					return;
 				}
 				std::ofstream file(m_InfoFile, std::ios::trunc);
-				file << nlohmann::json{{"host", "127.0.0.1"}, {"port", m_Server->GetPort()}, {"token", m_Server->GetToken()}}.dump(2) << "\n";
+				file << nlohmann::json{{"host", "127.0.0.1"}, {"port", m_Server->GetPort()}, {"token", m_Server->GetToken()}}.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
 				file.close();
 				if (!file)
 				{
-					PX_CORE_ERROR("Could not write the agent connection file '{}'", m_InfoFile.string());
+					PX_CORE_ERROR("Could not write the agent connection file '{}'", ToUtf8(m_InfoFile));
 					return;
 				}
-				PX_CORE_INFO("Agent connection details written to '{}'", m_InfoFile.string());
+				PX_CORE_INFO("Agent connection details written to '{}'", ToUtf8(m_InfoFile));
 			}
 
 			void OnDetach() override
@@ -145,8 +146,10 @@ namespace Paralax {
 			const CommandLine& args = specification.CommandLineArgs;
 			if (std::optional<std::string> scene = args.GetOption("scene"))
 			{
-				if (!m_Context.OpenScene(*scene))
-					PX_CORE_ERROR("Could not open scene '{}'", *scene);
+				// Arguments are in the native narrow encoding (the ANSI code page on Windows); logs are UTF-8.
+				const std::filesystem::path scenePath(*scene);
+				if (!m_Context.OpenScene(scenePath))
+					PX_CORE_ERROR("Could not open scene '{}'", ToUtf8(scenePath));
 			}
 			else if (Project* active = m_Context.GetProject(); active && active->GetStartScene().IsValid())
 			{
@@ -171,10 +174,11 @@ namespace Paralax {
 			if (std::optional<std::string> output = args.GetOption("export"))
 			{
 				// On the command line a relative path means the working directory (the command itself takes relative
-				// paths from the project directory).
+				// paths from the project directory). Arguments arrive in the native narrow encoding (the ANSI code
+				// page on Windows), so the path is built from it directly; commands take UTF-8.
 				std::error_code error;
-				const std::u8string absolute = std::filesystem::absolute(std::filesystem::path(std::u8string(output->begin(), output->end())), error).generic_u8string();
-				const Editor::CommandResult result = m_Context.Execute("project.export", {{"output", std::string(absolute.begin(), absolute.end())}});
+				const std::filesystem::path absolute = std::filesystem::absolute(std::filesystem::path(*output), error);
+				const Editor::CommandResult result = m_Context.Execute("project.export", {{"output", ToUtf8(absolute)}});
 				if (result.Success)
 					PX_CORE_INFO("Exported the game to '{}'", result.Result["path"].get<std::string>());
 				else
@@ -230,7 +234,7 @@ namespace Paralax {
 		if (std::optional<std::string> path = args.GetOption("new-project"))
 		{
 			const std::filesystem::path directory(*path);
-			project = Project::Create(directory, directory.filename().string());
+			project = Project::Create(directory, ToUtf8(directory.filename()));
 			if (!project)
 				return nullptr;
 		}

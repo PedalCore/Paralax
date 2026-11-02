@@ -1,6 +1,8 @@
 #include "pxpch.h"
 #include "Paralax/Asset/TextureAsset.h"
 
+#include "Paralax/Core/PathEncoding.h"
+
 #include <stb_image.h>
 
 #include <algorithm>
@@ -171,14 +173,14 @@ namespace Paralax {
 		const auto size = file ? file.tellg() : std::streampos(-1);
 		if (size <= 0 || size > static_cast<std::streamoff>(MaxEncodedBytes))
 		{
-			PX_CORE_ERROR("Failed to load texture '{}': unreadable, empty or exceeds encoded size limit", path.string());
+			PX_CORE_ERROR("Failed to load texture '{}': unreadable, empty or exceeds encoded size limit", ToUtf8(path));
 			return nullptr;
 		}
 		std::vector<uint8_t> data(static_cast<size_t>(size));
 		file.seekg(0);
 		if (!file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size())))
 		{
-			PX_CORE_ERROR("Failed to load texture '{}': incomplete read", path.string());
+			PX_CORE_ERROR("Failed to load texture '{}': incomplete read", ToUtf8(path));
 			return nullptr;
 		}
 		return LoadFromMemory(data.data(), data.size(), srgb, generateMips, type);

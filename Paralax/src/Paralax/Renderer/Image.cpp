@@ -1,6 +1,8 @@
 #include "pxpch.h"
 #include "Paralax/Renderer/Image.h"
 
+#include "Paralax/Core/PathEncoding.h"
+
 #include <glm/vec4.hpp>
 
 #include <stb_image.h>
@@ -39,7 +41,7 @@ namespace Paralax {
 	{
 		if (IsEmpty())
 		{
-			PX_CORE_ERROR("Cannot save an empty image to '{}'", path.string());
+			PX_CORE_ERROR("Cannot save an empty image to '{}'", ToUtf8(path));
 			return false;
 		}
 
@@ -47,7 +49,7 @@ namespace Paralax {
 		if (path.has_parent_path())
 			std::filesystem::create_directories(path.parent_path(), error);
 
-		const std::string utf8Path = reinterpret_cast<const char*>(path.u8string().c_str());
+		const std::string utf8Path = ToUtf8(path);
 		const int stride = static_cast<int>(m_Width * 4);
 		if (!stbi_write_png(utf8Path.c_str(), static_cast<int>(m_Width), static_cast<int>(m_Height), 4, m_Pixels.data(), stride))
 		{
@@ -59,7 +61,7 @@ namespace Paralax {
 
 	Image Image::LoadFromFile(const std::filesystem::path& path)
 	{
-		const std::string utf8Path = reinterpret_cast<const char*>(path.u8string().c_str());
+		const std::string utf8Path = ToUtf8(path);
 		int width = 0, height = 0, channels = 0;
 		stbi_uc* data = stbi_load(utf8Path.c_str(), &width, &height, &channels, 4);
 		if (!data)

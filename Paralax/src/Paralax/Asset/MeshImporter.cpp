@@ -3,6 +3,7 @@
 
 #include "Paralax/Animation/AnimationClip.h"
 #include "Paralax/Asset/AssetManager.h"
+#include "Paralax/Core/PathEncoding.h"
 #include "Paralax/Math/Math.h"
 
 #include <fastgltf/core.hpp>
@@ -84,30 +85,30 @@ namespace Paralax {
 			const std::filesystem::path relative = target.lexically_relative(base);
 			if (error || relative.empty() || *relative.begin() == ".." || relativePath.is_absolute())
 			{
-				outProblem = fmt::format("path '{}' leaves the model's directory", relativePath.string());
+				outProblem = fmt::format("path '{}' leaves the model's directory", ToUtf8(relativePath));
 				return {};
 			}
 			std::ifstream file(target, std::ios::binary);
 			if (!file)
 			{
-				outProblem = fmt::format("file '{}' not found", relativePath.string());
+				outProblem = fmt::format("file '{}' not found", ToUtf8(relativePath));
 				return {};
 			}
 			const uintmax_t size = std::filesystem::file_size(target, error);
 			if (error)
 			{
-				outProblem = fmt::format("file '{}' cannot be read: {}", relativePath.string(), error.message());
+				outProblem = fmt::format("file '{}' cannot be read: {}", ToUtf8(relativePath), error.message());
 				return {};
 			}
 			if (size > maxBytes)
 			{
-				outProblem = fmt::format("file '{}' is too large ({} bytes; at most {} can be read)", relativePath.string(), size, maxBytes);
+				outProblem = fmt::format("file '{}' is too large ({} bytes; at most {} can be read)", ToUtf8(relativePath), size, maxBytes);
 				return {};
 			}
 			std::vector<Byte> bytes(static_cast<size_t>(size));
 			if (size > 0 && !file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size)))
 			{
-				outProblem = fmt::format("file '{}' cannot be read", relativePath.string());
+				outProblem = fmt::format("file '{}' cannot be read", ToUtf8(relativePath));
 				return {};
 			}
 			return bytes;
@@ -717,19 +718,19 @@ namespace Paralax {
 		const uintmax_t fileSize = std::filesystem::file_size(path, sizeError);
 		if (sizeError)
 		{
-			outError = fmt::format("cannot read '{}': {}", path.string(), sizeError.message());
+			outError = fmt::format("cannot read '{}': {}", ToUtf8(path), sizeError.message());
 			return false;
 		}
 		if (fileSize > MeshImporter::MaxBufferBytes)
 		{
-			outError = fmt::format("cannot read '{}': file is too large ({} bytes; at most {} can be read)", path.string(), fileSize, MeshImporter::MaxBufferBytes);
+			outError = fmt::format("cannot read '{}': file is too large ({} bytes; at most {} can be read)", ToUtf8(path), fileSize, MeshImporter::MaxBufferBytes);
 			return false;
 		}
 
 		auto data = fastgltf::GltfDataBuffer::FromPath(path);
 		if (data.error() != fastgltf::Error::None)
 		{
-			outError = fmt::format("cannot read '{}': {}", path.string(), fastgltf::getErrorMessage(data.error()));
+			outError = fmt::format("cannot read '{}': {}", ToUtf8(path), fastgltf::getErrorMessage(data.error()));
 			return false;
 		}
 
@@ -753,17 +754,17 @@ namespace Paralax {
 		}
 		if (outcome.Parse != fastgltf::Error::None)
 		{
-			outError = fmt::format("cannot parse '{}': {}", path.string(), outcome.Threw ? "it is too large or malformed" : fastgltf::getErrorMessage(outcome.Parse));
+			outError = fmt::format("cannot parse '{}': {}", ToUtf8(path), outcome.Threw ? "it is too large or malformed" : fastgltf::getErrorMessage(outcome.Parse));
 			return false;
 		}
 		if (outcome.Validation != fastgltf::Error::None)
 		{
-			outError = fmt::format("'{}' is not a valid glTF file: {}", path.string(), fastgltf::getErrorMessage(outcome.Validation));
+			outError = fmt::format("'{}' is not a valid glTF file: {}", ToUtf8(path), fastgltf::getErrorMessage(outcome.Validation));
 			return false;
 		}
 		if (!outcome.BufferProblem.empty())
 		{
-			outError = fmt::format("cannot load '{}': {}", path.string(), outcome.BufferProblem);
+			outError = fmt::format("cannot load '{}': {}", ToUtf8(path), outcome.BufferProblem);
 			return false;
 		}
 		const fastgltf::Asset& asset = *parsed;
@@ -822,7 +823,7 @@ namespace Paralax {
 			{
 				// Beside the model, in its "textures" folder (where Blender's exporter puts external images), then beside the
 				// material's base color image.
-				std::vector<std::filesystem::path> candidates{std::filesystem::path(extras.HeightMap), std::filesystem::path("textures") / extras.HeightMap};
+				std::vector<std::filesystem::path> candidates{FromUtf8(extras.HeightMap), std::filesystem::path("textures") / FromUtf8(extras.HeightMap)};
 				if (source.pbrData.baseColorTexture && source.pbrData.baseColorTexture->textureIndex < asset.textures.size())
 				{
 					const auto& texture = asset.textures[source.pbrData.baseColorTexture->textureIndex];
@@ -830,7 +831,7 @@ namespace Paralax {
 					{
 						if (const auto* uri = std::get_if<fastgltf::sources::URI>(&asset.images[*texture.imageIndex].data))
 							if (const std::optional<std::filesystem::path> file = UriPath(uri->uri))
-								candidates.push_back(file->parent_path() / extras.HeightMap);
+								candidates.push_back(file->parent_path() / FromUtf8(extras.HeightMap));
 					}
 				}
 				AssetHandle handle = 0;
@@ -854,7 +855,7 @@ namespace Paralax {
 					}
 					else
 					{
-						problem = fmt::format("height map '{}' could not be decoded", candidate.string());
+						problem = fmt::format("height map '{}' could not be decoded", ToUtf8(candidate));
 					}
 					break;
 				}
@@ -914,7 +915,7 @@ namespace Paralax {
 		const size_t sceneIndex = asset.defaultScene.value_or(0);
 		if (asset.scenes.empty() || sceneIndex >= asset.scenes.size())
 		{
-			outError = fmt::format("'{}' contains no usable scene", path.string());
+			outError = fmt::format("'{}' contains no usable scene", ToUtf8(path));
 			return false;
 		}
 		if (!asset.skins.empty())
@@ -1000,7 +1001,7 @@ namespace Paralax {
 				builtIndices += asset.accessors[*primitive.indicesAccessor].count;
 				if (builtVertices > s_MaxElements * 4 || builtIndices > s_MaxElements * 4)
 				{
-					outError = fmt::format("'{}' is too large to import", path.string());
+					outError = fmt::format("'{}' is too large to import", ToUtf8(path));
 					return nullptr;
 				}
 
@@ -1110,7 +1111,7 @@ namespace Paralax {
 		auto appendToCombined = [&](const MeshAsset& source, const glm::mat4& transform) {
 			if (mesh->Vertices.size() + source.Vertices.size() > s_MaxElements * 4 || mesh->Indices.size() + source.Indices.size() > s_MaxElements * 4)
 			{
-				outError = fmt::format("'{}' is too large to import", path.string());
+				outError = fmt::format("'{}' is too large to import", ToUtf8(path));
 				return;
 			}
 			const uint32_t vertexBase = static_cast<uint32_t>(mesh->Vertices.size());
@@ -1152,7 +1153,7 @@ namespace Paralax {
 			}
 			if (pending.Depth > s_MaxNodeDepth)
 			{
-				outError = fmt::format("'{}' has a node hierarchy deeper than {}", path.string(), s_MaxNodeDepth);
+				outError = fmt::format("'{}' has a node hierarchy deeper than {}", ToUtf8(path), s_MaxNodeDepth);
 				break;
 			}
 			visited[pending.Index] = true;
@@ -1200,7 +1201,7 @@ namespace Paralax {
 		ImportAnimations(asset, meshHandle, recordOf, outResult);
 		if (mesh->Submeshes.empty())
 		{
-			outError = fmt::format("'{}' contains no triangle meshes", path.string());
+			outError = fmt::format("'{}' contains no triangle meshes", ToUtf8(path));
 			return false;
 		}
 		mesh->Materials = materialSlots;
@@ -1214,7 +1215,7 @@ namespace Paralax {
 		std::string validationError;
 		if (!mesh->Validate(validationError))
 		{
-			outError = fmt::format("'{}' produced an invalid mesh: {}", path.string(), validationError);
+			outError = fmt::format("'{}' produced an invalid mesh: {}", ToUtf8(path), validationError);
 			return false;
 		}
 

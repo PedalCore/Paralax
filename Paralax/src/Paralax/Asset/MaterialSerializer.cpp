@@ -2,6 +2,7 @@
 #include "Paralax/Asset/MaterialSerializer.h"
 
 #include "Paralax/Core/JsonText.h"
+#include "Paralax/Core/PathEncoding.h"
 #include "Paralax/Scene/SceneSerializer.h"
 
 namespace Paralax {
@@ -66,7 +67,7 @@ namespace Paralax {
 
 	bool MaterialSerializer::SaveToFile(const MaterialAsset& material, const std::filesystem::path& path)
 	{
-		return WriteFileAtomically(path, Serialize(material).dump(1, '\t') + "\n");
+		return WriteFileAtomically(path, FormatJsonDocument(Serialize(material)));
 	}
 
 	Ref<MaterialAsset> MaterialSerializer::LoadFromFile(const std::filesystem::path& path)
@@ -74,18 +75,18 @@ namespace Paralax {
 		std::string text;
 		if (!ReadTextFile(path, text))
 		{
-			PX_CORE_ERROR("Cannot open material '{}'", path.string());
+			PX_CORE_ERROR("Cannot open material '{}'", ToUtf8(path));
 			return nullptr;
 		}
 		if (JsonExceedsDepth(text, MaxJsonDepth))
 		{
-			PX_CORE_ERROR("Material '{}' nests too deeply", path.string());
+			PX_CORE_ERROR("Material '{}' nests too deeply", ToUtf8(path));
 			return nullptr;
 		}
 		const json document = json::parse(text, nullptr, false);
 		if (document.is_discarded())
 		{
-			PX_CORE_ERROR("Material '{}' is not valid JSON", path.string());
+			PX_CORE_ERROR("Material '{}' is not valid JSON", ToUtf8(path));
 			return nullptr;
 		}
 
@@ -93,11 +94,11 @@ namespace Paralax {
 		std::string error;
 		if (!Deserialize(*material, document, error))
 		{
-			PX_CORE_ERROR("Cannot load material '{}': {}", path.string(), error);
+			PX_CORE_ERROR("Cannot load material '{}': {}", ToUtf8(path), error);
 			return nullptr;
 		}
 		if (!error.empty())
-			PX_CORE_WARN("Material '{}': {}", path.string(), error);
+			PX_CORE_WARN("Material '{}': {}", ToUtf8(path), error);
 		return material;
 	}
 

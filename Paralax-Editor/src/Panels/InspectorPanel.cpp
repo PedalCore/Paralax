@@ -6,6 +6,7 @@
 #include <Paralax/Asset/MaterialAsset.h>
 #include <Paralax/Asset/MaterialSerializer.h>
 #include <Paralax/Asset/MeshAsset.h>
+#include <Paralax/Core/PathEncoding.h>
 #include <Paralax/Scene/ComponentRegistry.h>
 #include <Paralax/Scene/Entity.h>
 
@@ -150,7 +151,7 @@ namespace Paralax::Editor {
 			if (!material || !metadata || metadata->Parent.IsValid())
 				continue;
 			if (!MaterialSerializer::SaveToFile(*material, assets.ToAbsolutePath(metadata->FilePath)))
-				PX_CORE_ERROR("Could not save material '{}'", metadata->FilePath.generic_string());
+				PX_CORE_ERROR("Could not save material '{}'", ToUtf8(metadata->FilePath));
 		}
 		m_UnsavedMaterials.clear();
 	}

@@ -1,6 +1,8 @@
 #include "pxpch.h"
 #include "Paralax/Core/Log.h"
 
+#include "Paralax/Core/PathEncoding.h"
+
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 
@@ -52,7 +54,9 @@ namespace Paralax {
 		if (!IsInitialized())
 			return nullptr;
 
-		// spdlog throws on failure (and path conversion can throw on Windows); keep exceptions at this boundary.
+		// spdlog opens the file through the C runtime, which takes the native narrow string, so path::string() is right
+		// here (not ToUtf8). It throws on Windows for a name the code page cannot represent, and spdlog throws on
+		// failure; both stay at this boundary.
 		spdlog::sink_ptr sink;
 		std::string error;
 		try
@@ -69,7 +73,7 @@ namespace Paralax {
 		if (!sink)
 		{
 			if (s_CoreLogger)
-				s_CoreLogger->error("Failed to open log file '{}': {}", reinterpret_cast<const char*>(path.u8string().c_str()), error);
+				s_CoreLogger->error("Failed to open log file '{}': {}", ToUtf8(path), error);
 			return nullptr;
 		}
 

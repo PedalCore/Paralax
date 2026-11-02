@@ -9,6 +9,7 @@
 #include "Paralax/Audio/AudioClip.h"
 #include "Paralax/Core/EngineResources.h"
 #include "Paralax/Core/JsonText.h"
+#include "Paralax/Core/PathEncoding.h"
 #include "Paralax/Scene/Prefab.h"
 #include "Paralax/Scene/SceneSerializer.h"
 #include "Paralax/Scripting/ScriptAsset.h"
@@ -99,7 +100,7 @@ namespace Paralax {
 		const std::filesystem::path relative = absolute.lexically_relative(m_AssetDirectory);
 		if (relative.empty() || *relative.begin() == "..")
 			return std::nullopt;
-		return std::filesystem::path(relative.generic_string());
+		return FromUtf8(ToUtf8(relative));
 	}
 
 	std::filesystem::path AssetManager::ToAbsolutePath(const std::filesystem::path& registryPath) const
@@ -114,7 +115,7 @@ namespace Paralax {
 		const std::optional<std::filesystem::path> registryPath = ToRegistryPath(path);
 		if (!registryPath)
 		{
-			PX_CORE_ERROR("Cannot import '{}': not inside the asset directory '{}'", path.string(), m_AssetDirectory.string());
+			PX_CORE_ERROR("Cannot import '{}': not inside the asset directory '{}'", ToUtf8(path), ToUtf8(m_AssetDirectory));
 			return 0;
 		}
 		if (AssetHandle existing = GetHandleForPath(*registryPath); existing.IsValid())
@@ -124,14 +125,14 @@ namespace Paralax {
 		std::error_code error;
 		if (!std::filesystem::is_regular_file(absolute, error))
 		{
-			PX_CORE_ERROR("Cannot import '{}': file not found", absolute.string());
+			PX_CORE_ERROR("Cannot import '{}': file not found", ToUtf8(absolute));
 			return 0;
 		}
 
 		const AssetType type = AssetTypeFromExtension(absolute);
 		if (type == AssetType::None)
 		{
-			PX_CORE_ERROR("Cannot import '{}': unsupported file type", absolute.string());
+			PX_CORE_ERROR("Cannot import '{}': unsupported file type", ToUtf8(absolute));
 			return 0;
 		}
 
@@ -147,11 +148,11 @@ namespace Paralax {
 			std::string importError;
 			if (!MeshImporter::Import(absolute, metadata.Handle, result, importError))
 			{
-				PX_CORE_ERROR("Cannot import '{}': {}", absolute.string(), importError);
+				PX_CORE_ERROR("Cannot import '{}': {}", ToUtf8(absolute), importError);
 				return 0;
 			}
 			for (const std::string& warning : result.Warnings)
-				PX_CORE_WARN("Importing '{}': {}", absolute.string(), warning);
+				PX_CORE_WARN("Importing '{}': {}", ToUtf8(absolute), warning);
 
 			for (const auto& material : result.Materials)
 			{
@@ -182,10 +183,10 @@ namespace Paralax {
 			// The registry on disk is what the next session and the runtime know: a handle recorded only in memory
 			// would leave every scene that references it broken, so the import is undone instead.
 			DetachAsset(metadata.Handle);
-			PX_CORE_ERROR("Cannot import '{}': the asset registry could not be saved", absolute.string());
+			PX_CORE_ERROR("Cannot import '{}': the asset registry could not be saved", ToUtf8(absolute));
 			return 0;
 		}
-		PX_CORE_INFO("Imported {} '{}' as {}", AssetTypeToString(type), metadata.FilePath.generic_string(), static_cast<uint64_t>(metadata.Handle));
+		PX_CORE_INFO("Imported {} '{}' as {}", AssetTypeToString(type), ToUtf8(metadata.FilePath), static_cast<uint64_t>(metadata.Handle));
 		return metadata.Handle;
 	}
 
@@ -259,7 +260,7 @@ namespace Paralax {
 	AssetHandle AssetManager::GetHandleForPath(const std::filesystem::path& path) const
 	{
 		// Relative paths are normalised ("./a.png", "x/../a.png") without touching the file system.
-		const std::optional<std::filesystem::path> registryPath = path.is_absolute() ? ToRegistryPath(path) : std::optional(std::filesystem::path(path.lexically_normal().generic_string()));
+		const std::optional<std::filesystem::path> registryPath = path.is_absolute() ? ToRegistryPath(path) : std::optional(FromUtf8(ToUtf8(path.lexically_normal())));
 		if (!registryPath)
 			return 0;
 		for (const auto& [handle, metadata] : m_Registry)
@@ -374,7 +375,7 @@ namespace Paralax {
 			{
 				Ref<TextureAsset> texture = TextureAsset::LoadFromFile(path, false, true, AssetType::EnvironmentMap);
 				if (texture && texture->Format != TextureFormat::RGBA32F)
-					PX_CORE_WARN("Environment map '{}' is not HDR; lighting will be clamped", path.string());
+					PX_CORE_WARN("Environment map '{}' is not HDR; lighting will be clamped", ToUtf8(path));
 				asset = texture;
 				break;
 			}
@@ -387,7 +388,7 @@ namespace Paralax {
 				std::string error;
 				if (!MeshImporter::Import(path, metadata.Handle, result, error))
 				{
-					PX_CORE_ERROR("Failed to load mesh '{}': {}", path.string(), error);
+					PX_CORE_ERROR("Failed to load mesh '{}': {}", ToUtf8(path), error);
 					return nullptr;
 				}
 				m_LastSubAssets.clear();
@@ -421,7 +422,7 @@ namespace Paralax {
 			{
 				Ref<ScriptAsset> script = ScriptAsset::LoadFromFile(path);
 				if (script)
-					script->Name = metadata.FilePath.generic_string(); // Project-relative names read better in errors.
+					script->Name = ToUtf8(metadata.FilePath); // Project-relative names read better in errors.
 				asset = script;
 				break;
 			}
@@ -429,7 +430,7 @@ namespace Paralax {
 				asset = AudioClip::LoadFromFile(path);
 				break;
 			default:
-				PX_CORE_ERROR("Assets of type {} are not loaded by the AssetManager ('{}')", AssetTypeToString(metadata.Type), metadata.FilePath.generic_string());
+				PX_CORE_ERROR("Assets of type {} are not loaded by the AssetManager ('{}')", AssetTypeToString(metadata.Type), ToUtf8(metadata.FilePath));
 				return nullptr;
 		}
 
@@ -572,14 +573,14 @@ namespace Paralax {
 		json assets = json::array();
 		for (const AssetMetadata& metadata : GetRegisteredAssets())
 		{
-			json entry = {{"Handle", HandleString(metadata.Handle)}, {"Type", std::string(AssetTypeToString(metadata.Type))}, {"Path", metadata.FilePath.generic_string()}};
+			json entry = {{"Handle", HandleString(metadata.Handle)}, {"Type", std::string(AssetTypeToString(metadata.Type))}, {"Path", ToUtf8(metadata.FilePath)}};
 			if (metadata.Parent.IsValid())
 				entry["Parent"] = HandleString(metadata.Parent);
 			assets.push_back(std::move(entry));
 		}
 
 		json document = {{"Paralax", {{"Type", "AssetRegistry"}, {"Version", 1}}}, {"Assets", std::move(assets)}};
-		return WriteFileAtomically(m_AssetDirectory / RegistryFileName, document.dump(1, '\t') + "\n");
+		return WriteFileAtomically(m_AssetDirectory / RegistryFileName, FormatJsonDocument(document));
 	}
 
 	bool AssetManager::LoadRegistry()
@@ -594,18 +595,18 @@ namespace Paralax {
 		std::string text;
 		if (!ReadTextFile(path, text))
 		{
-			PX_CORE_ERROR("Cannot read asset registry '{}'", path.string());
+			PX_CORE_ERROR("Cannot read asset registry '{}'", ToUtf8(path));
 			return false;
 		}
 		if (JsonExceedsDepth(text, MaxJsonDepth))
 		{
-			PX_CORE_ERROR("Asset registry '{}' nests too deeply", path.string());
+			PX_CORE_ERROR("Asset registry '{}' nests too deeply", ToUtf8(path));
 			return false;
 		}
 		const json document = json::parse(text, nullptr, false);
 		if (document.is_discarded() || !document.is_object() || !document.contains("Assets") || !document["Assets"].is_array())
 		{
-			PX_CORE_ERROR("Asset registry '{}' is malformed", path.string());
+			PX_CORE_ERROR("Asset registry '{}' is malformed", ToUtf8(path));
 			return false;
 		}
 
@@ -634,7 +635,7 @@ namespace Paralax {
 				PX_CORE_WARN("Asset registry: invalid parent for {}", static_cast<uint64_t>(metadata.Handle));
 
 			// Registry paths must be relative and stay inside the asset directory.
-			const std::filesystem::path declared(stringField(entry, "Path"));
+			const std::filesystem::path declared = FromUtf8(stringField(entry, "Path"));
 			const std::optional<std::filesystem::path> contained = declared.empty() || declared.is_absolute() ? std::nullopt : ToRegistryPath(declared);
 			if (metadata.Type == AssetType::None || !contained)
 			{

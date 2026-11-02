@@ -6,6 +6,7 @@
 #include <Paralax/Asset/MeshAsset.h>
 #include <Paralax/Core/Application.h>
 #include <Paralax/Core/Input.h>
+#include <Paralax/Core/PathEncoding.h>
 #include <Paralax/Events/KeyEvent.h>
 #include <Paralax/Events/MouseEvent.h>
 #include <Paralax/ImGui/ImGuiLayer.h>
@@ -274,7 +275,7 @@ namespace Paralax::Editor {
 			return CommandResult::Fail("width and height must be 16-8192");
 		const std::string cameraMode = params.value("camera", std::string("scene"));
 		std::string pathError;
-		const std::optional<std::filesystem::path> path = m_Context.ResolveOutputPath(params["path"].get<std::string>(), ".png", pathError);
+		const std::optional<std::filesystem::path> path = m_Context.ResolveOutputPath(FromUtf8(params["path"].get<std::string>()), ".png", pathError);
 		if (!path)
 			return CommandResult::Fail(pathError);
 
@@ -305,7 +306,7 @@ namespace Paralax::Editor {
 		std::filesystem::create_directories(path->parent_path(), error);
 		if (image.IsEmpty() || !image.SavePNG(*path))
 			return CommandResult::Fail("Could not render or write the image");
-		return CommandResult::Ok({{"path", path->generic_string()}, {"width", width}, {"height", height}});
+		return CommandResult::Ok({{"path", ToUtf8(*path)}, {"width", width}, {"height", height}});
 	}
 
 	void EditorLayer::OnImGuiRender()
@@ -626,7 +627,7 @@ namespace Paralax::Editor {
 				else if (m_Context.GetAssets().GetAssetType(AssetHandle(handle)) == AssetType::Scene)
 				{
 					if (const AssetMetadata* metadata = m_Context.GetAssets().GetMetadata(AssetHandle(handle)))
-						m_Context.Execute("scene.open", {{"path", metadata->FilePath.generic_string()}});
+						m_Context.Execute("scene.open", {{"path", ToUtf8(metadata->FilePath)}});
 				}
 			}
 			ImGui::EndDragDropTarget();

@@ -1,6 +1,7 @@
 #include <Paralax.h>
 #include <Paralax/Core/EngineResources.h>
 #include <Paralax/Core/EntryPoint.h>
+#include <Paralax/Core/PathEncoding.h>
 #include <Paralax/Game/GameSession.h>
 #include <Paralax/Project/Project.h>
 #include <Paralax/Renderer/SceneRenderer.h>
@@ -128,10 +129,12 @@ namespace Paralax {
 			std::filesystem::path path;
 			if (std::optional<std::string> scene = args.GetOption("scene"))
 			{
-				std::optional<std::filesystem::path> registryPath = project.GetAssetManager().ToRegistryPath(*scene);
+				// Arguments are in the native narrow encoding (the ANSI code page on Windows); logs are UTF-8.
+				const std::filesystem::path scenePath(*scene);
+				std::optional<std::filesystem::path> registryPath = project.GetAssetManager().ToRegistryPath(scenePath);
 				if (!registryPath)
 				{
-					PX_CORE_ERROR("--scene '{}' is not inside the project's assets", *scene);
+					PX_CORE_ERROR("--scene '{}' is not inside the project's assets", ToUtf8(scenePath));
 					return nullptr;
 				}
 				path = project.GetAssetManager().ToAbsolutePath(*registryPath);

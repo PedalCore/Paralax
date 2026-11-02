@@ -214,3 +214,25 @@ TEST_CASE("SceneSerializer: very deep hierarchies load and save without recursio
 	REQUIRE(saved["Entities"].size() == depth);
 	CHECK(saved["Entities"][depth - 1]["ID"] == std::to_string(depth));
 }
+
+TEST_CASE("SceneSerializer: names that are not valid UTF-8 save without throwing and the file loads")
+{
+	// Names come from scripts and imported files with any bytes; saving must neither throw nor write a file that
+	// cannot be read back. The invalid bytes become U+FFFD.
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("SceneInvalidUtf8");
+	Scene scene(std::string("Level\xFF"));
+	Entity crate = scene.CreateEntity(std::string("Crate\xFF"));
+	crate.GetComponent<TagComponent>().Tag = std::string("\xE6\x97");
+	const std::filesystem::path file = directory / "Level.pxscene";
+
+	bool saved = false;
+	CHECK_NOTHROW(saved = SceneSerializer::SaveToFile(scene, file));
+	REQUIRE(saved);
+	Ref<Scene> loaded = SceneSerializer::LoadFromFile(file);
+	REQUIRE(loaded);
+	CHECK(loaded->GetName() == "Level\xEF\xBF\xBD");
+	REQUIRE(loaded->GetRootEntities().size() == 1);
+	Entity loadedCrate = loaded->GetEntityByUUID(loaded->GetRootEntities().front());
+	CHECK(loadedCrate.GetName() == "Crate\xEF\xBF\xBD");
+	CHECK(loadedCrate.GetComponent<TagComponent>().Tag == "\xEF\xBF\xBD");
+}

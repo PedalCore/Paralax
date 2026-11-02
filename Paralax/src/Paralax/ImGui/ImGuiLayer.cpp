@@ -4,6 +4,7 @@
 #include "Paralax/Core/Application.h"
 #include "Paralax/Core/EmbeddedFile.h"
 #include "Paralax/Core/Input.h"
+#include "Paralax/Core/PathEncoding.h"
 #include "Paralax/Events/ApplicationEvent.h"
 #include "Paralax/Events/KeyEvent.h"
 #include "Paralax/Events/MouseEvent.h"
@@ -140,7 +141,8 @@ namespace Paralax {
 		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 		if (m_Specification.Docking)
 			io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-		m_IniFile = m_Specification.IniFile.string();
+		// ImGui opens files by UTF-8 name on every platform (on Windows it converts to UTF-16 itself).
+		m_IniFile = ToUtf8(m_Specification.IniFile);
 		io.IniFilename = m_IniFile.empty() ? nullptr : m_IniFile.c_str();
 		io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
 		io.BackendRendererName = "Paralax NVRHI";

@@ -5,7 +5,9 @@
 #include <EditorCore/EditorContext.h>
 
 #include <Paralax/Core/EngineResources.h>
+#include <Paralax/Core/PathEncoding.h>
 #include <Paralax/Project/Project.h>
+#include <Paralax/Renderer/Image.h>
 
 #include <algorithm>
 #include <filesystem>
@@ -47,7 +49,7 @@ namespace {
 			REQUIRE(Context.Execute("project.set_start_scene", {{"path", "Scenes/Main.pxscene"}}).Success);
 		}
 
-		CommandResult Export(const std::filesystem::path& output) { return Context.Execute("project.export", {{"output", output.generic_string()}}); }
+		CommandResult Export(const std::filesystem::path& output) { return Context.Execute("project.export", {{"output", ToUtf8(output)}}); }
 	};
 
 	std::string ExecutableName(const std::string& stem)
@@ -246,6 +248,45 @@ TEST_CASE("ProjectCommands: project.export names the executable safely")
 	ExportFixture spaced("ProjectExportSpaced", "Space Game");
 	REQUIRE(spaced.Export(spaced.Root / "Build").Success);
 	CHECK(std::filesystem::is_regular_file(spaced.Root / "Build" / ExecutableName("Space_Game")));
+}
+
+TEST_CASE("ProjectCommands: non-ASCII names travel through commands and the export as UTF-8")
+{
+	// "Brick-é-日本.png" and "Niveau-é-日本.pxscene", as UTF-8 bytes.
+	const std::string texture = "Textures/Brick-\xC3\xA9-\xE6\x97\xA5\xE6\x9C\xAC.png";
+	const std::string scene = "Scenes/Niveau-\xC3\xA9-\xE6\x97\xA5\xE6\x9C\xAC.pxscene";
+	ExportFixture fixture("ProjectNonAscii");
+	REQUIRE(Image(4, 4).SavePNG(fixture.Directory / "Assets" / FromUtf8(texture)));
+	const CommandResult imported = fixture.Context.Execute("asset.import", {{"path", texture}});
+	REQUIRE_MESSAGE(imported.Success, imported.Error);
+	const CommandResult saved = fixture.Context.Execute("scene.save", {{"path", scene}});
+	REQUIRE_MESSAGE(saved.Success, saved.Error);
+	CHECK(saved.Result["path"].get<std::string>().ends_with(scene));
+	REQUIRE(fixture.Context.Execute("scene.open", {{"path", scene}}).Success);
+	CHECK(fixture.Context.Execute("scene.info").Result["path"].get<std::string>().ends_with(scene));
+	const CommandResult assets = fixture.Context.Execute("asset.list");
+	bool listed = false;
+	for (const json& asset : assets.Result["assets"])
+		listed |= asset["path"] == texture && asset["handle"] == imported.Result["handle"];
+	CHECK(listed);
+
+	// The export copies them, and its marker lists them in UTF-8, so the next export recognises its own files.
+	const std::filesystem::path output = fixture.Root / FromUtf8("Build-\xC3\xA9");
+	const CommandResult exported = fixture.Export(output);
+	REQUIRE_MESSAGE(exported.Success, exported.Error);
+	CHECK(std::filesystem::equivalent(FromUtf8(exported.Result["path"].get<std::string>()), output));
+	CHECK(std::filesystem::is_regular_file(output / "Assets" / FromUtf8(texture)));
+	CHECK(std::filesystem::is_regular_file(output / "Assets" / FromUtf8(scene)));
+	const std::string marker = Paralax::Testing::ReadFileText(output / ".paralax-export");
+	CHECK(marker.find("Assets/" + texture + "\n") != std::string::npos);
+	CHECK(marker.find("Assets/" + scene + "\n") != std::string::npos);
+	const CommandResult again = fixture.Export(output);
+	CHECK_MESSAGE(again.Success, again.Error);
+
+	Ref<Project> exportedProject = Project::Load(output);
+	REQUIRE(exportedProject);
+	const AssetHandle exportedTexture = exportedProject->GetAssetManager().GetHandleForPath(FromUtf8(texture));
+	CHECK(std::to_string(static_cast<uint64_t>(exportedTexture)) == imported.Result["handle"].get<std::string>());
 }
 
 TEST_CASE("ProjectCommands: project.export needs a project with a start scene")

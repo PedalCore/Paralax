@@ -10,6 +10,7 @@
 #include "Paralax/Core/Layer.h"
 #include "Paralax/Core/Log.h"
 #include "Paralax/Core/MouseCodes.h"
+#include "Paralax/Core/PathEncoding.h"
 #include "Paralax/Core/Timer.h"
 #include "Paralax/Core/Timestep.h"
 #include "Paralax/Core/UUID.h"

@@ -3,6 +3,7 @@
 
 #include "Paralax/Animation/AnimationSystem.h"
 #include "Paralax/Asset/AssetManager.h"
+#include "Paralax/Core/PathEncoding.h"
 #include "Paralax/Physics/PhysicsSystem.h"
 #include "Paralax/Scene/Scene.h"
 #include "Paralax/Scene/SceneSerializer.h"
@@ -88,7 +89,7 @@ namespace Paralax {
 			{
 				// Reported like a script error, so agents and --fail-on-script-error see it.
 				const std::string message = fmt::format("Scene.Load: the scene '{}' could not be loaded; the game stays in the current scene",
-														metadata ? metadata->FilePath.generic_string() : std::to_string(static_cast<uint64_t>(target)));
+														metadata ? ToUtf8(metadata->FilePath) : std::to_string(static_cast<uint64_t>(target)));
 				PX_CORE_ERROR("{}", message);
 				RecordErrors({message});
 				return;

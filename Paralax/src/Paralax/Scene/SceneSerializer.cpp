@@ -2,6 +2,7 @@
 #include "Paralax/Scene/SceneSerializer.h"
 
 #include "Paralax/Core/JsonText.h"
+#include "Paralax/Core/PathEncoding.h"
 #include "Paralax/Scene/ComponentRegistry.h"
 #include "Paralax/Scene/Entity.h"
 
@@ -55,14 +56,14 @@ namespace Paralax {
 			std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
 			if (!file)
 			{
-				PX_CORE_ERROR("Cannot write '{}'", temporary.string());
+				PX_CORE_ERROR("Cannot write '{}'", ToUtf8(temporary));
 				return false;
 			}
 			file.write(contents.data(), static_cast<std::streamsize>(contents.size()));
 			file.flush();
 			if (!file)
 			{
-				PX_CORE_ERROR("Failed while writing '{}'", temporary.string());
+				PX_CORE_ERROR("Failed while writing '{}'", ToUtf8(temporary));
 				std::filesystem::remove(temporary, error);
 				return false;
 			}
@@ -71,7 +72,7 @@ namespace Paralax {
 		std::filesystem::rename(temporary, path, error);
 		if (error)
 		{
-			PX_CORE_ERROR("Cannot replace '{}': {}", path.string(), error.message());
+			PX_CORE_ERROR("Cannot replace '{}': {}", ToUtf8(path), error.message());
 			std::filesystem::remove(temporary, error);
 			return false;
 		}
@@ -265,7 +266,7 @@ namespace Paralax {
 
 	bool SceneSerializer::SaveToFile(Scene& scene, const std::filesystem::path& path)
 	{
-		return WriteFileAtomically(path, Serialize(scene).dump(1, '\t') + "\n");
+		return WriteFileAtomically(path, FormatJsonDocument(Serialize(scene)));
 	}
 
 	Ref<Scene> SceneSerializer::LoadFromFile(const std::filesystem::path& path)
@@ -273,32 +274,32 @@ namespace Paralax {
 		std::string text;
 		if (!ReadTextFile(path, text))
 		{
-			PX_CORE_ERROR("Cannot open scene '{}'", path.string());
+			PX_CORE_ERROR("Cannot open scene '{}'", ToUtf8(path));
 			return nullptr;
 		}
 		if (JsonExceedsDepth(text, MaxJsonDepth))
 		{
-			PX_CORE_ERROR("Scene '{}' nests too deeply", path.string());
+			PX_CORE_ERROR("Scene '{}' nests too deeply", ToUtf8(path));
 			return nullptr;
 		}
 
 		json document = json::parse(text, nullptr, false);
 		if (document.is_discarded())
 		{
-			PX_CORE_ERROR("Scene '{}' is not valid JSON", path.string());
+			PX_CORE_ERROR("Scene '{}' is not valid JSON", ToUtf8(path));
 			return nullptr;
 		}
 
-		auto scene = CreateRef<Scene>(path.stem().string());
+		auto scene = CreateRef<Scene>(ToUtf8(path.stem()));
 		std::string error;
 		std::vector<std::string> warnings;
 		if (!Deserialize(*scene, document, error, &warnings))
 		{
-			PX_CORE_ERROR("Cannot load scene '{}': {}", path.string(), error);
+			PX_CORE_ERROR("Cannot load scene '{}': {}", ToUtf8(path), error);
 			return nullptr;
 		}
 		for (const std::string& warning : warnings)
-			PX_CORE_WARN("Scene '{}': {}", path.string(), warning);
+			PX_CORE_WARN("Scene '{}': {}", ToUtf8(path), warning);
 		return scene;
 	}
 

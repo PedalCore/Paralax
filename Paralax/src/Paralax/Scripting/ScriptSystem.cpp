@@ -5,6 +5,7 @@
 #include "Paralax/Audio/AudioSystem.h"
 #include "Paralax/Core/Input.h"
 #include "Paralax/Core/InputNames.h"
+#include "Paralax/Core/PathEncoding.h"
 #include "Paralax/Game/GameState.h"
 #include "Paralax/Math/Math.h"
 #include "Paralax/Physics/PhysicsSystem.h"
@@ -645,7 +646,7 @@ namespace Paralax {
 		// Runs inside a script (a Lua error raised here propagates to the requiring code, which reports it).
 		sol::object Require(const std::string& name)
 		{
-			std::filesystem::path path = std::filesystem::path(name).lexically_normal();
+			std::filesystem::path path = FromUtf8(name).lexically_normal();
 			if (path.extension() != ".lua")
 				path += ".lua";
 			// Key by the registry path, so different spellings of the same file load it once.
@@ -653,8 +654,8 @@ namespace Paralax {
 			const AssetHandle handle = registryPath ? Assets.GetHandleForPath(*registryPath) : AssetHandle(0);
 			Ref<ScriptAsset> script = handle.IsValid() ? Assets.GetAsset<ScriptAsset>(handle) : nullptr;
 			if (!script)
-				ScriptError(fmt::format("require: no script '{}' in the project", path.generic_string()));
-			const std::string key = registryPath->generic_string();
+				ScriptError(fmt::format("require: no script '{}' in the project", ToUtf8(path)));
+			const std::string key = ToUtf8(*registryPath);
 			if (auto it = Modules.find(key); it != Modules.end())
 				return it->second;
 			if (ModulesLoading.contains(key))
@@ -1218,7 +1219,7 @@ namespace Paralax {
 				if (std::optional<uint64_t> id = ParseId(target))
 					handle = UUID(*id);
 				else if (target.get_type() == sol::type::string)
-					handle = Assets.GetHandleForPath(target.as<std::string>());
+					handle = Assets.GetHandleForPath(FromUtf8(target.as<std::string>()));
 				if (!handle.IsValid() || Assets.GetAssetType(handle) != AssetType::Scene)
 					ScriptError("Scene.Load: no scene with that handle or path");
 				GetScene(); // Only while running.
@@ -1233,7 +1234,7 @@ namespace Paralax {
 				if (std::optional<uint64_t> id = ParseId(prefab))
 					handle = UUID(*id);
 				else if (prefab.get_type() == sol::type::string)
-					handle = Assets.GetHandleForPath(prefab.as<std::string>());
+					handle = Assets.GetHandleForPath(FromUtf8(prefab.as<std::string>()));
 				Ref<PrefabAsset> asset = handle.IsValid() ? Assets.GetAsset<PrefabAsset>(handle) : nullptr;
 				if (!asset)
 					ScriptError("Scene.Instantiate: no prefab with that handle or path");
@@ -1331,7 +1332,7 @@ namespace Paralax {
 				if (std::optional<uint64_t> id = ParseId(clip))
 					handle = UUID(*id);
 				else if (clip.get_type() == sol::type::string)
-					handle = Assets.GetHandleForPath(clip.as<std::string>());
+					handle = Assets.GetHandleForPath(FromUtf8(clip.as<std::string>()));
 				if (!handle.IsValid() || Assets.GetAssetType(handle) != AssetType::Audio)
 					ScriptError("Audio.PlayOneShot: no audio clip with that handle or path");
 				std::optional<glm::vec3> where;
