@@ -203,11 +203,15 @@ TEST_CASE("ProjectCommands: project.export accepts a new output directory writte
 	CHECK(std::filesystem::is_directory(fixture.Root / "Build"));
 	// By identity: the result is canonical, the temporary directory need not be (macOS /var, Windows short names).
 	CHECK(std::filesystem::equivalent(std::filesystem::path(absolute.Result["path"].get<std::string>()), fixture.Root / "Build"));
+	// Each export holds a copy of the runtime: removed once checked, so the temporary root stays small.
+	std::error_code removeError;
+	std::filesystem::remove_all(fixture.Root / "Build", removeError);
 
 	// Relative to the project directory, as the command documents; the same again replaces the previous export.
 	CHECK(fixture.Context.Execute("project.export", {{"output", "../Beside/"}}).Success);
 	CHECK(std::filesystem::is_directory(fixture.Root / "Beside"));
 	CHECK(fixture.Context.Execute("project.export", {{"output", "../Beside//"}}).Success);
+	std::filesystem::remove_all(fixture.Root / "Beside", removeError);
 
 	// Other spellings of a directory that does not exist yet.
 	for (const char* spelling : {"Doubled//", "Dotted/.", "Dotted2/./", "Climbed/Sub/.."})
@@ -218,6 +222,7 @@ TEST_CASE("ProjectCommands: project.export accepts a new output directory writte
 		const CommandResult result = fixture.Context.Execute("project.export", {{"output", "../" + std::string(spelling)}});
 		CHECK_MESSAGE(result.Success, result.Error);
 		CHECK(std::filesystem::is_directory(fixture.Root / name));
+		std::filesystem::remove_all(fixture.Root / name, removeError);
 	}
 
 	// A root has no name however it is written.

@@ -345,9 +345,12 @@ TEST_CASE("BuiltinCommands: edits while playing leave the editor scene and undo 
 TEST_CASE("BuiltinCommands: undo and redo while playing say to stop play mode, and keep the history")
 {
 	EditorContext context;
-	const std::string id = CreateEntity(context, {{"name", "Box"}});
-	CHECK(context.Execute("edit.undo").Success);
-	CHECK(context.Execute("edit.redo").Success);
+	// Something to undo and something to redo: two created, the second undone.
+	const std::string box = CreateEntity(context, {{"name", "Box"}});
+	const std::string ball = CreateEntity(context, {{"name", "Ball"}});
+	REQUIRE(context.Execute("edit.undo").Success);
+	REQUIRE(context.CanUndo());
+	REQUIRE(context.CanRedo());
 	REQUIRE(context.Execute("play.start").Success);
 
 	for (const char* command : {"edit.undo", "edit.redo"})
@@ -356,14 +359,19 @@ TEST_CASE("BuiltinCommands: undo and redo while playing say to stop play mode, a
 		CHECK_FALSE(result.Success);
 		CHECK(result.Error == "Stop play mode first (play.stop)");
 	}
-	CHECK(context.Execute("scene.info").Result["canUndo"] == true);
-	CHECK(context.CanUndo());
+	const json info = context.Execute("scene.info").Result;
+	CHECK(info["canUndo"] == true);
+	CHECK(info["canRedo"] == true);
 
+	// Both kinds of history still work once play stops.
 	REQUIRE(context.Execute("play.stop").Success);
-	CHECK(context.Execute("edit.undo").Result["undone"] == "entity.create");
+	CHECK(context.Execute("edit.redo").Result["redone"] == "entity.create");
+	CHECK(context.Execute("entity.get", {{"id", ball}}).Success);
+	CHECK(context.Execute("edit.undo").Success);
+	CHECK(context.Execute("edit.undo").Success);
 	CHECK(context.Execute("scene.info").Result["entities"] == 0);
 	CHECK(context.Execute("edit.redo").Success);
-	CHECK(context.Execute("entity.get", {{"id", id}}).Success);
+	CHECK(context.Execute("entity.get", {{"id", box}}).Success);
 }
 
 TEST_CASE("BuiltinCommands: component.set cannot give an entity an empty name")
