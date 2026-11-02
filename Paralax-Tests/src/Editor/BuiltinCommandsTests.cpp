@@ -51,7 +51,7 @@ TEST_CASE("BuiltinCommands: errors show refused ids, names and keys briefly, wha
 	auto fails = [&](std::string_view command, const json& params) {
 		const CommandResult result = context.Execute(command, params);
 		CHECK_FALSE(result.Success);
-		CHECK_MESSAGE(result.Error.size() < ShortErrorBytes, result.Error.substr(0, ShortErrorBytes));
+		REQUIRE_MESSAGE(result.Error.size() < ShortErrorBytes, result.Error.substr(0, ShortErrorBytes));
 		return result.Error;
 	};
 

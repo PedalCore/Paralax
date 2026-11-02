@@ -148,7 +148,10 @@ TEST_CASE("JsonText: DescribeJsonValue shows a short value whole, with its type"
 	// Binary data (from CBOR or code) is described by its size alone.
 	CHECK(DescribeJsonValue(json::binary({1, 2, 3})) == "binary data (3 bytes)");
 	CHECK(DescribeJsonValue(json::binary({1})) == "binary data (1 byte)");
-	CHECK(DescribeJsonValue(json::array({json::binary({1})})) == "[<binary>] (array)");
+	CHECK(DescribeJsonValue(json::array({json::binary({1}), json::binary({1, 2, 3})})) == "[<binary 1 byte>,<binary 3 bytes>] (array)");
+	// Inside a container the sized token is left out whole when it does not fit.
+	const std::string padding(MaxPreviewBytes - 12, 'p');
+	CHECK(DescribeJsonValue(json::array({padding, json::binary({1, 2, 3})})) == "[\"" + padding + "\",... (array of 2 elements)");
 
 	// A preview of exactly MaxPreviewBytes is whole, so it is not cut.
 	const std::string fits(MaxPreviewBytes - 2, 'a');
@@ -159,13 +162,17 @@ TEST_CASE("JsonText: DescribeJsonValue shows a short value whole, with its type"
 
 TEST_CASE("JsonText: a long string is described in a few bytes that give its full size")
 {
+	// Each size is required first, so a regression reports a few bytes of the result rather than all 16 MiB.
+	constexpr size_t ShortBytes = 128;
 	const std::string huge(16u << 20, 'x');
 	const std::string description = DescribeJsonValue(huge);
+	REQUIRE_MESSAGE(description.size() < ShortBytes, description.substr(0, ShortBytes));
 	CHECK(description == "\"" + std::string(MaxPreviewBytes - 1, 'x') + "... (string of 16777216 bytes)");
-	CHECK(description.size() < 128);
 
 	bool cut = false;
-	CHECK(PreviewText(huge, &cut) == std::string(MaxPreviewBytes, 'x') + "...");
+	const std::string preview = PreviewText(huge, &cut);
+	REQUIRE_MESSAGE(preview.size() < ShortBytes, preview.substr(0, ShortBytes));
+	CHECK(preview == std::string(MaxPreviewBytes, 'x') + "...");
 	CHECK(cut);
 	CHECK(PreviewText("Bogus", &cut) == "Bogus");
 	CHECK_FALSE(cut);
@@ -173,7 +180,9 @@ TEST_CASE("JsonText: a long string is described in a few bytes that give its ful
 
 	CHECK(QuoteText("Bogus") == "'Bogus'");
 	CHECK(QuoteText("") == "''");
-	CHECK(QuoteText(huge) == "'" + std::string(MaxPreviewBytes, 'x') + "...' (16777216 bytes)");
+	const std::string quoted = QuoteText(huge);
+	REQUIRE_MESSAGE(quoted.size() < ShortBytes, quoted.substr(0, ShortBytes));
+	CHECK(quoted == "'" + std::string(MaxPreviewBytes, 'x') + "...' (16777216 bytes)");
 	CHECK(QuoteText(std::string(MaxPreviewBytes + 1, 'x')) == "'" + std::string(MaxPreviewBytes, 'x') + "...' (65 bytes)");
 }
 
@@ -246,10 +255,23 @@ TEST_CASE("JsonText: quotes, backslashes and control characters are escaped, and
 {
 	CHECK(PreviewText("a\"b\\c\nd\te\r\b\f\x01\x1F\x7F") == "a\\\"b\\\\c\\nd\\te\\r\\b\\f\\u0001\\u001f\\u007f");
 	CHECK(DescribeJsonValue("line\nbreak") == "\"line\\nbreak\" (string)");
-	// C1 controls (U+0085 NEL, U+009B CSI) and the Unicode line and paragraph separators, as UTF-8; the characters
-	// around them (U+00A0, U+2027, U+202A) are printable and stay as they are.
+	// C1 controls (U+0085 NEL, U+009B CSI) and the Unicode line and paragraph separators, as UTF-8. U+00A0 (no-break
+	// space) and U+2027 (hyphenation point) are printable and stay as they are.
 	CHECK(PreviewText("\xC2\x80\xC2\x85\xC2\x9B\xC2\x9F\xC2\xA0") == "\\u0080\\u0085\\u009b\\u009f\xC2\xA0");
-	CHECK(PreviewText("\xE2\x80\xA7\xE2\x80\xA8\xE2\x80\xA9\xE2\x80\xAA") == "\xE2\x80\xA7\\u2028\\u2029\xE2\x80\xAA");
+	CHECK(PreviewText("\xE2\x80\xA7\xE2\x80\xA8\xE2\x80\xA9") == "\xE2\x80\xA7\\u2028\\u2029");
+	// Invisible format characters, each range's ends: zero-width space to right-to-left mark (U+200B-U+200F),
+	// left-to-right embedding to right-to-left override (U+202A-U+202E), word joiner to pop directional isolate
+	// (U+2060-U+2069), and the byte order mark. Without this, a name that starts with U+202E would make the rest of
+	// its log line display reversed.
+	CHECK(PreviewText("\xE2\x80\x8B\xE2\x80\x8F\xE2\x80\xAA\xE2\x80\xAE\xE2\x81\xA0\xE2\x81\xA9\xEF\xBB\xBF") ==
+		  "\\u200b\\u200f\\u202a\\u202e\\u2060\\u2069\\ufeff");
+	CHECK(QuoteText("\xE2\x80\xAE"
+					"exe.txt") == "'\\u202eexe.txt'");
+	// Printable neighbours of those ranges stay as they are: U+200A (hair space), U+2010 (hyphen), U+202F (narrow
+	// no-break space), U+205F (medium mathematical space), U+2070 (superscript zero), U+FEFC (an Arabic ligature)
+	// and U+FF01 (fullwidth exclamation mark).
+	const std::string neighbours = "\xE2\x80\x8A\xE2\x80\x90\xE2\x80\xAF\xE2\x81\x9F\xE2\x81\xB0\xEF\xBB\xBC\xEF\xBC\x81";
+	CHECK(PreviewText(neighbours) == neighbours);
 	CHECK(QuoteText("it's \"quoted\"") == "'it's \\\"quoted\\\"'");
 	// Ten six-byte escapes fit in the preview; the eleventh is left out whole.
 	std::string expected;
@@ -267,25 +289,28 @@ TEST_CASE("JsonText: DescribeJsonValue walks containers iteratively and stops on
 	json* innermost = &deep;
 	for (int level = 0; level < 100000; level++)
 		innermost = &innermost->emplace_back(json::array());
+	// Sizes are required first, so a regression reports a few bytes of the result rather than all of it.
+	constexpr size_t ShortBytes = 128;
 	std::string description;
 	CHECK_NOTHROW(description = DescribeJsonValue(deep));
+	REQUIRE_MESSAGE(description.size() < ShortBytes, description.substr(0, ShortBytes));
 	CHECK(description == std::string(MaxPreviewBytes, '[') + "... (array of 1 element)");
 
 	json wide = json::array();
 	for (int i = 0; i < 10000; i++)
 		wide.push_back(0);
 	description = DescribeJsonValue(wide);
+	REQUIRE_MESSAGE(description.size() < ShortBytes, description.substr(0, ShortBytes));
 	CHECK(description.starts_with("[0,0,0,"));
 	CHECK(description.ends_with("... (array of 10000 elements)"));
-	CHECK(description.size() < 128);
 
 	json members = json::object();
 	for (int i = 0; i < 1000; i++)
 		members["Key" + std::to_string(i)] = i;
 	description = DescribeJsonValue(members);
+	REQUIRE_MESSAGE(description.size() < ShortBytes, description.substr(0, ShortBytes));
 	CHECK(description.starts_with("{\"Key0\":0,\"Key1\":1,"));
 	CHECK(description.ends_with("... (object of 1000 members)"));
-	CHECK(description.size() < 128);
 
 	// A long string or key inside a container is cut like a string on its own.
 	CHECK(DescribeJsonValue(json::array({std::string(1000, 'x')})) == "[\"" + std::string(MaxPreviewBytes - 2, 'x') + "... (array of 1 element)");

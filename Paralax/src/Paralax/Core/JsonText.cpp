@@ -26,11 +26,18 @@ namespace Paralax {
 			return true;
 		}
 
-		// Control characters (C0, DEL and C1, where a terminal may read U+009B as the start of an escape sequence) and
-		// the line and paragraph separators, which could break a log line or fake the start of another.
+		// Characters that would let quoted text change how a log line reads rather than what it says: control
+		// characters (C0, DEL and C1, where a terminal may read U+009B as the start of an escape sequence), the line
+		// and paragraph separators, which could break a line or fake the start of another, and the invisible format
+		// characters (zero-width spaces and joiners, the bidirectional marks, embeddings, overrides and isolates, and
+		// the byte order mark), with which a name such as U+202E + "...txt" would display reversed.
 		bool NeedsUnicodeEscape(char32_t code)
 		{
-			return code < U' ' || (code >= U'\x7F' && code <= U'\x9F') || code == U'\x2028' || code == U'\x2029';
+			return code < U' ' || (code >= U'\x7F' && code <= U'\x9F') ||         // C0, DEL, C1
+				   (code >= U'\x200B' && code <= U'\x200F') ||                    // ZWSP, ZWNJ, ZWJ, LRM, RLM
+				   code == U'\x2028' || code == U'\x2029' ||                      // Line and paragraph separators
+				   (code >= U'\x202A' && code <= U'\x202E') ||                    // LRE, RLE, PDF, LRO, RLO
+				   (code >= U'\x2060' && code <= U'\x2069') || code == U'\xFEFF'; // Word joiner to PDI; BOM
 		}
 
 		// Appends text escaped as inside a JSON string, one character at a time, until the next character would grow
@@ -77,6 +84,11 @@ namespace Paralax {
 			return true;
 		}
 
+		std::string Count(size_t count, std::string_view singular, std::string_view plural)
+		{
+			return fmt::format("{} {}", count, count == 1 ? singular : plural);
+		}
+
 		bool AppendNumber(std::string& out, const json& value, size_t limit)
 		{
 			if (value.is_number_float())
@@ -116,7 +128,7 @@ namespace Paralax {
 					case json::value_t::number_float: return AppendNumber(out, value, limit);
 					case json::value_t::string:
 						return AppendToken(out, "\"", limit) && AppendEscaped(out, value.get_ref<const std::string&>(), limit) && AppendToken(out, "\"", limit);
-					case json::value_t::binary: return AppendToken(out, "<binary>", limit);
+					case json::value_t::binary: return AppendToken(out, fmt::format("<binary {}>", Count(value.get_binary().size(), "byte", "bytes")), limit);
 					case json::value_t::discarded: return AppendToken(out, "<discarded>", limit);
 					case json::value_t::array:
 					case json::value_t::object:
@@ -157,11 +169,6 @@ namespace Paralax {
 					return false;
 			}
 			return true;
-		}
-
-		std::string Count(size_t count, std::string_view singular, std::string_view plural)
-		{
-			return fmt::format("{} {}", count, count == 1 ? singular : plural);
 		}
 
 	}

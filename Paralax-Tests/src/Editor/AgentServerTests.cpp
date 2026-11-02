@@ -119,7 +119,7 @@ TEST_CASE("AgentServer: an error quotes a refused method or value briefly, whate
 	const json unknown = AgentServer::HandleRequest(context, Request(1, huge), executed);
 	CHECK(ErrorCode(unknown) == AgentServer::MethodNotFound);
 	const std::string unknownMessage = unknown["error"]["message"].get<std::string>();
-	CHECK(unknownMessage.size() < 256);
+	REQUIRE_MESSAGE(unknownMessage.size() < 256, unknownMessage.substr(0, 256));
 	CHECK_MESSAGE(unknownMessage.starts_with("Unknown command 'xxxx"), unknownMessage);
 	CHECK_MESSAGE(unknownMessage.find("...' (16777216 bytes)") != std::string::npos, unknownMessage);
 	CHECK(executed == 0);
@@ -128,7 +128,7 @@ TEST_CASE("AgentServer: an error quotes a refused method or value briefly, whate
 	const json created = AgentServer::HandleRequest(context, Request(2, "entity.create", {{"name", "A"}, {"components", {{"PointLight", {{"Intensity", huge}}}}}}), executed);
 	CHECK(ErrorCode(created) == AgentServer::CommandFailed);
 	const std::string createdMessage = created["error"]["message"].get<std::string>();
-	CHECK(createdMessage.size() < 256);
+	REQUIRE_MESSAGE(createdMessage.size() < 256, createdMessage.substr(0, 256));
 	CHECK_MESSAGE(createdMessage.starts_with("Field 'Intensity' expects"), createdMessage);
 	CHECK_MESSAGE(createdMessage.ends_with("... (string of 16777216 bytes)"), createdMessage);
 }

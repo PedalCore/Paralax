@@ -42,8 +42,9 @@ namespace Paralax {
 
 	// Untrusted text (a name or key from a file, an agent or a script) as a message may show it. Characters are
 	// escaped as inside a JSON string: double quotes, backslashes, and as \uXXXX every control character (C0, DEL and
-	// C1) and U+2028/U+2029, so the text can neither break a log line nor start a terminal escape sequence. Every
-	// malformed UTF-8 sequence becomes U+FFFD (see DecodeUtf8), so the result is always well-formed UTF-8. The
+	// C1), U+2028/U+2029 and the invisible format characters (U+200B-U+200F, U+202A-U+202E, U+2060-U+2069, U+FEFF),
+	// so the text can neither break a log line, start a terminal escape sequence nor reorder how a line displays.
+	// Every malformed UTF-8 sequence becomes U+FFFD (see DecodeUtf8), so the result is always well-formed UTF-8. The
 	// preview is cut between characters before it would exceed MaxPreviewBytes, and then ends in "..."; outCut, if
 	// given, says whether it was cut. Never throws, and reads only as much of the text as it shows. Pure; safe to
 	// call from any thread.
@@ -58,9 +59,10 @@ namespace Paralax {
 	// 1.5 (number) or [1,2] (array); null is just null. A preview cut short ends in "..." and the type then gives
 	// the value's full size: "aaaa... (string of 16777216 bytes), or [0,0,... (array of 10000 elements). Numbers
 	// JSON cannot hold, which a value built in code can, show as NaN, Infinity and -Infinity, and binary data only
-	// by its size. The walk is iterative and stops as soon as the preview is full, so neither the value's size nor
-	// its depth matters (depth is capped where documents are read, but not for values built in code). Never throws.
-	// Pure; safe to call from any thread, provided no other thread modifies the value.
+	// by its size: binary data (3 bytes) on its own, [<binary 3 bytes>] (array) inside a container, where the token
+	// is left out whole if it does not fit. The walk is iterative and stops as soon as the preview is full, so
+	// neither the value's size nor its depth matters (depth is capped where documents are read, but not for values
+	// built in code). Never throws. Pure; safe to call from any thread, provided no other thread modifies the value.
 	std::string DescribeJsonValue(const nlohmann::json& value);
 
 }

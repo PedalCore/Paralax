@@ -154,7 +154,7 @@ TEST_CASE("SceneSerializer: warnings quote a hostile file's names and values bri
 	REQUIRE(SceneSerializer::Deserialize(scene, document, error, &warnings));
 	REQUIRE(warnings.size() == 2);
 	for (const std::string& warning : warnings)
-		CHECK_MESSAGE(warning.size() < 1024, warning.substr(0, 1024));
+		REQUIRE_MESSAGE(warning.size() < 1024, warning.substr(0, 1024));
 	CHECK(warnings[0] == "Entity 100: Field 'Intensity' expects a finite number, got \"" + std::string(MaxPreviewBytes - 1, 'x') + "... (string of 16777216 bytes); Unknown field 'PointLight.Unknown100'; Unknown field 'PointLight.Unknown101'; Unknown field 'PointLight.Unknown102'; Unknown field 'PointLight.Unknown103'; Unknown field 'PointLight.Unknown104'; Unknown field 'PointLight.Unknown105'; Unknown field 'PointLight.Unknown106'; and 93 more");
 	CHECK(warnings[1] == "Entity 100: unknown component '" + std::string(MaxPreviewBytes, 'x') + "...' (16777216 bytes) skipped");
 }

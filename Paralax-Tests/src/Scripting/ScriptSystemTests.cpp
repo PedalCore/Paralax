@@ -217,7 +217,7 @@ namespace {
 		std::optional<std::string> result;
 		CHECK_NOTHROW(result = fixture.System->Evaluate(code, error));
 		CHECK_FALSE(result);
-		CHECK_MESSAGE(error.size() < ShortErrorBytes, error.substr(0, ShortErrorBytes));
+		REQUIRE_MESSAGE(error.size() < ShortErrorBytes, error.substr(0, ShortErrorBytes));
 		CHECK(IsWellFormedUtf8(error));
 		return error;
 	}
