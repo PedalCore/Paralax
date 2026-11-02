@@ -435,16 +435,58 @@ TEST_CASE("EditorContext: names with invalid UTF-8 can still be snapshotted, und
 	CHECK_NOTHROW((void)described.Result.dump(-1, ' ', false, json::error_handler_t::replace));
 }
 
-TEST_CASE("EditorContext: restoring a snapshot that would drop a value fails verification")
+TEST_CASE("EditorContext: a value a restored snapshot cannot hold is logged and reported, and the rest is kept")
 {
+	// Written behind the registry's back, as no edit may: the scene format refuses the name, so loading a snapshot
+	// that holds it drops it (the entity is named "Entity" again), as opening a saved file would.
+	auto plant = [](EditorContext& context, const std::string& id) {
+		context.GetActiveScene().GetEntityByUUID(UUID(std::stoull(id))).GetComponent<TagComponent>().Name = std::string(TagComponent::MaxLength + 1, 'n');
+	};
+	auto nameOf = [](EditorContext& context, const std::string& id) { return context.Execute("entity.get", {{"id", id}}).Result["name"]; };
+
+	// Undo: the result lists what was dropped, the log has it as an error, and nothing aborts.
 	EditorContext context;
 	const std::string id = CreateEntity(context, {{"name", "Box"}});
-	// Written behind the registry's back, as no edit may: the scene format refuses the name, so loading the snapshot
-	// that holds it would quietly turn it into "Entity".
-	context.GetActiveScene().GetEntityByUUID(UUID(std::stoull(id))).GetComponent<TagComponent>().Name = std::string(TagComponent::MaxLength + 1, 'n');
-	REQUIRE(context.Execute("component.set", {{"id", id}, {"components", {{"Transform", {{"Translation", {1, 0, 0}}}}}}}).Success);
-	Paralax::Testing::ScopedAssertionCapture capture;
-	CHECK_THROWS_AS(context.Undo(), Paralax::Testing::AssertionFailedError);
+	const std::string other = CreateEntity(context, {{"name", "Other"}});
+	plant(context, id);
+	REQUIRE(context.Execute("component.set", {{"id", other}, {"components", {{"Transform", {{"Translation", {1, 0, 0}}}}}}}).Success);
+	{
+		Paralax::Testing::ScopedLogCapture log;
+		const CommandResult undone = context.Execute("edit.undo");
+		REQUIRE(undone.Success);
+		REQUIRE(undone.Result.contains("warnings"));
+		REQUIRE(undone.Result["warnings"].size() == 1);
+		CHECK(undone.Result["warnings"][0].get<std::string>().find("at most 256 bytes") != std::string::npos);
+		CHECK(log.Contains(spdlog::level::err, "dropped a value"));
+	}
+	CHECK(nameOf(context, id) == "Entity");
+	CHECK(nameOf(context, other) == "Other");
+	CHECK(context.Execute("entity.get", {{"id", other}}).Result["components"]["Transform"]["Translation"] == json::array({0.0, 0.0, 0.0}));
+	// The history survives: the change can be redone. The redo step was snapshotted before the undo, with the planted
+	// name still in it, so redoing reports the same loss.
+	std::vector<std::string> warnings;
+	REQUIRE(context.Redo(&warnings));
+	REQUIRE(warnings.size() == 1);
+	CHECK(warnings[0].find("at most 256 bytes") != std::string::npos);
+	CHECK(nameOf(context, id) == "Entity");
+	CHECK(context.Execute("entity.get", {{"id", other}}).Result["components"]["Transform"]["Translation"] == json::array({1.0, 0.0, 0.0}));
+	plant(context, id);
+	REQUIRE(context.Undo());
+	const CommandResult redone = context.Execute("edit.redo");
+	REQUIRE(redone.Success);
+	REQUIRE(redone.Result.contains("warnings"));
+	CHECK(redone.Result["warnings"].size() == 1);
+
+	// Rollback: a failed command's error also names what restoring the scene dropped.
+	EditorContext third;
+	const std::string lamp = CreateEntity(third, {{"name", "Lamp"}});
+	plant(third, lamp);
+	const CommandResult failed = third.Execute("component.set", {{"id", lamp}, {"components", {{"PointLight", {{"Range", 3}}}, {"Bogus", json::object()}}}});
+	CHECK_FALSE(failed.Success);
+	CHECK(failed.Error.find("unknown component 'Bogus'") != std::string::npos);
+	CHECK(failed.Error.find("rolling back also dropped") != std::string::npos);
+	CHECK(failed.Error.find("at most 256 bytes") != std::string::npos);
+	CHECK_FALSE(third.Execute("entity.get", {{"id", lamp}}).Result["components"].contains("PointLight"));
 }
 
 TEST_CASE("EditorContext: a command during an interactive edit is its own undo step and rolls back on its own")

@@ -122,8 +122,12 @@ namespace Paralax::Editor {
 		// A bracket opened while playing records nothing (the editor scene is not being edited). An uncommitted
 		// change is rolled back if it modified the editor scene. Note that undo, redo and rollback replace the
 		// Scene object: never hold a Scene& or component references across a call that may change the scene.
+		//
+		// Undo, redo and rollback load a snapshot of the scene. Should a snapshot hold a value the scene format refuses
+		// (an edit that bypassed validation), that value is dropped as a file load would drop it: each such loss is
+		// logged as an error and appended to outWarnings, and the rest of the scene and the history are kept.
 		void BeginUndoableChange(const std::string& description);
-		void EndUndoableChange(bool committed);
+		void EndUndoableChange(bool committed, std::vector<std::string>* outWarnings = nullptr);
 		bool IsChangeOpen() const { return m_ChangeDepth > 0; }
 
 		// Interactive edits (dragging a value, typing, moving a gizmo) span many frames but form one undo step.
@@ -141,8 +145,10 @@ namespace Paralax::Editor {
 		bool CanRedo() const { return !m_RedoStack.empty(); }
 		std::string GetUndoDescription() const { return m_UndoStack.empty() ? std::string() : m_UndoStack.back().Description; }
 		std::string GetRedoDescription() const { return m_RedoStack.empty() ? std::string() : m_RedoStack.back().Description; }
-		bool Undo();
-		bool Redo();
+		// Return false if there is nothing to undo or redo (or play mode or a change is open). Values the restored
+		// snapshot could not hold are reported in outWarnings (see BeginUndoableChange).
+		bool Undo(std::vector<std::string>* outWarnings = nullptr);
+		bool Redo(std::vector<std::string>* outWarnings = nullptr);
 		// Makes the scene as it is now the starting point, as opening a scene does: forgets the undo and redo history
 		// and marks the scene clean (it is not saved). Returns false while a change is open.
 		bool ResetHistory();
@@ -175,7 +181,8 @@ namespace Paralax::Editor {
 		};
 
 		std::string SnapshotScene();
-		void RestoreScene(const std::string& snapshot);
+		// Replaces the editor scene with a snapshot. Returns what loading it dropped (each also logged as an error).
+		std::vector<std::string> RestoreScene(const std::string& snapshot);
 		void PushUndo(UndoEntry entry);
 		void TrimUndoHistory();
 		void ClearUndoHistory();

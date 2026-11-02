@@ -294,19 +294,23 @@ namespace Paralax::Editor {
 		return SceneSerializer::Serialize(*m_EditorScene).dump(-1, ' ', false, json::error_handler_t::replace);
 	}
 
-	void EditorContext::RestoreScene(const std::string& snapshot)
+	std::vector<std::string> EditorContext::RestoreScene(const std::string& snapshot)
 	{
 		auto scene = CreateRef<Scene>(m_EditorScene->GetName());
 		std::string error;
 		std::vector<std::string> warnings;
-		// Snapshots come from Serialize, so they load completely. A warning means an edit stored a value the scene
-		// format refuses, which loading would silently drop: verify, to catch such writes rather than lose data.
+		// Snapshots come from Serialize, so they always parse and load; verify to catch serializer regressions.
 		const json document = json::parse(snapshot, nullptr, false);
 		PX_CORE_VERIFY(!document.is_discarded() && SceneSerializer::Deserialize(*scene, document, error, &warnings), "Undo snapshot failed to load: {}", error);
-		PX_CORE_VERIFY(warnings.empty(), "Undo snapshot loaded with changes ({}); an edit stored a value the scene format refuses", warnings.front());
+		// A warning means an edit stored a value the scene format refuses (one that bypassed validation): loading
+		// drops it, as opening the saved file would. That is an engine bug, but one value is not worth the user's
+		// whole scene and history, so it is reported, loudly, and the rest is kept.
+		for (const std::string& warning : warnings)
+			PX_CORE_ERROR("Restoring the scene dropped a value an edit had stored: {}", warning);
 		scene->SetViewportSize(m_EditorScene->GetViewportWidth(), m_EditorScene->GetViewportHeight());
 		m_EditorScene = scene;
 		PruneSelection();
+		return warnings;
 	}
 
 	void EditorContext::BeginUndoableChange(const std::string& description)
@@ -316,7 +320,7 @@ namespace Paralax::Editor {
 			m_PendingChange = UndoEntry{description, SnapshotScene(), m_Selection};
 	}
 
-	void EditorContext::EndUndoableChange(bool committed)
+	void EditorContext::EndUndoableChange(bool committed, std::vector<std::string>* outWarnings)
 	{
 		PX_CORE_ASSERT(m_ChangeDepth > 0, "EndUndoableChange without a matching BeginUndoableChange");
 		if (m_ChangeDepth == 0 || --m_ChangeDepth != 0)
@@ -332,7 +336,11 @@ namespace Paralax::Editor {
 			// Failed commands may have partially modified the scene; roll back. Most failures change nothing, and
 			// then the scene object is kept.
 			if (changed)
-				RestoreScene(entry.Scene);
+			{
+				std::vector<std::string> warnings = RestoreScene(entry.Scene);
+				if (outWarnings)
+					outWarnings->insert(outWarnings->end(), warnings.begin(), warnings.end());
+			}
 			m_Selection = entry.Selection;
 			PruneSelection();
 			return;
@@ -415,7 +423,7 @@ namespace Paralax::Editor {
 		EndUndoableChange(true);
 	}
 
-	bool EditorContext::Undo()
+	bool EditorContext::Undo(std::vector<std::string>* outWarnings)
 	{
 		CommitInteractiveEdit();
 		if (IsPlaying() || IsChangeOpen() || m_UndoStack.empty())
@@ -424,14 +432,16 @@ namespace Paralax::Editor {
 		m_UndoStack.pop_back();
 		m_UndoBytes -= entry.Scene.size();
 		m_RedoStack.push_back({entry.Description, SnapshotScene(), m_Selection});
-		RestoreScene(entry.Scene);
+		std::vector<std::string> warnings = RestoreScene(entry.Scene);
+		if (outWarnings)
+			outWarnings->insert(outWarnings->end(), warnings.begin(), warnings.end());
 		m_Selection = entry.Selection;
 		PruneSelection();
 		m_SceneDirty = true;
 		return true;
 	}
 
-	bool EditorContext::Redo()
+	bool EditorContext::Redo(std::vector<std::string>* outWarnings)
 	{
 		CommitInteractiveEdit();
 		if (IsPlaying() || IsChangeOpen() || m_RedoStack.empty())
@@ -439,7 +449,9 @@ namespace Paralax::Editor {
 		UndoEntry entry = std::move(m_RedoStack.back());
 		m_RedoStack.pop_back();
 		PushUndo({entry.Description, SnapshotScene(), m_Selection});
-		RestoreScene(entry.Scene);
+		std::vector<std::string> warnings = RestoreScene(entry.Scene);
+		if (outWarnings)
+			outWarnings->insert(outWarnings->end(), warnings.begin(), warnings.end());
 		m_Selection = entry.Selection;
 		PruneSelection();
 		m_SceneDirty = true;

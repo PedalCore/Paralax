@@ -333,9 +333,13 @@ namespace Paralax::Editor {
 							   context.CommitInteractiveEdit();
 							   if (context.IsChangeOpen())
 								   return CommandResult::Fail("An edit is in progress");
-							   if (!context.Undo())
+							   std::vector<std::string> warnings;
+							   if (!context.Undo(&warnings))
 								   return CommandResult::Fail("Nothing to undo");
-							   return CommandResult::Ok({{"undone", description}});
+							   json result = {{"undone", description}};
+							   if (!warnings.empty())
+								   result["warnings"] = warnings; // Values the restored scene could not hold (logged as errors).
+							   return CommandResult::Ok(std::move(result));
 						   }});
 
 		registry.Register({"edit.redo", "Redoes the last undone scene change (not while playing).", {}, false, [](EditorContext& context, const json&) {
@@ -345,9 +349,13 @@ namespace Paralax::Editor {
 							   context.CommitInteractiveEdit();
 							   if (context.IsChangeOpen())
 								   return CommandResult::Fail("An edit is in progress");
-							   if (!context.Redo())
+							   std::vector<std::string> warnings;
+							   if (!context.Redo(&warnings))
 								   return CommandResult::Fail("Nothing to redo");
-							   return CommandResult::Ok({{"redone", description}});
+							   json result = {{"redone", description}};
+							   if (!warnings.empty())
+								   result["warnings"] = warnings;
+							   return CommandResult::Ok(std::move(result));
 						   }});
 
 		// --- Play mode -------------------------------------------------------------------------------

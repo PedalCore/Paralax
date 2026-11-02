@@ -4,6 +4,11 @@
 
 #include <Paralax/Core/Base.h>
 
+#include <spdlog/fmt/ranges.h>
+
+#include <string>
+#include <vector>
+
 namespace Paralax::Editor {
 
 	using json = nlohmann::json;
@@ -111,7 +116,13 @@ namespace Paralax::Editor {
 		}
 
 		if (descriptor->ModifiesScene)
-			context.EndUndoableChange(result.Success);
+		{
+			std::vector<std::string> warnings;
+			context.EndUndoableChange(result.Success, &warnings);
+			// Rolling back loads the scene as it was; if that dropped a value, the caller must hear of it too.
+			if (!warnings.empty())
+				result.Error += fmt::format(" (rolling back also dropped a value the scene could not hold: {})", fmt::join(warnings, "; "));
+		}
 		return result;
 	}
 
