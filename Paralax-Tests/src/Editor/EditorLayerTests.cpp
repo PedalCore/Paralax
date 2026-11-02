@@ -87,7 +87,7 @@ TEST_CASE("EditorLayer: registers its commands while attached and unregisters ev
 			added.insert(name);
 	}
 	CHECK(added == std::set<std::string>{"editor.camera.focus", "editor.camera.get", "editor.camera.set", "editor.gizmo.get", "editor.gizmo.set", "render.settings.get",
-										 "render.settings.set", "render.stats"});
+										 "render.settings.set", "render.stats", "render.gi.state", "render.gi.reset", "render.gi.step", "render.gi.inspect"});
 	CHECK(editor.Context.GetCaptureHandler());
 
 	editor.App->PopLayer(editor.Layer);

@@ -197,7 +197,10 @@ void TraceProbes(uint3 dispatch : SV_DispatchThreadID)
 			float3 barycentric = float3(1.0 - hit.Barycentric.x - hit.Barycentric.y, hit.Barycentric);
 			float2 uv = triangle.UV01.xy * barycentric.x + triangle.UV01.zw * barycentric.y + triangle.UV2.xy * barycentric.z;
 			float3 normal = triangle.Normal[0].xyz * barycentric.x + triangle.Normal[1].xyz * barycentric.y + triangle.Normal[2].xyz * barycentric.z;
-			normal = dot(normal, normal) > 1e-10 ? normalize(normal) : geometric;
+			// CPU normal matrices share a positive rescale. A fixed length threshold would change shading
+			// under anisotropic transforms; normalize relative to the largest component instead.
+			float normalMagnitude = max(abs(normal.x), max(abs(normal.y), abs(normal.z)));
+			normal = normalMagnitude > 0.0 ? normalize(normal / normalMagnitude) : geometric;
 			if (backFace)
 			{
 				geometric = -geometric;
@@ -409,6 +412,7 @@ void InspectProbeGI()
 	result.Irradiance = SampleProbeGI(g_Query.Position.xyz, g_Query.Normal.xyz, g_Query.View.xyz, g_Query.Probe, g_PreviousIrradiance, g_PreviousDistance, g_Query.View.w);
 	if (point.Inside)
 	{
+		float2 irradianceUV = ProbeIrradianceUV(point.Normal);
 		for (uint corner = 0; corner < 8; ++corner)
 		{
 			ProbeNeighbour neighbour = GetProbeNeighbour(point, corner, g_Query.Probe, g_PreviousDistance);
@@ -416,7 +420,7 @@ void InspectProbeGI()
 			result.Neighbours[corner].Moments = float4(neighbour.Moments.xy, neighbour.RawVariance, neighbour.Variance);
 			result.Neighbours[corner].Sampling = float4(neighbour.Moments.z, neighbour.ExpectedMass, neighbour.Confidence, 0.0);
 			result.Neighbours[corner].Weights = float4(neighbour.Trilinear, neighbour.Facing, neighbour.Visibility, neighbour.Weight);
-			result.Neighbours[corner].IrradianceWeight = float4(ProbeDirectionalIrradiance(point.Normal, neighbour.Index, g_PreviousIrradiance), neighbour.Weight);
+			result.Neighbours[corner].IrradianceWeight = float4(ProbeDirectionalIrradiance(irradianceUV, neighbour.Index, g_PreviousIrradiance), neighbour.Weight);
 			result.Neighbours[corner].Metadata = uint4(neighbour.Index, neighbour.Moments.w >= 0.5 ? 1 : 0, 0, 0);
 			ProbeVisibilityRay surface = InspectVisibility(g_Query.Position.xyz, point.Normal, neighbour.Position);
 			ProbeVisibilityRay biased = InspectVisibility(point.Biased, point.Normal, neighbour.Position);

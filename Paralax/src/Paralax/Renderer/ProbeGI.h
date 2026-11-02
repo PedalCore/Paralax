@@ -24,6 +24,9 @@ namespace Paralax {
 		}
 	};
 
+	// Update accepts finite origins within +/-1e6 metres, spacing 0.1–100 metres, counts 2–12 per axis,
+	// rays 32–256, update budget 1–1728 and hysteresis 0–0.99. Normal bias is 0–half the spacing in metres;
+	// view bias is 0–0.5 of spacing. Adapter buffer and layer limits may impose smaller volumes.
 	struct ProbeGISpecification
 	{
 		glm::vec3 Origin{0.0f};
@@ -101,6 +104,8 @@ namespace Paralax {
 		bool Initialize(nvrhi::ICommandList* commands);
 		// Unsupported adapters initialize a valid disabled forward binding; Update returns false.
 		bool IsSupported() const { return m_Supported; }
+		// True when the last failed Update already reported a specific scene/buffer cause (possibly memoized).
+		bool HasReportedUpdateFailure() const { return m_ReportedUpdateFailure; }
 		bool Update(Scene& scene, AssetManager& assets, const ProbeGISpecification& specification, nvrhi::ICommandList* commands,
 					nvrhi::IBuffer* viewConstants, nvrhi::IBuffer* lights, nvrhi::ITexture* environment, uint32_t lightCount);
 		// Disables sampling and discards history. Bindings remain valid for the forward pipeline.
@@ -140,6 +145,8 @@ namespace Paralax {
 		bool m_HasHistory = false;
 		Ref<const ProbeTraceSceneIdentity> m_SceneIdentity;
 		bool m_GPUSceneDirty = true;
+		bool m_ReportedUpdateFailure = false;
+		uint32_t m_ReportedUploadFailures = 0;
 		uint32_t m_Current = 0;
 		uint32_t m_Cursor = 0;
 		uint32_t m_Frame = 0;

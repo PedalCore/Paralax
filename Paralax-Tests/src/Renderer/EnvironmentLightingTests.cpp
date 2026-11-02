@@ -11,6 +11,7 @@
 #include <glm/gtc/packing.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -128,6 +129,7 @@ TEST_CASE("EnvironmentLighting: packaged HDR environments generate finite radian
 		return;
 	auto& graphics = *Testing::GetTestGraphicsDevice();
 	const auto initialErrors = graphics.GetValidationErrorCount();
+	INFO("adapter: ", graphics.GetInfo().AdapterName, ", driver: ", graphics.GetInfo().DriverName);
 	{
 		auto* device = graphics.GetDevice();
 		AssetManager assets;
@@ -159,19 +161,34 @@ TEST_CASE("EnvironmentLighting: packaged HDR environments generate finite radian
 				{
 					CAPTURE(mip);
 					double totalEnergy = 0;
+					std::array<double, 6> faceEnergies{};
 					size_t invalid = 0;
 					for (uint32_t face = 0; face < 6; face++)
 					{
+						CAPTURE(face);
 						const auto values = ReadHalfTexture(device, texture, mip, face, 4);
+						double faceEnergy = 0;
+						float minimumAlpha = 1.0f, maximumAlpha = 0.0f;
 						for (size_t i = 0; i < values.size(); i++)
 						{
 							const float value = values[i];
 							invalid += !std::isfinite(value) || value < 0.0f || value > 65.0f ? 1 : 0;
 							if (i % 4 != 3)
-								totalEnergy += static_cast<double>(value);
+								faceEnergy += static_cast<double>(value);
+							else
+							{
+								minimumAlpha = std::min(minimumAlpha, value);
+								maximumAlpha = std::max(maximumAlpha, value);
+							}
 						}
+						INFO("face RGB energy: ", faceEnergy, ", alpha range: [", minimumAlpha, ", ", maximumAlpha, "]");
+						CHECK(minimumAlpha == 1.0f);
+						CHECK(maximumAlpha == 1.0f);
+						faceEnergies[face] = faceEnergy;
+						totalEnergy += faceEnergy;
 					}
 					CHECK(invalid == 0);
+					INFO("face RGB energies: ", faceEnergies[0], ", ", faceEnergies[1], ", ", faceEnergies[2], ", ", faceEnergies[3], ", ", faceEnergies[4], ", ", faceEnergies[5]);
 					CHECK(totalEnergy > 0.01);
 				}
 			}

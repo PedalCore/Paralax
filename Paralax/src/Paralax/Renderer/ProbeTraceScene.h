@@ -11,6 +11,7 @@ namespace Paralax {
 
 	class Scene;
 	class AssetManager;
+	struct GraphicsDeviceLimits;
 	struct ProbeTraceSceneIdentity;
 
 	namespace GPU {
@@ -55,6 +56,9 @@ namespace Paralax {
 		static constexpr float MaxCoordinate = 1000000.0f;
 		static constexpr float MaxMaterialValue = 1000000.0f;
 
+		// Default construction uses Vulkan's guaranteed storage-buffer range. The supplied limits are copied.
+		ProbeTraceScene();
+		explicit ProbeTraceScene(const GraphicsDeviceLimits& limits);
 		bool Update(Scene& scene, AssetManager& assets, bool& changed);
 		// Opaque shared lifetime token for the accepted scene; retaining it distinguishes address reuse.
 		const Ref<const ProbeTraceSceneIdentity>& GetSceneIdentity() const { return m_SceneIdentity; }
@@ -64,9 +68,22 @@ namespace Paralax {
 		const std::vector<glm::vec4>& GetTexels() const { return m_Texels; }
 
 	private:
+		enum class RejectionKind
+		{
+			Mesh,
+			Material,
+			BaseColorTexture,
+			EmissiveTexture,
+			MetallicRoughnessTexture,
+			Transform,
+			Budget
+		};
 		Ref<const ProbeTraceSceneIdentity> m_SceneIdentity, m_RejectedSceneIdentity;
+		uint64_t m_MaxStorageBufferBytes;
 		std::vector<uint64_t> m_Snapshot;
-		std::vector<uint64_t> m_RejectedSnapshot;
+		std::vector<uint64_t> m_RejectedKey, m_RejectedTransform;
+		RejectionKind m_RejectedKind = RejectionKind::Mesh;
+		std::vector<std::vector<uint64_t>> m_InvalidTransforms;
 		std::vector<GPU::ProbeTraceNode> m_Nodes;
 		std::vector<GPU::ProbeTraceTriangle> m_Triangles;
 		std::vector<GPU::ProbeTraceMaterial> m_Materials;

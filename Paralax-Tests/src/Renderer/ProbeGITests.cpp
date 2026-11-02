@@ -558,6 +558,7 @@ TEST_CASE("ProbeGI: static geometry edits upload the scene while preserving budg
 	cube.AddComponent<RigidbodyComponent>().Type = RigidbodyType::Static;
 	FailingProbeResources factory;
 	ProbeFixture fixture(graphics.GetDevice(), &factory);
+	fixture.Specification.Spacing = 2.0f;
 	fixture.Specification.ProbesPerFrame = 1;
 	fixture.Specification.Hysteresis = 0.9f;
 	REQUIRE(fixture.Update(scene, assets));
@@ -625,16 +626,16 @@ TEST_CASE("ProbeGI: allocation failures preserve valid bindings and retry the cu
 	const uint32_t errors = graphics.GetValidationErrorCount();
 	for (bool previouslyValid : {false, true})
 		for (auto kind : {FailingProbeResources::Kind::Buffer, FailingProbeResources::Kind::Texture, FailingProbeResources::Kind::Bindings})
-			for (int allocation = 0; allocation < (kind == FailingProbeResources::Kind::Buffer ? 5 : kind == FailingProbeResources::Kind::Texture ? 4
-																																				  : 3);
-				 ++allocation)
+			for (int allocation = 0;; ++allocation)
 			{
+				REQUIRE(allocation < 32);
 				CAPTURE(previouslyValid);
 				CAPTURE(kind);
 				CAPTURE(allocation);
 				AssetManager assets;
 				Scene scene;
 				FailingProbeResources factory;
+				Testing::ScopedLogCapture failureLogs;
 				ProbeFixture fixture(graphics.GetDevice(), &factory);
 				if (previouslyValid)
 					REQUIRE(fixture.Update(scene, assets));
@@ -642,8 +643,23 @@ TEST_CASE("ProbeGI: allocation failures preserve valid bindings and retry the cu
 				fixture.Specification.Counts = {3, 2, 2};
 				factory.FailureKind = kind;
 				factory.Remaining = allocation;
-				CHECK_FALSE(fixture.Update(scene, assets));
-				REQUIRE(factory.Failed);
+				const bool updated = fixture.Update(scene, assets);
+				if (!factory.Failed)
+				{
+					REQUIRE(updated);
+					CHECK(allocation == (kind == FailingProbeResources::Kind::Buffer ? 5 : kind == FailingProbeResources::Kind::Texture ? 4
+																																		: 3));
+					break;
+				}
+				CHECK_FALSE(updated);
+				if (kind == FailingProbeResources::Kind::Buffer && allocation < 4)
+				{
+					const std::array<const char*, 4> names{"ProbeTraceNodes", "ProbeTraceTriangles", "ProbeTraceMaterials", "ProbeTraceTexels"};
+					CHECK(failureLogs.Contains(spdlog::level::err, names[static_cast<size_t>(allocation)]));
+					factory.Remaining = allocation;
+					CHECK_FALSE(fixture.Update(scene, assets));
+					CHECK(failureLogs.Count(spdlog::level::err, "Probe GI upload refused") == 1);
+				}
 				CHECK(fixture.GI.GetBindings() != nullptr);
 				CHECK(fixture.GI.GetConstants().Origin.w == 0.0f);
 				// Retry immediately: the renderer does not drain prior submissions after an allocation failure.
@@ -665,10 +681,9 @@ TEST_CASE("ProbeGI: partial initialization allocation failures release safely")
 	const uint32_t errors = graphics.GetValidationErrorCount();
 	auto* device = graphics.GetDevice();
 	for (auto kind : {FailingProbeResources::Kind::Buffer, FailingProbeResources::Kind::Texture, FailingProbeResources::Kind::Bindings})
-		for (int allocation = 0; allocation < (kind == FailingProbeResources::Kind::Texture ? 4 : kind == FailingProbeResources::Kind::Bindings ? 2
-																																				: 1);
-			 ++allocation)
+		for (int allocation = 0;; ++allocation)
 		{
+			REQUIRE(allocation < 32);
 			CAPTURE(kind);
 			CAPTURE(allocation);
 			FailingProbeResources factory;
@@ -679,12 +694,18 @@ TEST_CASE("ProbeGI: partial initialization allocation failures release safely")
 			commands->open();
 			{
 				ProbeGI gi(device, graphics.GetInfo().Limits, &factory);
-				CHECK_FALSE(gi.Initialize(commands));
-				CHECK(factory.Failed);
+				const bool initialized = gi.Initialize(commands);
+				CHECK(initialized == !factory.Failed);
+				commands->close();
+				device->executeCommandList(commands);
+				device->waitForIdle();
 			}
-			commands->close();
-			device->executeCommandList(commands);
-			device->waitForIdle();
+			if (!factory.Failed)
+			{
+				CHECK(allocation == (kind == FailingProbeResources::Kind::Texture ? 4 : kind == FailingProbeResources::Kind::Bindings ? 2
+																																	  : 1));
+				break;
+			}
 		}
 	CHECK(graphics.GetValidationErrorCount() == errors);
 }
@@ -702,6 +723,14 @@ TEST_CASE("ProbeGI: initialization and recording preconditions are verified in e
 	Scene scene;
 	AssetManager assets;
 	CHECK_THROWS_AS(gi.Update(scene, assets, {}, nullptr, nullptr, nullptr, nullptr, 0), Testing::AssertionFailedError);
+	ProbeFixture fixture(device);
+	fixture.Commands->open();
+	CHECK_THROWS_AS(fixture.GI.Update(scene, assets, fixture.Specification, nullptr, fixture.View, fixture.Lights, fixture.Sky, 0), Testing::AssertionFailedError);
+	CHECK_THROWS_AS(fixture.GI.Update(scene, assets, fixture.Specification, fixture.Commands, nullptr, fixture.Lights, fixture.Sky, 0), Testing::AssertionFailedError);
+	CHECK_THROWS_AS(fixture.GI.Update(scene, assets, fixture.Specification, fixture.Commands, fixture.View, nullptr, fixture.Sky, 0), Testing::AssertionFailedError);
+	CHECK_THROWS_AS(fixture.GI.Disable(nullptr), Testing::AssertionFailedError);
+	fixture.Commands->close();
+	device->executeCommandList(fixture.Commands);
 }
 
 TEST_CASE("ProbeGI: restricted adapter limits reject unsupported work before validation")
@@ -734,9 +763,13 @@ TEST_CASE("ProbeGI: restricted adapter limits reject unsupported work before val
 		Testing::ScopedLogCapture logs;
 		ProbeFixture fixture(graphics.GetDevice(), nullptr, &limits);
 		CHECK(fixture.GI.IsSupported() == (restriction >= 2));
+		if (restriction < 2)
+			CHECK(logs.Contains(spdlog::level::warn, "six storage-buffer descriptors"));
 		CHECK_FALSE(fixture.Update(scene, assets));
 		CHECK(fixture.GI.GetBindings() != nullptr);
 		CHECK(fixture.GI.GetConstants().Origin.w == 0.0f);
+		if (restriction == 4)
+			CHECK(logs.Contains(spdlog::level::err, "ProbeTraceTriangles"));
 	}
 	CHECK(graphics.GetValidationErrorCount() == errors);
 }
@@ -793,7 +826,8 @@ TEST_CASE("ProbeGI: unsupported adapters retain forward lighting and report fail
 		if (entry.Level == spdlog::level::warn && entry.Message.find("Only one GI volume") != std::string::npos)
 			++volumeWarnings;
 	}
-	CHECK(failures == 1);
+	CHECK(failures == 0);
+	CHECK(logs.Count(spdlog::level::warn, "Probe GI is unavailable") == 1);
 	CHECK(volumeWarnings == 2);
 	CHECK(graphics.GetValidationErrorCount() == errors);
 }
@@ -1047,6 +1081,18 @@ TEST_CASE("ProbeTraceScene: diffuse mip selection bounds memory without blurring
 	CHECK_FALSE(trace.Update(scene, assets, changed));
 	CHECK_FALSE(changed);
 	CHECK(trace.GetMaterials()[0].Textures[0].y == 1024);
+	CHECK(logs.Contains(spdlog::level::err, "texture mip data"));
+	auto masked = CreateRef<MaterialAsset>();
+	masked->Handle = AssetHandle(60120);
+	masked->BaseColorTexture = texture->Handle;
+	masked->Alpha = AlphaMode::Mask;
+	assets.AddMemoryAsset(masked);
+	AddCube(scene, {2, 0, 0}, glm::vec3(1), masked->Handle);
+	REQUIRE(trace.Update(scene, assets, changed));
+	REQUIRE(trace.GetMaterials().size() == 2);
+	for (const auto& entry : trace.GetMaterials())
+		CHECK(entry.Textures[0].y == 1024);
+	CHECK(trace.GetTexels().size() == 1024 * 512 + 1);
 }
 
 TEST_CASE("ProbeGI: open sky conserves diffuse irradiance and thin enclosing walls block it")
@@ -1059,6 +1105,8 @@ TEST_CASE("ProbeGI: open sky conserves diffuse irradiance and thin enclosing wal
 	Scene scene;
 	{
 		ProbeFixture fixture(graphics.GetDevice());
+		fixture.Specification.Spacing = 2.0f;
+		fixture.Specification.Origin = glm::vec3(-1.0f);
 		REQUIRE(fixture.Update(scene, assets));
 		for (const auto& pixel : ReadProbe(graphics.GetDevice(), fixture.GI.GetIrradiance()))
 		{
@@ -1070,6 +1118,8 @@ TEST_CASE("ProbeGI: open sky conserves diffuse irradiance and thin enclosing wal
 	Enclose(scene);
 	{
 		ProbeFixture fixture(graphics.GetDevice());
+		fixture.Specification.Spacing = 2.0f;
+		fixture.Specification.Origin = glm::vec3(-1.0f);
 		REQUIRE(fixture.Update(scene, assets));
 		for (const auto& pixel : ReadProbe(graphics.GetDevice(), fixture.GI.GetIrradiance()))
 		{
@@ -1240,6 +1290,19 @@ TEST_CASE("ProbeGI: forward shading rejects exterior probes across thin walls an
 		}
 		const auto blocked = ReadbackTexture(graphics.GetDevice(), output).GetPixel(32, 32);
 		CHECK(blocked.r < bounced.r / 2);
+		renderer.GetSettings().DebugView = RenderDebugView::GICoverage;
+		renderer.Render(scene, camera, framebuffer);
+		const auto covered = ReadbackTexture(graphics.GetDevice(), output).GetPixel(32, 32);
+		CHECK(covered.r == 255);
+		CHECK(covered.g == 255);
+		CHECK(covered.b == 255);
+		for (auto handle : scene.GetAllEntitiesWith<GIVolumeComponent>())
+			Entity(handle, &scene).GetTransform().Translation = glm::vec3(100);
+		renderer.Render(scene, camera, framebuffer);
+		const auto outside = ReadbackTexture(graphics.GetDevice(), output).GetPixel(32, 32);
+		CHECK(outside.r == 0);
+		CHECK(outside.g == 0);
+		CHECK(outside.b == 0);
 	}
 	CHECK(graphics.GetValidationErrorCount() == errors);
 }
@@ -1387,6 +1450,18 @@ TEST_CASE("ProbeGI: asymmetric directional irradiance preserves world axes and o
 	fixture.Commands->close();
 	fixture.Device->executeCommandList(fixture.Commands);
 	REQUIRE(fixture.Update(scene, assets));
+	const auto tile = ReadProbe(fixture.Device, fixture.GI.GetIrradiance());
+	for (uint32_t i = 1; i <= 6; ++i)
+	{
+		CHECK(tile[i * 8] == tile[(7 - i) * 8 + 1]);
+		CHECK(tile[i * 8 + 7] == tile[(7 - i) * 8 + 6]);
+		CHECK(tile[i] == tile[8 + 7 - i]);
+		CHECK(tile[56 + i] == tile[48 + 7 - i]);
+	}
+	CHECK(tile[0] == tile[54]);
+	CHECK(tile[7] == tile[49]);
+	CHECK(tile[56] == tile[14]);
+	CHECK(tile[63] == tile[9]);
 	for (glm::vec3 axis : {glm::vec3(1, 0, 0), glm::vec3(0, 1, 0), glm::vec3(0, 0, 1)})
 		for (float sign : {-1.0f, 1.0f})
 		{
@@ -1772,13 +1847,20 @@ TEST_CASE("ProbeGI: inspection allocation failures preserve history and recover 
 	const auto before = ReadProbe(fixture.Device, fixture.GI.GetIrradiance());
 	const uint32_t updates = fixture.GI.GetUpdateCount();
 	for (auto kind : {FailingProbeResources::Kind::Buffer, FailingProbeResources::Kind::Bindings})
-		for (int index = 0; index < (kind == FailingProbeResources::Kind::Buffer ? 3 : 1); ++index)
+		for (int index = 0;; ++index)
 		{
 			factory.FailureKind = kind;
 			factory.Remaining = index;
+			REQUIRE(index < 32);
 			factory.Failed = false;
-			CHECK_FALSE(fixture.GI.Inspect({}, {0, 1, 0}, {0, 0, 1}));
-			CHECK(factory.Failed);
+			const auto result = fixture.GI.Inspect({}, {0, 1, 0}, {0, 0, 1});
+			if (!factory.Failed)
+			{
+				REQUIRE(result);
+				CHECK(index == (kind == FailingProbeResources::Kind::Buffer ? 3 : 1));
+				break;
+			}
+			CHECK_FALSE(result);
 			CHECK(fixture.GI.HasHistory());
 			CHECK(fixture.GI.GetUpdateCount() == updates);
 			CHECK(ReadProbe(fixture.Device, fixture.GI.GetIrradiance()) == before);
@@ -2024,4 +2106,460 @@ TEST_CASE("ProbeGI: non-shadowing emissive proxies retain emission while releasi
 		CHECK(maximum.b < 1e-6f);
 	}
 	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeTraceScene: rejected causes ignore unrelated motion and asset edits then recover")
+{
+	AssetManager assets;
+	Scene scene;
+	auto mesh = MeshPrimitives::CreateCube();
+	mesh->Handle = AssetHandle(60101);
+	assets.AddMemoryAsset(mesh);
+	auto bad = AddCube(scene, {}, glm::vec3(1));
+	bad.GetComponent<MeshComponent>().Mesh = mesh->Handle;
+	auto otherMaterial = CreateRef<MaterialAsset>();
+	otherMaterial->Handle = AssetHandle(60102);
+	assets.AddMemoryAsset(otherMaterial);
+	auto unrelated = AddCube(scene, {3, 0, 0}, glm::vec3(1), otherMaterial->Handle);
+	ProbeTraceScene trace;
+	bool changed;
+	REQUIRE(trace.Update(scene, assets, changed));
+	const auto originalIndex = mesh->Indices[0];
+	mesh->Indices[0] = std::numeric_limits<uint32_t>::max();
+	++mesh->Version;
+	Testing::ScopedLogCapture logs;
+	REQUIRE_FALSE(trace.Update(scene, assets, changed));
+	CHECK(logs.Count(spdlog::level::err, "vertex index outside mesh") == 1);
+	for (int frame = 0; frame < 3; ++frame)
+	{
+		unrelated.GetTransform().Translation.x += 1;
+		bad.GetComponent<MeshComponent>().Materials = {otherMaterial->Handle};
+		otherMaterial->RoughnessFactor = 0.1f * static_cast<float>(frame);
+		++otherMaterial->Version;
+		CHECK_FALSE(trace.Update(scene, assets, changed));
+		CHECK_FALSE(changed);
+	}
+	CHECK(logs.Count(spdlog::level::err, "Probe GI scene rejected") == 1);
+	CHECK(trace.GetTriangles().size() == 24);
+	SUBCASE("repair version releases the rejection")
+	{
+		mesh->Indices[0] = originalIndex;
+		++mesh->Version;
+		REQUIRE(trace.Update(scene, assets, changed));
+		CHECK(changed);
+		CHECK(trace.GetTriangles().size() == 24);
+	}
+	SUBCASE("removing the offending instance releases the rejection")
+	{
+		scene.DestroyEntity(bad);
+		REQUIRE(trace.Update(scene, assets, changed));
+		CHECK(trace.GetTriangles().size() == 12);
+	}
+}
+
+TEST_CASE("ProbeTraceScene: a transformed coordinate rejection follows only the offending transform")
+{
+	AssetManager assets;
+	Scene scene;
+	auto bad = AddCube(scene, {}, glm::vec3(1));
+	auto unrelated = AddCube(scene, {3, 0, 0}, glm::vec3(1));
+	ProbeTraceScene trace;
+	bool changed;
+	REQUIRE(trace.Update(scene, assets, changed));
+	bad.GetTransform().Translation.x = ProbeTraceScene::MaxCoordinate * 2;
+	Testing::ScopedLogCapture logs;
+	REQUIRE_FALSE(trace.Update(scene, assets, changed));
+	unrelated.GetTransform().Translation.x = 4;
+	CHECK_FALSE(trace.Update(scene, assets, changed));
+	CHECK(logs.Count(spdlog::level::err, "transformed vertex") == 1);
+	bad.GetTransform().Translation.x = 5;
+	REQUIRE(trace.Update(scene, assets, changed));
+	CHECK(changed);
+	CHECK(trace.GetTriangles().size() == 24);
+}
+
+TEST_CASE("ProbeTraceScene: adapter budgets reject named buffers and retain the previous snapshot")
+{
+	AssetManager assets;
+	Scene scene;
+	bool changed;
+	Testing::ScopedLogCapture logs;
+	SUBCASE("triangle range is inclusive and zero scale releases a budget rejection")
+	{
+		GraphicsDeviceLimits limits;
+		limits.MaxStorageBufferBytes = 12 * sizeof(GPU::ProbeTraceTriangle);
+		ProbeTraceScene trace(limits);
+		AddCube(scene, {}, glm::vec3(1));
+		REQUIRE(trace.Update(scene, assets, changed));
+		auto extra = AddCube(scene, {3, 0, 0}, glm::vec3(1));
+		REQUIRE_FALSE(trace.Update(scene, assets, changed));
+		CHECK_FALSE(changed);
+		CHECK(trace.GetTriangles().size() == 12);
+		extra.GetTransform().Translation.x = 4;
+		CHECK_FALSE(trace.Update(scene, assets, changed));
+		CHECK(logs.Count(spdlog::level::err, "ProbeTraceTriangles") == 1);
+		extra.GetTransform().Scale = glm::vec3(0);
+		REQUIRE(trace.Update(scene, assets, changed));
+		CHECK(trace.GetTriangles().size() == 12);
+	}
+	SUBCASE("placeholder triangle must fit even in an empty scene")
+	{
+		GraphicsDeviceLimits limits;
+		limits.MaxStorageBufferBytes = sizeof(GPU::ProbeTraceTriangle) - 1;
+		ProbeTraceScene trace(limits);
+		CHECK_FALSE(trace.Update(scene, assets, changed));
+		CHECK_FALSE(trace.Update(scene, assets, changed));
+		CHECK(logs.Count(spdlog::level::err, "ProbeTraceTriangles placeholder") == 1);
+	}
+	SUBCASE("material and texel limits are independent of triangle count")
+	{
+		auto mesh = CreateRef<MeshAsset>();
+		mesh->Handle = AssetHandle(60103);
+		mesh->Submeshes.emplace_back();
+		assets.AddMemoryAsset(mesh);
+		GraphicsDeviceLimits limits;
+		limits.MaxStorageBufferBytes = 2 * sizeof(GPU::ProbeTraceMaterial);
+		ProbeTraceScene trace(limits);
+		std::array<Ref<MaterialAsset>, 3> materials;
+		for (uint32_t i = 0; i < materials.size(); ++i)
+		{
+			materials[i] = CreateRef<MaterialAsset>();
+			materials[i]->Handle = AssetHandle(60104 + i);
+			assets.AddMemoryAsset(materials[i]);
+			auto entity = AddCube(scene, {}, glm::vec3(1), materials[i]->Handle);
+			entity.GetComponent<MeshComponent>().Mesh = mesh->Handle;
+			if (i < 2)
+				REQUIRE(trace.Update(scene, assets, changed));
+		}
+		CHECK_FALSE(trace.Update(scene, assets, changed));
+		CHECK(logs.Count(spdlog::level::err, "ProbeTraceMaterials") == 1);
+		CHECK(trace.GetMaterials().size() == 2);
+		// Share a material to release that budget, then exceed the independent texel budget by one texel.
+		for (auto handle : scene.GetAllEntitiesWith<MeshComponent>())
+			Entity(handle, &scene).GetComponent<MeshComponent>().Materials = {materials[0]->Handle};
+		std::array<uint8_t, 3 * 4 * 4> pixels{};
+		auto texture = TextureAsset::CreateRGBA8(3, 4, pixels.data(), false);
+		texture->Handle = AssetHandle(60107);
+		assets.AddMemoryAsset(texture);
+		materials[0]->BaseColorTexture = texture->Handle;
+		++materials[0]->Version;
+		CHECK_FALSE(trace.Update(scene, assets, changed));
+		CHECK(logs.Count(spdlog::level::err, "ProbeTraceTexels") == 1);
+		materials[0]->BaseColorTexture = 0;
+		++materials[0]->Version;
+		REQUIRE(trace.Update(scene, assets, changed));
+		CHECK(trace.GetMaterials().size() == 1);
+	}
+}
+
+TEST_CASE("ProbeTraceScene: validates index ranges and transforms without losing small valid surfaces")
+{
+	AssetManager assets;
+	Scene scene;
+	auto mesh = MeshPrimitives::CreateCube();
+	mesh->Handle = AssetHandle(60108);
+	assets.AddMemoryAsset(mesh);
+	auto entity = AddCube(scene, {}, glm::vec3(1));
+	entity.GetComponent<MeshComponent>().Mesh = mesh->Handle;
+	ProbeTraceScene trace;
+	bool changed;
+	Testing::ScopedLogCapture logs;
+	SUBCASE("index addition cannot wrap")
+	{
+		mesh->Submeshes[0].IndexOffset = std::numeric_limits<uint32_t>::max();
+		++mesh->Version;
+		CHECK_FALSE(trace.Update(scene, assets, changed));
+		CHECK(logs.Contains(spdlog::level::err, "submesh indices"));
+	}
+	SUBCASE("incomplete triangles are rejected")
+	{
+		mesh->Submeshes[0].IndexCount -= 1;
+		++mesh->Version;
+		CHECK_FALSE(trace.Update(scene, assets, changed));
+		CHECK(logs.Contains(spdlog::level::err, "submesh indices"));
+	}
+	SUBCASE("a scaled million-unit model retains its ten-centimetre surface")
+	{
+		for (auto& vertex : mesh->Vertices)
+			vertex.Position *= 1000000;
+		++mesh->Version;
+		entity.GetTransform().Scale = glm::vec3(0.0000001f);
+		REQUIRE(trace.Update(scene, assets, changed));
+		REQUIRE(trace.GetTriangles().size() == 12);
+		CHECK(trace.GetNodes()[0].Maximum.x - trace.GetNodes()[0].Minimum.x == doctest::Approx(0.1));
+	}
+	SUBCASE("invalid transforms warn once and skip only that instance")
+	{
+		AddCube(scene, {3, 0, 0}, glm::vec3(1));
+		entity.GetTransform().Scale.x = std::numeric_limits<float>::infinity();
+		REQUIRE(trace.Update(scene, assets, changed));
+		CHECK(trace.GetTriangles().size() == 12);
+		entity.GetTransform().Translation.x = 2;
+		REQUIRE(trace.Update(scene, assets, changed));
+		CHECK(logs.Count(spdlog::level::warn, "invalid transform") == 1);
+		entity.GetTransform().Scale = glm::vec3(1);
+		REQUIRE(trace.Update(scene, assets, changed));
+		CHECK(trace.GetTriangles().size() == 24);
+	}
+}
+
+TEST_CASE("ProbeTraceScene: mirrored transforms preserve corner attributes and inverse-transpose normals")
+{
+	AssetManager assets;
+	Scene scene;
+	auto mesh = CreateRef<MeshAsset>();
+	mesh->Handle = AssetHandle(60121);
+	mesh->Vertices.resize(3);
+	mesh->Vertices[0].Position = {0, 0, 0};
+	mesh->Vertices[1].Position = {1, 0, 0};
+	mesh->Vertices[2].Position = {0, 1, 0};
+	mesh->Vertices[0].Normal = glm::normalize(glm::vec3(1, 1, 0));
+	mesh->Vertices[1].Normal = glm::normalize(glm::vec3(0, 1, 1));
+	mesh->Vertices[2].Normal = glm::normalize(glm::vec3(1, 0, 1));
+	mesh->Vertices[0].UV = {0, 0};
+	mesh->Vertices[1].UV = {1, 0};
+	mesh->Vertices[2].UV = {0, 1};
+	mesh->Indices = {0, 1, 2};
+	mesh->Submeshes.emplace_back().IndexCount = 3;
+	assets.AddMemoryAsset(mesh);
+	auto entity = AddCube(scene, {3, 4, 5}, {-2, 3, 0.5f});
+	entity.GetComponent<MeshComponent>().Mesh = mesh->Handle;
+	ProbeTraceScene trace;
+	bool changed;
+	REQUIRE(trace.Update(scene, assets, changed));
+	REQUIRE(trace.GetTriangles().size() == 1);
+	const auto& triangle = trace.GetTriangles()[0];
+	const std::array<uint32_t, 3> sourceCorners{0, 2, 1};
+	const std::array<glm::vec2, 3> actualUV{glm::vec2(triangle.UV01), glm::vec2(triangle.UV01.z, triangle.UV01.w), glm::vec2(triangle.UV2)};
+	const glm::mat4 world = scene.GetWorldTransform(entity);
+	const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(world)));
+	for (uint32_t corner = 0; corner < 3; ++corner)
+	{
+		const auto& vertex = mesh->Vertices[sourceCorners[corner]];
+		CHECK(triangle.Position[corner] == world * glm::vec4(vertex.Position, 1));
+		CHECK(actualUV[corner] == vertex.UV);
+		CHECK(glm::length(glm::normalize(glm::vec3(triangle.Normal[corner])) - glm::normalize(normalMatrix * vertex.Normal)) < 1e-6f);
+	}
+	const glm::vec3 barycentric(0.2f, 0.3f, 0.5f);
+	glm::vec3 actual(0), expected(0);
+	for (uint32_t corner = 0; corner < 3; ++corner)
+	{
+		actual += glm::vec3(triangle.Normal[corner]) * barycentric[corner];
+		expected += mesh->Vertices[sourceCorners[corner]].Normal * barycentric[corner];
+	}
+	CHECK(glm::length(glm::normalize(actual) - glm::normalize(normalMatrix * expected)) < 1e-6f);
+	CHECK(glm::cross(glm::vec3(triangle.Position[1] - triangle.Position[0]), glm::vec3(triangle.Position[2] - triangle.Position[0])).z > 0);
+}
+
+TEST_CASE("ProbeGI: history blends radiance and reactivated probes discard inactive history")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.Spacing = 2;
+	fixture.Specification.Origin = glm::vec3(-1);
+	REQUIRE(fixture.Update(scene, assets));
+	const auto before = ReadProbe(fixture.Device, fixture.GI.GetIrradiance());
+	fixture.ViewData.EnvironmentParams.x = 0;
+	fixture.Specification.Hysteresis = 0.5f;
+	REQUIRE(fixture.Update(scene, assets));
+	const auto blended = ReadProbe(fixture.Device, fixture.GI.GetIrradiance());
+	for (size_t i = 0; i < before.size(); ++i)
+	{
+		CHECK(glm::length(glm::vec3(blended[i]) - glm::vec3(before[i]) * 0.5f) < 1e-6f);
+		CHECK(blended[i].a == 1);
+	}
+	auto solid = AddCube(scene, fixture.Specification.Origin, glm::vec3(0.5f));
+	REQUIRE(fixture.Update(scene, assets));
+	for (const auto& pixel : ReadProbe(fixture.Device, fixture.GI.GetIrradiance()))
+		CHECK(pixel.a == 0);
+	scene.DestroyEntity(solid);
+	fixture.ViewData.EnvironmentParams.x = 1;
+	fixture.Specification.Hysteresis = 0.9f;
+	REQUIRE(fixture.Update(scene, assets));
+	const auto reactivated = ReadProbe(fixture.Device, fixture.GI.GetIrradiance());
+	for (size_t i = 0; i < before.size(); ++i)
+	{
+		CHECK(glm::length(glm::vec3(reactivated[i]) - glm::vec3(before[i])) < 1e-5f);
+		CHECK(reactivated[i].a == 1);
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: spot cones illuminate only surfaces in their direction")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	AddCube(scene, {0, -1, 0}, {40, 0.1f, 40});
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.RaysPerProbe = 256;
+	fixture.Specification.NormalBias = fixture.Specification.ViewBias = 0;
+	fixture.Specification.BounceFeedback = false;
+	fixture.ViewData.EnvironmentParams.x = 0;
+	GPU::Light spot{};
+	spot.PositionRange = {0, 1, 0, 10};
+	spot.ColorIntensity = {10, 10, 10, 1};
+	spot.DirectionCos = {0, 1, 0, std::cos(glm::radians(30.0f))};
+	spot.Params.x = std::cos(glm::radians(15.0f));
+	fixture.LightData = {spot};
+	REQUIRE(fixture.Update(scene, assets));
+	for (const auto& pixel : ReadProbe(fixture.Device, fixture.GI.GetIrradiance()))
+		CHECK(glm::length(glm::vec3(pixel)) < 1e-6f);
+	fixture.LightData[0].DirectionCos.y = -1;
+	fixture.GI.ResetHistory();
+	REQUIRE(fixture.Update(scene, assets));
+	const auto down = fixture.GI.Inspect({}, {0, -1, 0}, {0, 0, 1});
+	const auto up = fixture.GI.Inspect({}, {0, 1, 0}, {0, 0, 1});
+	REQUIRE(down);
+	REQUIRE(up);
+	CHECK(down->Irradiance.r > 0.02f);
+	CHECK(up->Irradiance.r < down->Irradiance.r * 0.1f);
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: a quarter-turn sky rotation moves a bright texel from world X to Z")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.RaysPerProbe = 256;
+	fixture.Specification.NormalBias = fixture.Specification.ViewBias = 0;
+	fixture.Commands->open();
+	for (uint32_t face = 0; face < 6; ++face)
+	{
+		const glm::u8vec4 pixel(face == 0 ? 255 : 0, 0, 0, 255);
+		fixture.Commands->writeTexture(fixture.Sky, face, 0, &pixel, sizeof(pixel));
+	}
+	fixture.Commands->close();
+	fixture.Device->executeCommandList(fixture.Commands);
+	REQUIRE(fixture.Update(scene, assets));
+	const auto x = fixture.GI.Inspect({}, {1, 0, 0}, {0, 1, 0});
+	const auto negativeX = fixture.GI.Inspect({}, {-1, 0, 0}, {0, 1, 0});
+	REQUIRE(x);
+	REQUIRE(negativeX);
+	CHECK(x->Irradiance.r > 0.1f);
+	CHECK(x->Irradiance.r > 4 * negativeX->Irradiance.r);
+	fixture.ViewData.EnvironmentParams.z = glm::half_pi<float>();
+	fixture.GI.ResetHistory();
+	REQUIRE(fixture.Update(scene, assets));
+	const auto z = fixture.GI.Inspect({}, {0, 0, 1}, {0, 1, 0});
+	const auto negativeZ = fixture.GI.Inspect({}, {0, 0, -1}, {0, 1, 0});
+	REQUIRE(z);
+	REQUIRE(negativeZ);
+	CHECK(z->Irradiance.r > 4 * negativeZ->Irradiance.r);
+	CHECK(std::abs(z->Irradiance.r - x->Irradiance.r) < 0.03f);
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: anisotropic instances shade authored normals like equivalent baked geometry")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	auto mesh = MeshPrimitives::CreateCube();
+	mesh->Handle = AssetHandle(60122);
+	for (auto& vertex : mesh->Vertices)
+	{
+		vertex.Position *= glm::vec3(40, 2, 40);
+		vertex.Normal = glm::normalize(glm::vec3(1, 1e-6f, 0));
+	}
+	assets.AddMemoryAsset(mesh);
+	auto entity = AddCube(scene, {}, {1, 1e-6f, 1});
+	entity.GetComponent<MeshComponent>().Mesh = mesh->Handle;
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.Origin.y = 0.5f;
+	fixture.Specification.RaysPerProbe = 256;
+	fixture.Specification.BounceFeedback = false;
+	fixture.ViewData.EnvironmentParams.x = 0;
+	fixture.ViewData.SunDirection = {0, -1, 0, 1};
+	fixture.ViewData.SunColor = glm::vec4(1);
+	REQUIRE(fixture.Update(scene, assets));
+	const auto instanced = ReadProbe(fixture.Device, fixture.GI.GetIrradiance());
+	for (auto& vertex : mesh->Vertices)
+	{
+		vertex.Position.y *= 1e-6f;
+		vertex.Normal = glm::normalize(glm::vec3(1, 1, 0));
+	}
+	++mesh->Version;
+	entity.GetTransform().Scale = glm::vec3(1);
+	fixture.GI.ResetHistory();
+	REQUIRE(fixture.Update(scene, assets));
+	const auto baked = ReadProbe(fixture.Device, fixture.GI.GetIrradiance());
+	float energy = 0;
+	for (size_t i = 0; i < instanced.size(); ++i)
+	{
+		CHECK(glm::length(glm::vec3(instanced[i] - baked[i])) < 1e-5f);
+		energy += baked[i].r;
+	}
+	CHECK(energy > 0.1f);
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeTraceScene: material and texture rejections ignore unrelated geometry changes")
+{
+	AssetManager assets;
+	Scene scene;
+	auto mesh = MeshPrimitives::CreateCube();
+	mesh->Handle = AssetHandle(60123);
+	assets.AddMemoryAsset(mesh);
+	auto material = CreateRef<MaterialAsset>();
+	material->Handle = AssetHandle(60124);
+	assets.AddMemoryAsset(material);
+	auto entity = AddCube(scene, {}, glm::vec3(1), material->Handle);
+	entity.GetComponent<MeshComponent>().Mesh = mesh->Handle;
+	ProbeTraceScene trace;
+	bool changed;
+	REQUIRE(trace.Update(scene, assets, changed));
+	Testing::ScopedLogCapture logs;
+	SUBCASE("material values depend on the material version")
+	{
+		material->BaseColorFactor.r = std::numeric_limits<float>::quiet_NaN();
+		++material->Version;
+		REQUIRE_FALSE(trace.Update(scene, assets, changed));
+		mesh->Vertices[0].Position.x += 0.1f;
+		++mesh->Version;
+		CHECK_FALSE(trace.Update(scene, assets, changed));
+		CHECK(logs.Count(spdlog::level::err, "material values") == 1);
+		material->BaseColorFactor.r = 1;
+		++material->Version;
+		REQUIRE(trace.Update(scene, assets, changed));
+	}
+	SUBCASE("malformed texture data depends on the texture version")
+	{
+		const std::array<uint8_t, 4> white{255, 255, 255, 255};
+		auto texture = TextureAsset::CreateRGBA8(1, 1, white.data(), false);
+		texture->Handle = AssetHandle(60125);
+		assets.AddMemoryAsset(texture);
+		material->BaseColorTexture = texture->Handle;
+		++material->Version;
+		texture->Mips[0].pop_back();
+		++texture->Version;
+		REQUIRE_FALSE(trace.Update(scene, assets, changed));
+		mesh->Vertices[0].Position.x += 0.1f;
+		++mesh->Version;
+		material->RoughnessFactor = 0.5f;
+		++material->Version;
+		CHECK_FALSE(trace.Update(scene, assets, changed));
+		CHECK(logs.Count(spdlog::level::err, "texture size or mip data") == 1);
+		texture->Mips[0].push_back(255);
+		++texture->Version;
+		REQUIRE(trace.Update(scene, assets, changed));
+	}
+	CHECK(changed);
+	CHECK(trace.GetTriangles().size() == 12);
 }

@@ -5,6 +5,7 @@
 #include "Paralax/Asset/MaterialAsset.h"
 #include "Paralax/Asset/MeshAsset.h"
 #include "Paralax/Asset/TextureAsset.h"
+#include "Paralax/Renderer/GraphicsDevice.h"
 #include "Paralax/Scene/Entity.h"
 
 #include <algorithm>
@@ -41,6 +42,25 @@ namespace Paralax {
 			return value <= 0.04045f ? value / 12.92f : std::pow((value + 0.055f) / 1.055f, 2.4f);
 		}
 
+		std::vector<uint64_t> TransformKey(const glm::mat4& world)
+		{
+			std::vector<uint64_t> key;
+			for (int column = 0; column < 4; ++column)
+				for (int row = 0; row < 4; ++row)
+					key.push_back(std::bit_cast<uint32_t>(world[column][row]));
+			return key;
+		}
+
+	}
+
+	ProbeTraceScene::ProbeTraceScene()
+		: ProbeTraceScene(GraphicsDeviceLimits{})
+	{
+	}
+
+	ProbeTraceScene::ProbeTraceScene(const GraphicsDeviceLimits& limits)
+		: m_MaxStorageBufferBytes(limits.MaxStorageBufferBytes)
+	{
 	}
 
 	bool ProbeTraceScene::Update(Scene& scene, AssetManager& assets, bool& changed)
@@ -53,6 +73,10 @@ namespace Paralax {
 			Ref<MaterialAsset> Material;
 			glm::mat4 World;
 			bool CastShadows;
+			std::vector<uint64_t> Key;
+			glm::mat3 NormalMatrix{1.0f};
+			double Determinant = 0;
+			bool Traceable = false;
 		};
 		// Body motion must not rebuild the static tracing scene each simulation step. Descendant meshes
 		// move with their body even when the Rigidbody lives on a separate parent entity.
@@ -106,31 +130,125 @@ namespace Paralax {
 				for (AssetHandle texture : {material->BaseColorTexture, material->EmissiveTexture, material->MetallicRoughnessTexture})
 					remember(texture.IsValid() ? assets.GetAsset<TextureAsset>(texture) : nullptr);
 				if (material->Alpha != AlphaMode::Blend)
-					instances.push_back({mesh, &part, material, world * part.Transform, component.CastShadows});
+				{
+					std::vector<uint64_t> key{reinterpret_cast<uintptr_t>(identity->get()), uint64_t(entity.GetUUID()), static_cast<uint64_t>(&part - mesh->Submeshes.data())};
+					auto dependency = [&](const Ref<Asset>& asset) {
+						key.push_back(asset ? uint64_t(asset->Handle) : 0);
+						key.push_back(asset ? asset->Version : 0);
+						key.push_back(reinterpret_cast<uintptr_t>(asset.get()));
+					};
+					dependency(mesh);
+					dependency(material);
+					for (AssetHandle texture : {material->BaseColorTexture, material->EmissiveTexture, material->MetallicRoughnessTexture})
+						dependency(texture.IsValid() ? assets.GetAsset<TextureAsset>(texture) : nullptr);
+					instances.push_back({mesh, &part, material, world * part.Transform, component.CastShadows, std::move(key)});
+				}
 			}
 		}
 		if (snapshot == m_Snapshot)
+		{
+			m_RejectedKey.clear();
+			m_RejectedTransform.clear();
+			m_RejectedSceneIdentity.reset();
 			return true;
-		if (snapshot == m_RejectedSnapshot)
+		}
+		std::unordered_set<const TextureAsset*> maskTextures;
+		for (const auto& instance : instances)
+			if (instance.Material->Alpha == AlphaMode::Mask && instance.Material->BaseColorTexture.IsValid())
+				maskTextures.insert(assets.GetAsset<TextureAsset>(instance.Material->BaseColorTexture).get());
+		std::vector<uint64_t> assetSet{reinterpret_cast<uintptr_t>(identity->get())};
+		std::vector<std::vector<uint64_t>> invalidTransforms;
+		for (auto& instance : instances)
+		{
+			// Texture selection also depends on other mask users of the same image. Changing that usage must
+			// release a rejected mip, even when the failing instance's own material has not changed.
+			for (AssetHandle texture : {instance.Material->BaseColorTexture, instance.Material->EmissiveTexture, instance.Material->MetallicRoughnessTexture})
+				instance.Key.push_back(texture.IsValid() && maskTextures.contains(assets.GetAsset<TextureAsset>(texture).get()) ? 1 : 0);
+			instance.Determinant = glm::determinant(glm::dmat3(instance.World));
+			if (instance.Determinant != 0 && std::isfinite(instance.Determinant))
+			{
+				auto normalMatrix = glm::transpose(glm::inverse(glm::dmat3(instance.World)));
+				double normalScale = 0;
+				for (int column = 0; column < 3; ++column)
+					for (int row = 0; row < 3; ++row)
+						normalScale = std::max(normalScale, std::abs(normalMatrix[column][row]));
+				// A common positive rescale preserves inverse-transpose directions and barycentric interpolation.
+				// Tiny valid instances must not fail because their unnormalized normals exceed a position bound.
+				instance.NormalMatrix = glm::mat3(normalMatrix / normalScale);
+				instance.Traceable = true;
+				for (int column = 0; column < 4; ++column)
+					instance.Traceable &= IsFinite(instance.World[column]);
+				for (int column = 0; column < 3; ++column)
+					instance.Traceable &= IsFinite(glm::vec4(instance.NormalMatrix[column], 0.0f));
+			}
+			instance.Key.push_back(instance.Traceable ? 1 : 0);
+			assetSet.insert(assetSet.end(), instance.Key.begin(), instance.Key.end());
+			// Zero scale has no surface area. Nonfinite or unrepresentable transforms are skipped separately;
+			// an absolute determinant epsilon would also discard valid small instances of large models.
+			if (!instance.Traceable && instance.Determinant != 0)
+			{
+				const std::vector<uint64_t> warningKey(instance.Key.begin(), instance.Key.begin() + 3);
+				if (std::find(m_InvalidTransforms.begin(), m_InvalidTransforms.end(), warningKey) == m_InvalidTransforms.end())
+					PX_CORE_WARN("Probe GI skips an invalid transform on entity {} submesh {}", instance.Key[1], instance.Key[2]);
+				invalidTransforms.push_back(warningKey);
+			}
+		}
+		m_InvalidTransforms = std::move(invalidTransforms);
+		auto causeKey = [&](const Instance& instance, RejectionKind kind) {
+			std::vector<uint64_t> key(instance.Key.begin(), instance.Key.begin() + 3);
+			Ref<Asset> dependency;
+			if (kind == RejectionKind::Mesh || kind == RejectionKind::Transform)
+				dependency = instance.Mesh;
+			else if (kind == RejectionKind::Material)
+				dependency = instance.Material;
+			else
+			{
+				const AssetHandle handle = kind == RejectionKind::BaseColorTexture ? instance.Material->BaseColorTexture : kind == RejectionKind::EmissiveTexture ? instance.Material->EmissiveTexture
+																																								  : instance.Material->MetallicRoughnessTexture;
+				auto texture = handle.IsValid() ? assets.GetAsset<TextureAsset>(handle) : nullptr;
+				key.push_back(maskTextures.contains(texture.get()) ? 1 : 0);
+				dependency = texture;
+			}
+			key.push_back(dependency ? uint64_t(dependency->Handle) : 0);
+			key.push_back(dependency ? dependency->Version : 0);
+			key.push_back(reinterpret_cast<uintptr_t>(dependency.get()));
+			return key;
+		};
+		if (m_RejectedKind == RejectionKind::Budget && assetSet == m_RejectedKey)
 			return false;
+		if (m_RejectedKind != RejectionKind::Budget)
+			for (const auto& instance : instances)
+				if (instance.Traceable && causeKey(instance, m_RejectedKind) == m_RejectedKey && (m_RejectedTransform.empty() || TransformKey(instance.World) == m_RejectedTransform))
+					return false;
 
+		const uint64_t maxTriangles = std::min(uint64_t(MaxTriangles), m_MaxStorageBufferBytes / sizeof(GPU::ProbeTraceTriangle));
+		const uint64_t maxMaterials = std::min(uint64_t(MaxTriangles), m_MaxStorageBufferBytes / sizeof(GPU::ProbeTraceMaterial));
+		const uint64_t maxTexels = std::min(uint64_t(MaxTexels), m_MaxStorageBufferBytes / sizeof(glm::vec4));
 		std::vector<GPU::ProbeTraceTriangle> triangles;
 		std::vector<GPU::ProbeTraceMaterial> materials;
 		std::vector<glm::vec4> texels{glm::vec4(1.0f)};
 		std::unordered_map<const MaterialAsset*, uint32_t> materialIndices;
 		std::unordered_map<const TextureAsset*, glm::uvec4> textureIndices;
-		std::unordered_set<const TextureAsset*> maskTextures;
-		for (const auto& instance : instances)
-			if (instance.Material->Alpha == AlphaMode::Mask && instance.Material->BaseColorTexture.IsValid())
-				maskTextures.insert(assets.GetAsset<TextureAsset>(instance.Material->BaseColorTexture).get());
 		bool valid = true;
 		const char* failure = "invalid transformed vertex or material";
-		auto appendTexture = [&](AssetHandle handle) -> glm::uvec4 {
+		const Instance* failedInstance = nullptr;
+		bool budgetFailure = false;
+		RejectionKind failureKind = RejectionKind::Mesh;
+		if (!maxTriangles || !maxMaterials || !maxTexels)
+		{
+			valid = false;
+			budgetFailure = true;
+			failure = "ProbeTraceTriangles placeholder exceeds storage-buffer range";
+		}
+		auto appendTexture = [&](AssetHandle handle, RejectionKind kind) -> glm::uvec4 {
+			if (!valid)
+				return {};
 			auto texture = handle.IsValid() ? assets.GetAsset<TextureAsset>(handle) : nullptr;
 			if (!texture)
 				return {0, 1, 1, 0};
 			if (auto found = textureIndices.find(texture.get()); found != textureIndices.end())
 				return found->second;
+			failureKind = kind;
 			const uint32_t stride = texture->GetBytesPerPixel();
 			const uint64_t sourceCount = uint64_t(texture->Width) * texture->Height;
 			if (sourceCount == 0 || texture->Width > TextureAsset::MaxDimension || texture->Height > TextureAsset::MaxDimension ||
@@ -138,7 +256,7 @@ namespace Paralax {
 				sourceCount > TextureAsset::MaxDecodedBytes / stride || texture->Mips.empty() || sourceCount * stride != texture->Mips[0].size())
 			{
 				valid = false;
-				failure = "texture size, mip data or texel budget";
+				failure = "texture size or mip data";
 				return {};
 			}
 			// Diffuse radiance is low frequency. Reuse authored mips to bound the ray material cache, but retain
@@ -152,10 +270,11 @@ namespace Paralax {
 				++mip;
 			}
 			const uint64_t count = uint64_t(width) * height;
-			if (count > MaxTexels - texels.size() || count * stride != texture->Mips[mip].size())
+			if (count > maxTexels - texels.size() || count * stride != texture->Mips[mip].size())
 			{
 				valid = false;
-				failure = "texture mip data or texel budget";
+				budgetFailure = count > maxTexels - texels.size();
+				failure = budgetFailure ? "ProbeTraceTexels exceeds storage-buffer range or texel cap" : "texture mip data";
 				return {};
 			}
 			const glm::uvec4 descriptor(static_cast<uint32_t>(texels.size()), width, height, 0);
@@ -184,14 +303,21 @@ namespace Paralax {
 		};
 		for (const Instance& instance : instances)
 		{
+			if (!valid)
+				break;
+			if (!instance.Traceable)
+				continue;
+			failedInstance = &instance;
+			failureKind = RejectionKind::Mesh;
 			const auto& part = *instance.Part;
 			const auto& mesh = *instance.Mesh;
 			const auto& material = *instance.Material;
 			if (part.IndexCount % 3 != 0 || uint64_t(part.IndexOffset) + part.IndexCount > mesh.Indices.size() ||
-				part.IndexCount / 3 > MaxTriangles - triangles.size())
+				part.IndexCount / 3 > maxTriangles - triangles.size())
 			{
 				valid = false;
-				failure = "submesh indices or triangle budget";
+				budgetFailure = part.IndexCount / 3 > maxTriangles - triangles.size();
+				failure = budgetFailure ? "ProbeTraceTriangles exceeds storage-buffer range or triangle cap" : "submesh indices";
 				break;
 			}
 			uint32_t materialIndex;
@@ -199,23 +325,32 @@ namespace Paralax {
 				materialIndex = found->second;
 			else
 			{
+				if (materials.size() == maxMaterials)
+				{
+					valid = false;
+					budgetFailure = true;
+					failure = "ProbeTraceMaterials exceeds storage-buffer range or material cap";
+					break;
+				}
 				materialIndex = static_cast<uint32_t>(materials.size());
 				GPU::ProbeTraceMaterial data;
 				data.BaseColor = material.BaseColorFactor;
 				data.Emissive = glm::vec4(material.EmissiveFactor * material.EmissiveStrength, material.DoubleSided ? 1.0f : 0.0f);
 				data.Parameters = {material.MetallicFactor, material.RoughnessFactor, material.AlphaCutoff, static_cast<float>(material.Alpha)};
-				data.Textures[0] = appendTexture(material.BaseColorTexture);
-				data.Textures[1] = appendTexture(material.EmissiveTexture);
-				data.Textures[2] = appendTexture(material.MetallicRoughnessTexture);
-				valid &= IsBounded(data.BaseColor, MaxMaterialValue) && IsBounded(data.Emissive, MaxMaterialValue) && IsBounded(data.Parameters, MaxMaterialValue);
+				data.Textures[0] = appendTexture(material.BaseColorTexture, RejectionKind::BaseColorTexture);
+				data.Textures[1] = appendTexture(material.EmissiveTexture, RejectionKind::EmissiveTexture);
+				data.Textures[2] = appendTexture(material.MetallicRoughnessTexture, RejectionKind::MetallicRoughnessTexture);
+				if (valid && (!IsBounded(data.BaseColor, MaxMaterialValue) || !IsBounded(data.Emissive, MaxMaterialValue) || !IsBounded(data.Parameters, MaxMaterialValue)))
+				{
+					valid = false;
+					failure = "nonfinite or excessive material values";
+					failureKind = RejectionKind::Material;
+				}
 				materials.push_back(data);
 				materialIndices.emplace(&material, materialIndex);
 			}
-			const float determinant = glm::determinant(glm::mat3(instance.World));
-			// Zero scale collapses the surface; it has no area and cannot occlude or reflect light.
-			if (std::isfinite(determinant) && std::abs(determinant) < 1e-12f)
-				continue;
-			const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(instance.World)));
+			if (valid)
+				failureKind = RejectionKind::Mesh;
 			for (uint32_t offset = 0; valid && offset < part.IndexCount; offset += 3)
 			{
 				GPU::ProbeTraceTriangle triangle;
@@ -230,16 +365,28 @@ namespace Paralax {
 						break;
 					}
 					const auto& vertex = mesh.Vertices[static_cast<size_t>(index)];
+					if (!IsFinite(glm::vec4(vertex.Position, 1.0f)) || !IsFinite(glm::vec4(vertex.Normal, 0.0f)) || !IsBounded(glm::vec4(vertex.UV, 0.0f, 0.0f), MaxCoordinate))
+					{
+						valid = false;
+						failure = "invalid source vertex";
+						break;
+					}
 					triangle.Position[corner] = instance.World * glm::vec4(vertex.Position, 1.0f);
-					triangle.Normal[corner] = glm::vec4(normalMatrix * vertex.Normal, 0.0f);
+					triangle.Normal[corner] = glm::vec4(instance.NormalMatrix * vertex.Normal, 0.0f);
 					uv[corner] = vertex.UV;
 					valid &= IsBounded(triangle.Position[corner], MaxCoordinate) && IsBounded(triangle.Normal[corner], MaxCoordinate) &&
 							 IsBounded(glm::vec4(uv[corner], 0.0f, 0.0f), MaxCoordinate);
+					if (!valid)
+					{
+						failureKind = RejectionKind::Transform;
+						failure = "transformed vertex exceeds finite coordinate range";
+						break;
+					}
 				}
 				if (!valid)
 					break;
 				// Preserve the authored front face under reflected transforms, matching raster culling.
-				if (determinant < 0.0f)
+				if (instance.Determinant < 0.0)
 				{
 					std::swap(triangle.Position[1], triangle.Position[2]);
 					std::swap(triangle.Normal[1], triangle.Normal[2]);
@@ -256,7 +403,9 @@ namespace Paralax {
 		}
 		if (!valid)
 		{
-			m_RejectedSnapshot = std::move(snapshot);
+			m_RejectedKind = budgetFailure ? RejectionKind::Budget : failureKind;
+			m_RejectedKey = budgetFailure ? std::move(assetSet) : causeKey(*failedInstance, failureKind);
+			m_RejectedTransform = failureKind == RejectionKind::Transform ? TransformKey(failedInstance->World) : std::vector<uint64_t>{};
 			m_RejectedSceneIdentity = *identity;
 			PX_CORE_ERROR("Probe GI scene rejected: {} ({} triangles, {} texels)", failure, triangles.size(), texels.size());
 			return false;
@@ -265,6 +414,8 @@ namespace Paralax {
 		std::vector<GPU::ProbeTraceNode> nodes;
 		nodes.reserve(triangles.size());
 		// Median splitting bounds recursion to 20 levels at MaxTriangles, independently of scene hierarchy depth.
+		// Four-triangle leaves also keep node count <= triangle count: their 48-byte elements always fit the
+		// adapter range once the 144-byte triangle buffer fits, including the empty one-element placeholders.
 		auto build = [&](auto&& self, uint32_t first, uint32_t count) -> void {
 			const uint32_t index = static_cast<uint32_t>(nodes.size());
 			GPU::ProbeTraceNode node;
@@ -298,7 +449,8 @@ namespace Paralax {
 		m_Snapshot = std::move(snapshot);
 		m_SceneIdentity = *identity;
 		m_RejectedSceneIdentity.reset();
-		m_RejectedSnapshot.clear();
+		m_RejectedKey.clear();
+		m_RejectedTransform.clear();
 		m_Nodes = std::move(nodes);
 		m_Triangles = std::move(triangles);
 		m_Materials = std::move(materials);

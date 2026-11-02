@@ -85,10 +85,14 @@ namespace Paralax {
 		int GIDebugProbe = -1;
 		float GIDebugScale = 1.0f;
 		bool GIShowProbes = false;
+		// Rays traced per updated probe (32–256).
 		int GIRaysPerProbe = 64;
+		// Round-robin update budget (1–1728); initialization fills the whole volume.
 		int GIProbesPerFrame = 32;
 		float GIHysteresis = 0.85f;
+		// Receiver normal offset in metres (0–0.05).
 		float GINormalBias = 0.05f;
+		// View offset as a fraction of spacing (0–0.5), capped at half the view-ray distance.
 		float GIViewBias = 0.2f;
 		RenderDebugView DebugView = RenderDebugView::None;
 

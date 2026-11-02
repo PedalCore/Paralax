@@ -115,7 +115,15 @@ windowed one.
 6. **Ship.** `project.export { output }` writes a standalone game folder: the runtime, its resources and the project.
    Run that folder's executable with `--headless --frames N --fail-on-script-error` to check it on its own.
 
-## Diffuse global illumination
+## Experimental diffuse global illumination
+
+Diffuse probe GI is experimental: its approximate distance-moment visibility still leaks in some configurations.
+The retained grazing-corner diagnostic measures about +771% excess and the earlier sphere-underside diagnostic
+about +26% against exact segment visibility using the same cache. In the authored maintenance-bay review,
+the converged sphere underside is about +38.65% high; the bench-floor sample has no physically visible eligible
+neighbours, so its exact-cache comparison is zero, not a ground-truth irradiance estimate. These cases need
+stronger visibility and probe support; more convergence or AO does not fix them. The grazing diagnostic is
+retained separately from baseline CI. Bounded real-geometry visibility is the planned follow-up.
 
 Add an enabled `GIVolume` component to cover the surfaces that need indirect lighting. Its entity's world
 translation is the minimum probe centre. The grid is world aligned: rotation and scale do not affect it.
@@ -153,12 +161,24 @@ PNG output still uses sRGB encoding and clips values above 1. HDR readbacks reta
 `EnvironmentSpecular` is an independent boolean setting (default true); GI replaces environment diffuse only.
 
 The first rendered frame fills the volume. Later frames update probes in a deterministic round-robin order;
-multiple diffuse bounces converge over time. Geometry/material edits upload new tracing data while preserving
+multiple diffuse bounces converge over time. Moving static meshes rebuilds and uploads the whole CPU trace scene, including expanded textures and BVH sorting.
+That is an expected cost of this experimental implementation; dynamic/kinematic rigid-body hierarchies are excluded.
+Geometry/material edits upload new tracing data while preserving
 history and the update budget, so occlusion and lighting can remain stale until probes refresh. Volume
 placement/count/spacing changes, scene replacement and disabling GI reset history. Camera movement and viewport
 resizing preserve it. Simulation
 steps and rendered frames are distinct: editor rendering between agent requests can also update GI. Record
 warmup conditions when comparing captures; a count of capture requests is not an exact GI frame count.
+
+Each trace buffer is limited by the adapter's maximum storage-buffer range. Triangle records cost 144 bytes,
+BVH nodes 48 bytes (at most one per triangle), materials 96 bytes, and expanded texture texels 16 bytes.
+The independent hard caps are 1,048,576 triangles/materials and 16,777,216 texels; the adapter usually lowers them.
+At the Vulkan baseline 128 MiB range this allows 932,067 triangles and 8,388,608 texels including the white
+fallback texel (31 complete 512×512 textures plus the fallback). Material records remain capped at 1,048,576.
+The CPU retains accepted arrays for diagnostics; rebuilding and GPU upload add temporary memory costs. Packed
+8-bit texels, channel stripping and incremental rebuilds are follow-ups. Invalid or oversized data disables GI
+with a named, memoized cause, preserving the last accepted snapshot; unrelated movement does not retry the
+same asset failure. Correcting/reloading the asset, removing its use or correcting a failing transform recovers.
 
 For reproducible investigation, keep camera, lights, volume and update settings fixed, stop or pause play mode,
 and set `GIFreeze: true`. Freeze preserves initialized history; the first render after a reset still fills every
@@ -379,19 +399,35 @@ editor's commands, names and parameters both, so an entry cannot go missing or s
 
 ### Rendering and the viewport
 
-- `render.capture { path: string, width?: integer, height?: integer, camera?: string }`: renders the scene (the
+- `render.capture { path: string, width?: integer, height?: integer, camera?: string, giWarmupFrames?: integer }`: renders the scene (the
   running copy while playing) to a PNG of `width` x `height` pixels (16 to 8192 each, default 1280 x 720). `path`
   must end in `.png`; with a project open it is relative to the project directory and must stay inside it.
   `camera` is `"scene"` (the default: the scene's primary camera, or the editor camera if it has none) or
   `"editor"`, the editor camera wherever `editor.camera.set` or `editor.camera.focus` left it: `{ path, width,
-  height }`. MCP returns the image.
+  height }`. MCP returns the image. `giWarmupFrames` (0–1024, default 0) performs exactly that many GI updates
+  before capture; a positive count requires frozen GI and paused/stopped simulation.
 - `render.stats`: the statistics of the renderer's latest frame: `{ drawCalls, shadowDrawCalls, triangles,
   culledSubmeshes, textGlyphs, lights, staticLightingGenerations }`, `lights` counting point and spot lights. The
   viewport renders every editor frame: send `render.capture` and `render.stats` in one batch to read a capture's.
 - `render.settings.get`: the renderer settings: `{ Exposure, Tonemapper, Shadows, ShadowResolution, ShadowDistance,
-  ShadowSoftness, ShadowCascadeBlend, SkyIntensity, DebugView }`.
+  ShadowSoftness, ShadowCascadeBlend, SkyIntensity, DebugView }`, plus the GI, diagnostics and
+  `EnvironmentSpecular` controls described in the experimental GI section above.
 - `render.settings.set { settings: object }`: changes some of them, returning them all; nothing changes if any value
   is refused. The settings are the editor's view, not part of the scene, so they are not undoable.
+- `render.gi.state`: the current GI status and update counters, without rendering: `{ enabled, supported, frozen,
+  historyValid, updates, queued, origin, spacing, counts, frame }`.
+- `render.gi.reset`: discards history and returns GI state; the next render fills the entire volume, even when
+  frozen. Requires an enabled supported volume rendered at least once and paused/stopped simulation.
+- `render.gi.step { frames: integer }`: performs exactly `frames` (1–1024) GI updates without advancing simulation,
+  returning GI state and `before` (the prior update count). Requires frozen, previously rendered GI and
+  paused/stopped simulation; waits for the GPU.
+- `render.gi.inspect { position: array, normal: array, view: array, viewDistance?: number }`: reads the eight
+  contributing neighbours at a world-space receiver, including moments, weights and exact visibility rays.
+  The three arrays contain finite `[x,y,z]` values; normal and view must be nonzero. `viewDistance` is metres
+  (0–1,000,000); omit it for an unbounded orthographic view. Returns `irradiance`, `surfaceReliable`,
+  `biasedReliable`, `surfaceRejected`, `surfaceExact`, `biasedRejected`, `biasedExact`, `weightSum`,
+  `activeNeighbours` and `neighbours`. Requires enabled GI with valid history and paused/stopped simulation; synchronous
+  GPU readback leaves history unchanged.
 - `editor.camera.get`: the editor camera: `{ position, target, verticalFov }`, the field of view in degrees.
 - `editor.camera.set { position: array, target: array }`: places the editor camera at `position` (`[x, y, z]` in
   meters) looking at `target`, returning it as `editor.camera.get` does.

@@ -39,8 +39,8 @@ namespace Paralax {
 			MakeField<&SceneRendererSettings::GIDebugProbe>("GIDebugProbe", FieldOptions().Range(-1, 1727)),
 			MakeField<&SceneRendererSettings::GIDebugScale>("GIDebugScale", FieldOptions().Range(0.0001f, 1000.0f)),
 			MakeField<&SceneRendererSettings::GIShowProbes>("GIShowProbes", FieldOptions().Describe("Display diagnostic probe markers.")),
-			MakeField<&SceneRendererSettings::GIRaysPerProbe>("GIRaysPerProbe", FieldOptions().Range(32, 256)),
-			MakeField<&SceneRendererSettings::GIProbesPerFrame>("GIProbesPerFrame", FieldOptions().Range(1, 1728)),
+			MakeField<&SceneRendererSettings::GIRaysPerProbe>("GIRaysPerProbe", FieldOptions().Range(32, 256).Describe("Rays traced per updated probe; higher counts reduce noise at greater tracing cost.")),
+			MakeField<&SceneRendererSettings::GIProbesPerFrame>("GIProbesPerFrame", FieldOptions().Range(1, 1728).Describe("Round-robin probe update budget after the initial full-volume fill.")),
 			MakeField<&SceneRendererSettings::GIHysteresis>("GIHysteresis", FieldOptions().Range(0.0f, 0.99f).Describe("Previous lighting retained on each probe update.")),
 			MakeField<&SceneRendererSettings::GINormalBias>("GINormalBias", FieldOptions().Range(0.0f, 0.05f).Describe("Receiver normal offset in metres.")),
 			MakeField<&SceneRendererSettings::GIViewBias>("GIViewBias", FieldOptions().Range(0.0f, 0.5f).Describe("Receiver view offset as a fraction of probe spacing, limited to half the available view-ray distance.")),
@@ -1029,7 +1029,7 @@ namespace Paralax {
 			{
 				m_ProbeGI.Disable(m_CommandList);
 				m_QueuedGIUpdates = 0;
-				if (!m_ReportedGIFailure)
+				if (!m_ReportedGIFailure && m_ProbeGI.IsSupported() && !m_ProbeGI.HasReportedUpdateFailure())
 					PX_CORE_ERROR("Probe GI update failed: invalid volume, scene data or unavailable GPU resources");
 				m_ReportedGIFailure = true;
 			}

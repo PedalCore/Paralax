@@ -137,9 +137,13 @@ public ProbeNeighbour GetProbeNeighbour(ProbeSamplingPoint point, uint corner, P
 	return neighbour;
 }
 
-public float3 ProbeDirectionalIrradiance(float3 normal, uint index, Texture2DArray<float4> irradiance)
+public float2 ProbeIrradianceUV(float3 normal)
 {
-	float2 uv = (ProbeOctEncode(normal) * 6.0 + 1.0) / 8.0;
+	return (ProbeOctEncode(normal) * 6.0 + 1.0) / 8.0;
+}
+
+public float3 ProbeDirectionalIrradiance(float2 uv, uint index, Texture2DArray<float4> irradiance)
+{
 	return SampleProbeTile(irradiance, uv, index).rgb;
 }
 
@@ -165,11 +169,12 @@ public float4 SampleProbeGI(float3 position, float3 normal, float3 view, ProbeGI
 	if (!point.Inside)
 		return float4(0.0);
 	float3 sum = float3(0.0);
+	float2 irradianceUV = ProbeIrradianceUV(normal);
 	float weightSum = 0.0, eligibleSupport = 0.0, support = 0.0;
 	for (uint corner = 0; corner < 8; ++corner)
 	{
 		ProbeNeighbour neighbour = GetProbeNeighbour(point, corner, params, distance);
-		sum += ProbeDirectionalIrradiance(normal, neighbour.Index, irradiance) * neighbour.Weight;
+		sum += ProbeDirectionalIrradiance(irradianceUV, neighbour.Index, irradiance) * neighbour.Weight;
 		weightSum += neighbour.Weight;
 		eligibleSupport += neighbour.EligibleSupport;
 		support += neighbour.Support;

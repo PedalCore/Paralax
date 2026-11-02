@@ -206,7 +206,7 @@ namespace Paralax::Editor {
 							   return CommandResult::Ok(describeGizmo());
 						   }});
 
-		commands.Register({"render.settings.get", "The renderer settings (exposure, tonemapper, shadows, sky intensity, debug view).", {}, false, [this](EditorContext&, const json&) {
+		commands.Register({"render.settings.get", "The renderer settings (exposure, tonemapper, shadows, sky intensity, experimental GI, debug view).", {}, false, [this](EditorContext&, const json&) {
 							   if (!m_Renderer)
 								   return CommandResult::Fail("The renderer is not available");
 							   return CommandResult::Ok(Reflection::ToJson(SceneRendererSettings::GetFields(), &m_Renderer->GetSettings()));

@@ -14,6 +14,7 @@ namespace Paralax {
 		, m_Limits(limits)
 		, m_Supported(limits.MaxStorageBuffersPerStage >= 6 && limits.MaxStorageBuffersPerSet >= 6)
 		, m_Factory(factory ? *factory : m_DefaultFactory)
+		, m_Scene(limits)
 	{
 		PX_CORE_VERIFY(device, "ProbeGI requires a device");
 	}
@@ -121,22 +122,35 @@ namespace Paralax {
 
 	bool ProbeGI::UploadScene(nvrhi::ICommandList* commands)
 	{
-		auto fits = [&](const auto& data) {
+		auto report = [&](uint32_t flag, const char* name, const char* reason) {
+			m_ReportedUpdateFailure = true;
+			if (!(m_ReportedUploadFailures & flag))
+				PX_CORE_ERROR("Probe GI upload refused {}: {}", name, reason);
+			m_ReportedUploadFailures |= flag;
+		};
+		auto fits = [&](const auto& data, uint32_t flag, const char* name) {
 			using Element = typename std::remove_cvref_t<decltype(data)>::value_type;
-			return std::max(data.size(), size_t(1)) * sizeof(Element) <= m_Limits.MaxStorageBufferBytes;
+			if (std::max(data.size(), size_t(1)) <= m_Limits.MaxStorageBufferBytes / sizeof(Element))
+				return true;
+			report(flag, name, "storage-buffer range exceeded");
+			return false;
 		};
 		// Hardware limits cannot recover on a later frame. Reject before allocating any replacement resources.
-		if (!fits(m_Scene.GetNodes()) || !fits(m_Scene.GetTriangles()) || !fits(m_Scene.GetMaterials()) || !fits(m_Scene.GetTexels()))
+		if (!fits(m_Scene.GetNodes(), 1, "ProbeTraceNodes") || !fits(m_Scene.GetTriangles(), 2, "ProbeTraceTriangles") ||
+			!fits(m_Scene.GetMaterials(), 4, "ProbeTraceMaterials") || !fits(m_Scene.GetTexels(), 8, "ProbeTraceTexels"))
 			return false;
-		auto allocate = [&](const auto& data, const char* name) {
+		auto allocate = [&](const auto& data, uint32_t flag, const char* name) {
 			using Element = typename std::remove_cvref_t<decltype(data)>::value_type;
 			const size_t bytes = std::max(data.size(), size_t(1)) * sizeof(Element);
-			return m_Factory.CreateBuffer(m_Device, nvrhi::BufferDesc().setByteSize(bytes).setStructStride(sizeof(Element)).setInitialState(nvrhi::ResourceStates::ShaderResource).setKeepInitialState(true).setDebugName(name));
+			auto buffer = m_Factory.CreateBuffer(m_Device, nvrhi::BufferDesc().setByteSize(bytes).setStructStride(sizeof(Element)).setInitialState(nvrhi::ResourceStates::ShaderResource).setKeepInitialState(true).setDebugName(name));
+			if (!buffer)
+				report(flag, name, "allocation failed");
+			return buffer;
 		};
-		auto nodes = allocate(m_Scene.GetNodes(), "ProbeTraceNodes");
-		auto triangles = allocate(m_Scene.GetTriangles(), "ProbeTraceTriangles");
-		auto materials = allocate(m_Scene.GetMaterials(), "ProbeTraceMaterials");
-		auto texels = allocate(m_Scene.GetTexels(), "ProbeTraceTexels");
+		auto nodes = allocate(m_Scene.GetNodes(), 1, "ProbeTraceNodes");
+		auto triangles = allocate(m_Scene.GetTriangles(), 2, "ProbeTraceTriangles");
+		auto materials = allocate(m_Scene.GetMaterials(), 4, "ProbeTraceMaterials");
+		auto texels = allocate(m_Scene.GetTexels(), 8, "ProbeTraceTexels");
 		if (!nodes || !triangles || !materials || !texels)
 			return false;
 		// Do not record any transfer or replace the live snapshot until every allocation succeeded.
@@ -158,6 +172,7 @@ namespace Paralax {
 		m_Triangles = triangles;
 		m_Materials = materials;
 		m_Texels = texels;
+		m_ReportedUploadFailures = 0;
 		return true;
 	}
 
@@ -237,6 +252,7 @@ namespace Paralax {
 	{
 		PX_CORE_VERIFY(GetBindings() && (!m_Supported || (m_TracePipeline && m_FilterPipeline)) && commands && viewConstants && lights,
 					   "ProbeGI::Update requires successful initialization and valid recording resources");
+		m_ReportedUpdateFailure = false;
 		if (!m_Supported || !environment || lightCount > GPU::MaxLights)
 			return false;
 		if (!std::isfinite(spec.Spacing) || spec.Spacing < 0.1f || spec.Spacing > 100.0f ||
@@ -253,7 +269,10 @@ namespace Paralax {
 			return false;
 		bool changed = false;
 		if (!m_Scene.Update(scene, assets, changed))
+		{
+			m_ReportedUpdateFailure = true;
 			return false;
+		}
 		m_GPUSceneDirty |= changed;
 		if (m_GPUSceneDirty)
 		{
