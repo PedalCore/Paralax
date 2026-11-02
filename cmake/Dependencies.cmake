@@ -85,17 +85,29 @@ target_link_libraries(nvrhi_vk PUBLIC nvrhi)
 # --- Slang (shader compiler; prebuilt release binaries) -----------------------------------------
 # Only the host compiler is used at build time; shaders are compiled to SPIR-V and embedded.
 set(PX_SLANG_VERSION "2026.18.3")
-if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
+# The binaries run on the build host, so they are chosen by its architecture as well as its OS: a build on any other
+# host stops here, rather than when the first shader fails to compile. Hosts name architectures differently
+# (x86_64 on Linux and macOS, AMD64 on Windows; aarch64 on Linux, arm64 on macOS and Windows).
+string(TOLOWER "${CMAKE_HOST_SYSTEM_PROCESSOR}" PX_SLANG_HOST_PROCESSOR)
+if(PX_SLANG_HOST_PROCESSOR MATCHES "^(x86_64|amd64|x64)$")
+	set(PX_SLANG_HOST_PROCESSOR "x86_64")
+elseif(PX_SLANG_HOST_PROCESSOR MATCHES "^(arm64|aarch64)$")
+	set(PX_SLANG_HOST_PROCESSOR "aarch64")
+endif()
+set(PX_SLANG_HOST "${CMAKE_HOST_SYSTEM_NAME}-${PX_SLANG_HOST_PROCESSOR}")
+if(PX_SLANG_HOST STREQUAL "Windows-x86_64")
 	set(PX_SLANG_ASSET "windows-x86_64.zip")
 	set(PX_SLANG_SHA256 "1339d7b3050ae680c11152b8ccff977173591ce8e9c1d2a5cff2eb904d52e50d")
-elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+elseif(PX_SLANG_HOST STREQUAL "Darwin-aarch64")
 	set(PX_SLANG_ASSET "macos-aarch64.zip")
 	set(PX_SLANG_SHA256 "d06187a6f90aaee68a5ceef453cf973016e2d3adfc61ce51b1cd6a0d204cfca2")
-elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+elseif(PX_SLANG_HOST STREQUAL "Linux-x86_64")
 	set(PX_SLANG_ASSET "linux-x86_64.tar.gz")
 	set(PX_SLANG_SHA256 "4d664ca905124ae68204ee05170f5acd8dc53956baf850b2e7b23215cfb78f7b")
 else()
-	message(FATAL_ERROR "No pinned Slang binaries for host ${CMAKE_HOST_SYSTEM_NAME}")
+	message(FATAL_ERROR "No pinned Slang binaries for host ${CMAKE_HOST_SYSTEM_NAME}/${CMAKE_HOST_SYSTEM_PROCESSOR}. "
+		"Pinned hosts: Windows/x86_64, Darwin/arm64 and Linux/x86_64; another needs its release archive and SHA256 "
+		"added here (see the dependency-update skill).")
 endif()
 CPMAddPackage(
 	NAME slang
