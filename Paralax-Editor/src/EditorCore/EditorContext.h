@@ -57,7 +57,9 @@ namespace Paralax::Editor {
 		// the path is relative to its asset directory and must stay inside it. Returns false while a change is open.
 		bool OpenScene(const std::filesystem::path& path);
 		// Saves to path (or the current path if empty). With a project the path must lie inside its asset
-		// directory. Returns false if there is no path, the path is rejected or writing fails.
+		// directory, and the scene is registered with the project's assets; a registration that fails is logged and
+		// does not fail the save (scene.save reports it as a warning). Returns false if there is no path, the path is
+		// rejected or writing fails.
 		bool SaveScene(const std::filesystem::path& path = {});
 		// Resolves a user-supplied path for a project file: relative paths are taken from the asset directory, and
 		// anything outside it (after resolving "..") is rejected with an error. Without a project, paths are used

@@ -69,7 +69,8 @@ windowed one.
    read it. Attach a script with a `Script` component. A script returns a table with `OnCreate`, `OnUpdate`,
    `OnFixedUpdate` (physics control, at the physics rate), `OnDestroy` and collision callbacks; see
    [Scripting.md](Scripting.md) and `script.api`.
-3. **Save.** `scene.save { path }`, then `project.set_start_scene`.
+3. **Save.** `scene.save { path }`, then `project.set_start_scene`. Check the result's `warnings`: a scene saved while
+   the asset registry cannot be written is not registered, so it cannot be the start scene yet.
 4. **Playtest deterministically.**
    - `play.start { paused: true }`, then `play.step { frames, dt }` advances exactly that many fixed steps.
    - `input.key { key: "Space", action: "press" }` (and `input.mouse_button`, `input.mouse_move`, `input.scroll`)

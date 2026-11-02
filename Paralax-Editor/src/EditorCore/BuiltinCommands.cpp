@@ -165,7 +165,12 @@ namespace Paralax::Editor {
 								   return CommandResult::Fail("Stop playing before saving");
 							   if (!context.SaveScene(params.value("path", "")))
 								   return CommandResult::Fail("Could not save the scene (no path, or the file could not be written)");
-							   return CommandResult::Ok({{"path", context.GetScenePath().generic_string()}});
+							   json result = {{"path", context.GetScenePath().generic_string()}};
+							   // The file is saved either way, but a scene the registry does not list cannot be the start scene or
+							   // be found by handle in the next session.
+							   if (Project* project = context.GetProject(); project && !project->GetAssetManager().GetHandleForPath(context.GetScenePath()).IsValid())
+								   result["warnings"] = json::array({"Saved, but not registered: the asset registry could not be saved (see the log for details: console.get)"});
+							   return CommandResult::Ok(result);
 						   }});
 
 		registry.Register({"scene.list", "Lists every entity in hierarchy order (id, name, tag, parent, children, component names).", {}, false, [](EditorContext& context, const json&) {

@@ -259,6 +259,36 @@ TEST_CASE("BuiltinCommands: material.create does not overwrite an existing mater
 	CHECK_FALSE(EditorContext().Execute("material.create", {{"path", "M.pxmat"}}).Success); // No project.
 }
 
+TEST_CASE("BuiltinCommands: scene.save warns when the saved scene cannot be registered")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("SceneSaveRegistryLocked") / "Game";
+	EditorContext context(Project::Create(directory, "Game"));
+	REQUIRE(context.GetProject());
+	CreateEntity(context, {{"name", "Player"}});
+	const CommandResult registered = context.Execute("scene.save", {{"path", "Scenes/Main"}});
+	REQUIRE(registered.Success);
+	CHECK_FALSE(registered.Result.contains("warnings"));
+
+	// A directory where the registry file belongs: the file is saved, but cannot be registered.
+	const std::filesystem::path registry = directory / "Assets" / AssetManager::RegistryFileName;
+	std::error_code error;
+	std::filesystem::remove(registry, error);
+	std::filesystem::create_directories(registry);
+	Paralax::Testing::ScopedLogCapture capture;
+	const CommandResult locked = context.Execute("scene.save", {{"path", "Scenes/Other"}});
+	REQUIRE(locked.Success);
+	CHECK(std::filesystem::is_regular_file(directory / "Assets" / "Scenes" / "Other.pxscene"));
+	REQUIRE(locked.Result.contains("warnings"));
+	CHECK(locked.Result["warnings"][0].get<std::string>().find("not registered") != std::string::npos);
+	CHECK_FALSE(context.Execute("project.set_start_scene", {{"path", "Scenes/Other.pxscene"}}).Success);
+
+	// A scene that was registered before needs no new entry, so it saves without a warning.
+	REQUIRE(context.OpenScene("Scenes/Main.pxscene"));
+	const CommandResult again = context.Execute("scene.save");
+	REQUIRE(again.Success);
+	CHECK_FALSE(again.Result.contains("warnings"));
+}
+
 TEST_CASE("BuiltinCommands: material.create leaves no file behind when the import fails")
 {
 	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("MaterialCreateRegistryLocked") / "Game";
