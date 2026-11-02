@@ -360,6 +360,65 @@ TEST_CASE("AssetManager: malformed and out-of-project registry entries are skipp
 	CHECK(capture.Contains(spdlog::level::err, "nests too deeply"));
 }
 
+TEST_CASE("AssetManager: a path the registry lists under several handles resolves to the lowest, in any order")
+{
+	const std::filesystem::path directory = MakeProject("AssetRegistryDuplicatePaths");
+	const std::filesystem::path registry = directory / AssetManager::RegistryFileName;
+	// Three entries for one file ("./Brick.pxmat" names it too), in every order: which is listed first, and the order
+	// of the hash map they go into, must not matter. A sub-asset of the file is not a second entry for it.
+	const std::string entries[] = {
+		R"({"Handle":"9000","Type":"Material","Path":"Brick.pxmat"})",
+		R"({"Handle":"5000","Type":"Material","Path":"Brick.pxmat"})",
+		R"({"Handle":"7000","Type":"Material","Path":"./Brick.pxmat"})",
+		R"({"Handle":"6000","Type":"Texture","Path":"Textures/Brick.png"})",
+	};
+	const std::string subAsset = R"({"Handle":"8000","Type":"Material","Path":"Brick.pxmat","Parent":"9000"})";
+	std::vector<size_t> order = {0, 1, 2, 3};
+	do
+	{
+		std::string listed;
+		for (size_t index : order)
+			listed += entries[index] + ",";
+		REQUIRE(WriteFileAtomically(registry, R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[)" + listed + subAsset + "]}"));
+		CAPTURE(listed);
+		Paralax::Testing::ScopedLogCapture log;
+		AssetManager assets(directory);
+		CHECK(assets.GetHandleForPath("Brick.pxmat") == AssetHandle(5000));
+		CHECK(assets.GetHandleForPath(directory / "Brick.pxmat") == AssetHandle(5000));
+		CHECK(assets.ImportAsset("Brick.pxmat") == AssetHandle(5000));
+		CHECK(assets.GetHandleForPath("Textures/Brick.png") == AssetHandle(6000));
+		// Every entry stays registered, since scenes may use any of the handles, and each loads the file.
+		for (uint64_t handle : {5000u, 7000u, 9000u})
+		{
+			CAPTURE(handle);
+			CHECK(assets.GetAsset<MaterialAsset>(AssetHandle(handle)) != nullptr);
+		}
+		CHECK(assets.IsRegistered(AssetHandle(8000)));
+		// Reported once, for the one path listed more than once.
+		CHECK(log.Count(spdlog::level::warn, "lists 'Brick.pxmat' 3 times; looking it up by path gives the lowest handle, 5000, not 7000, 9000") == 1);
+		CHECK(log.Count(spdlog::level::warn, " times; looking it up by path") == 1);
+	} while (std::next_permutation(order.begin(), order.end()));
+
+	// Saved back as they were: nothing is dropped.
+	{
+		AssetManager assets(directory);
+		REQUIRE(assets.SaveRegistry());
+	}
+	AssetManager reopened(directory);
+	CHECK(reopened.GetRegisteredAssets().size() == 5);
+	CHECK(reopened.GetHandleForPath("Brick.pxmat") == AssetHandle(5000));
+
+	// However many entries name the file, the warning lists a few and counts the rest.
+	std::string many;
+	for (int handle = 5007; handle >= 5001; handle--)
+		many += fmt::format(R"({}{{"Handle":"{}","Type":"Material","Path":"Brick.pxmat"}})", handle == 5007 ? "" : ",", handle);
+	REQUIRE(WriteFileAtomically(registry, R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[)" + many + "]}"));
+	Paralax::Testing::ScopedLogCapture log;
+	AssetManager crowded(directory);
+	CHECK(crowded.GetHandleForPath("Brick.pxmat") == AssetHandle(5001));
+	CHECK(log.Count(spdlog::level::warn, "lists 'Brick.pxmat' 7 times; looking it up by path gives the lowest handle, 5001, not 5002, 5003, 5004, 5005 and 2 more") == 1);
+}
+
 TEST_CASE("AssetManager: an oversized registry is refused before reading, and registers nothing")
 {
 	// A valid registry, padded with whitespace past the cap: read in full, it would register its entry.

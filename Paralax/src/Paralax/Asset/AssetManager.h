@@ -73,6 +73,9 @@ namespace Paralax {
 		bool IsLoaded(AssetHandle handle) const;
 		bool IsBuiltin(AssetHandle handle) const;
 		const AssetMetadata* GetMetadata(AssetHandle handle) const;
+		// The handle of the file asset at path (absolute, or relative to the asset directory), or 0 if none is
+		// registered there. Where a hand-edited registry lists the file under several handles, the lowest, on every
+		// platform.
 		AssetHandle GetHandleForPath(const std::filesystem::path& path) const;
 		// The asset's type, from metadata, the cache or the built-in table; None if unknown.
 		AssetType GetAssetType(AssetHandle handle) const;

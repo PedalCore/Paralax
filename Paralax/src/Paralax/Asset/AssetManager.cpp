@@ -279,12 +279,15 @@ namespace Paralax {
 		const std::optional<std::filesystem::path> registryPath = path.is_absolute() ? ToRegistryPath(path) : std::optional(FromUtf8(ToUtf8(path.lexically_normal())));
 		if (!registryPath)
 			return 0;
+		// A hand-edited or merged registry can list one file under several handles (LoadRegistry warns). The lowest
+		// answers, so the result never depends on the hash map's order, which differs between platforms.
+		uint64_t lowest = 0;
 		for (const auto& [handle, metadata] : m_Registry)
 		{
-			if (!metadata.Parent.IsValid() && metadata.FilePath == *registryPath)
-				return metadata.Handle;
+			if (!metadata.Parent.IsValid() && metadata.FilePath == *registryPath && (lowest == 0 || handle < lowest))
+				lowest = handle;
 		}
-		return 0;
+		return lowest;
 	}
 
 	AssetType AssetManager::GetAssetType(AssetHandle handle) const
@@ -701,6 +704,30 @@ namespace Paralax {
 				PX_CORE_WARN("Asset registry: skipping {} whose parent {} is not a registered file asset", static_cast<uint64_t>(it->first), static_cast<uint64_t>(it->second.Parent));
 				it = m_Registry.erase(it);
 			}
+		}
+
+		// Several entries for one file are all kept, since scenes may use any of their handles, and saved back as they
+		// are. Lookups by path give the lowest (see GetHandleForPath); each such path is reported once.
+		std::map<std::filesystem::path, std::vector<uint64_t>> handlesByPath;
+		for (const auto& [handle, metadata] : m_Registry)
+		{
+			if (!metadata.Parent.IsValid())
+				handlesByPath[metadata.FilePath].push_back(handle);
+		}
+		for (auto& [registryPath, handles] : handlesByPath)
+		{
+			if (handles.size() < 2)
+				continue;
+			std::sort(handles.begin(), handles.end());
+			// A hostile file could list one path a million times: the message names a few handles and counts the rest.
+			constexpr size_t MaxListed = 4;
+			std::string others;
+			for (size_t i = 1; i < handles.size() && i <= MaxListed; i++)
+				others += fmt::format("{}{}", i > 1 ? ", " : "", handles[i]);
+			if (handles.size() - 1 > MaxListed)
+				others += fmt::format(" and {} more", handles.size() - 1 - MaxListed);
+			PX_CORE_WARN("Asset registry '{}' lists '{}' {} times; looking it up by path gives the lowest handle, {}, not {}", ToUtf8(path), ToUtf8(registryPath), handles.size(),
+						 handles.front(), others);
 		}
 		return true;
 	}
