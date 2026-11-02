@@ -417,12 +417,19 @@ TEST_CASE("AssetManager: a registry that cannot be read is never overwritten, an
 	CHECK(reopened.IsRegistered(AssetHandle(5003)));
 	CHECK(reopened.IsRegistered(texture));
 
-	// Deleting an unreadable registry gives up what it listed: saves then create a new one.
+	// Deleting an unreadable registry gives up what it listed: saves then create a new one, and keep it up to date
+	// (the file is then one the manager wrote, so later saves may replace it).
 	REQUIRE(WriteFileAtomically(registry, conflicted));
 	AssetManager discarded(directory);
 	std::filesystem::remove(registry);
-	CHECK(discarded.ImportAsset("Brick.pxmat").IsValid());
+	const AssetHandle material = discarded.ImportAsset("Brick.pxmat");
+	CHECK(material.IsValid());
 	CHECK(std::filesystem::is_regular_file(registry));
+	const AssetHandle brickTexture = discarded.ImportAsset("Textures/Brick.png");
+	CHECK(brickTexture.IsValid());
+	AssetManager recreated(directory);
+	CHECK(recreated.IsRegistered(material));
+	CHECK(recreated.IsRegistered(brickTexture));
 }
 
 TEST_CASE("AssetManager: one registry byte limit governs loading and saving, and an import past it is undone")

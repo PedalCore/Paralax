@@ -127,7 +127,10 @@ namespace Paralax {
 	private:
 		std::filesystem::path m_AssetDirectory;
 		size_t m_MaxRegistryBytes = MaxRegistryBytes;
-		bool m_RegistryUnreadable = false; // The file on disk exists but the last LoadRegistry could not read it.
+		// The file on disk could not be read by the last LoadRegistry, and has not been replaced by a save since. Mutable
+		// because SaveRegistry, which is const (it changes nothing that is registered), clears it once it has written
+		// the file anew: from then on the file is one this manager wrote.
+		mutable bool m_RegistryUnreadable = false;
 		std::unordered_map<uint64_t, AssetMetadata> m_Registry;
 		std::unordered_map<uint64_t, Ref<Asset>> m_Loaded;
 		// Handles that are unknown or failed to load, reported once (cleared by imports, reloads and registry loads).

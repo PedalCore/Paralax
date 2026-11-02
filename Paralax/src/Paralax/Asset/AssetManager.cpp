@@ -613,7 +613,12 @@ namespace Paralax {
 		}
 
 		json document = {{"Paralax", {{"Type", "AssetRegistry"}, {"Version", 1}}}, {"Assets", std::move(assets)}};
-		return WriteFileAtomically(m_AssetDirectory / RegistryFileName, FormatJsonDocument(document), m_MaxRegistryBytes);
+		if (!WriteFileAtomically(m_AssetDirectory / RegistryFileName, FormatJsonDocument(document), m_MaxRegistryBytes))
+			return false;
+		// The file on disk is now one this manager wrote (after an unreadable one was removed, the save that creates it
+		// anew), so later saves may replace it.
+		m_RegistryUnreadable = false;
+		return true;
 	}
 
 	bool AssetManager::LoadRegistry()
