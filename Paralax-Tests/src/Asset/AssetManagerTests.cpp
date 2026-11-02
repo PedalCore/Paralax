@@ -397,13 +397,18 @@ TEST_CASE("AssetManager: a registry that cannot be read is never overwritten, an
 	CHECK_FALSE(assets.SaveRegistry());
 	CHECK(Paralax::Testing::ReadFileText(registry) == conflicted);
 
-	// Too large to read (here at the seam's small limit) is protected the same way.
+	// Too large to read (here at the seam's small limit) is protected the same way. The valid file is padded well past
+	// the registry the import would save, and the limit lies between the two sizes, so the save is not refused for its
+	// size: only the guard can stop it.
 	{
-		REQUIRE(WriteFileAtomically(registry, R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[)" + entry + "]}"));
-		const std::string valid = Paralax::Testing::ReadFileText(registry);
-		AssetManager limited(directory, valid.size() - 1);
+		const std::string padded = R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[)" + entry + "]}" + std::string(4096, ' ');
+		REQUIRE(WriteFileAtomically(registry, padded));
+		AssetManager limited(directory, 1024);
+		Paralax::Testing::ScopedLogCapture guard;
 		CHECK_FALSE(limited.ImportAsset("Textures/Brick.png").IsValid());
-		CHECK(Paralax::Testing::ReadFileText(registry) == valid);
+		CHECK(guard.Contains(spdlog::level::err, "could not be read"));
+		CHECK_FALSE(guard.Contains(spdlog::level::err, "the document is too large"));
+		CHECK(Paralax::Testing::ReadFileText(registry) == padded);
 		REQUIRE(WriteFileAtomically(registry, conflicted));
 	}
 
