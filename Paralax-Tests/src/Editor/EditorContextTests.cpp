@@ -380,15 +380,24 @@ TEST_CASE("EditorContext: a scene file name that is not UTF-8 is refused before 
 		CHECK_FALSE(std::filesystem::exists(file));
 		CHECK(log.Contains(spdlog::level::err, "is not a valid UTF-8 file name"));
 
-		// Commands only carry UTF-8, but a UTF-8 link can still resolve to such a name: it is refused the same way.
+		// Commands only carry UTF-8, but a UTF-8 link can still resolve to such a name: it is refused the same way. Some
+		// file systems refuse such names outright (APFS, on macOS, requires UTF-8), and then no link can lead to one.
 		std::ofstream(file) << "{}";
-		std::error_code linkError;
-		std::filesystem::create_symlink(file, project->GetAssetDirectory() / "Scenes" / "Link.pxscene", linkError);
-		if (!linkError)
+		std::error_code existsError;
+		if (!std::filesystem::is_regular_file(file, existsError))
 		{
-			const CommandResult opened = context.Execute("scene.open", {{"path", "Scenes/Link.pxscene"}});
-			CHECK_FALSE(opened.Success);
-			CHECK_FALSE(project->GetAssetManager().GetHandleForPath("Scenes/Link.pxscene").IsValid());
+			MESSAGE("This file system refuses names that are not UTF-8, so no link can resolve to one");
+		}
+		else
+		{
+			std::error_code linkError;
+			std::filesystem::create_symlink(file, project->GetAssetDirectory() / "Scenes" / "Link.pxscene", linkError);
+			if (!linkError)
+			{
+				const CommandResult opened = context.Execute("scene.open", {{"path", "Scenes/Link.pxscene"}});
+				CHECK_FALSE(opened.Success);
+				CHECK_FALSE(project->GetAssetManager().GetHandleForPath("Scenes/Link.pxscene").IsValid());
+			}
 		}
 	}
 }

@@ -218,7 +218,11 @@ TEST_CASE("AssetManager: a file name that is not UTF-8 is refused at import, and
 		const std::filesystem::path registryFile = directory / AssetManager::RegistryFileName;
 		const std::string registry = Paralax::Testing::ReadFileText(registryFile);
 		const std::string name = "Textures/Brick\xFF.png";
-		REQUIRE(Image(2, 2).SavePNG(directory / FromUtf8(name)));
+		// Some file systems refuse such names outright (APFS, on macOS, requires UTF-8). The name is refused before the
+		// file is looked at, so everything below holds either way; where the file can exist, it is there to show that
+		// a real file under such a name is refused too.
+		if (!Image(2, 2).SavePNG(directory / FromUtf8(name)))
+			MESSAGE("This file system refuses names that are not UTF-8; the name is checked without a file behind it");
 
 		Paralax::Testing::ScopedLogCapture log;
 		AssetHandle handle = 0;
