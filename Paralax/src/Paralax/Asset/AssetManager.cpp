@@ -588,6 +588,20 @@ namespace Paralax {
 	{
 		if (m_AssetDirectory.empty())
 			return false;
+		if (m_RegistryUnreadable)
+		{
+			// Writing now would replace every entry of the file that failed to load with only those registered since,
+			// and every handle the project's scenes use would be lost. Once the file is gone (removed by the user),
+			// there is nothing left to lose.
+			const std::filesystem::path path = m_AssetDirectory / RegistryFileName;
+			std::error_code error;
+			if (std::filesystem::exists(path, error) || error)
+			{
+				PX_CORE_ERROR("Not saving the asset registry: '{}' could not be read, and saving would replace all it lists. Repair or restore the file, then reopen the project.",
+							  ToUtf8(path));
+				return false;
+			}
+		}
 
 		json assets = json::array();
 		for (const AssetMetadata& metadata : GetRegisteredAssets())
@@ -606,29 +620,30 @@ namespace Paralax {
 	{
 		m_Registry.clear();
 		m_Failed.clear();
+		m_RegistryUnreadable = false;
 		const std::filesystem::path path = m_AssetDirectory / RegistryFileName;
+		// A registry that exists but cannot be read stays as it is on disk: SaveRegistry refuses until one loads.
+		auto unreadable = [&](const std::string& reason) {
+			PX_CORE_ERROR("Asset registry '{}' {}; nothing is registered, and the file is left untouched until it can be read", ToUtf8(path), reason);
+			m_RegistryUnreadable = true;
+			return false;
+		};
 		std::error_code error;
-		if (!std::filesystem::exists(path, error))
-			return true;
+		const bool exists = std::filesystem::exists(path, error);
+		if (error)
+			return unreadable(fmt::format("cannot be checked ({})", error.message()));
+		if (!exists)
+			return true; // A new project: the first save creates it.
 
 		std::string text;
 		std::string readError;
 		if (!ReadTextFile(path, text, readError, m_MaxRegistryBytes))
-		{
-			PX_CORE_ERROR("Cannot read asset registry '{}': {}", ToUtf8(path), readError);
-			return false;
-		}
+			return unreadable(fmt::format("cannot be read ({})", readError));
 		if (JsonExceedsDepth(text, MaxJsonDepth))
-		{
-			PX_CORE_ERROR("Asset registry '{}' nests too deeply", ToUtf8(path));
-			return false;
-		}
+			return unreadable("nests too deeply");
 		const json document = json::parse(text, nullptr, false);
 		if (document.is_discarded() || !document.is_object() || !document.contains("Assets") || !document["Assets"].is_array())
-		{
-			PX_CORE_ERROR("Asset registry '{}' is malformed", ToUtf8(path));
-			return false;
-		}
+			return unreadable("is malformed");
 
 		auto stringField = [](const json& entry, const char* name) -> std::string {
 			const auto it = entry.find(name);

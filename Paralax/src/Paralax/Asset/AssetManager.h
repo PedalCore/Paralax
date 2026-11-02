@@ -98,9 +98,16 @@ namespace Paralax {
 		bool ReloadAsset(AssetHandle handle);
 
 		// Writes AssetRegistry.json atomically. Refuses a registry larger than LoadRegistry reads (MaxRegistryBytes),
-		// leaving the file on disk as it was. Returns false (with an error logged) on failure.
+		// leaving the file on disk as it was, and refuses while a file that LoadRegistry could not read is still in
+		// place. Returns false (with an error logged) on failure.
 		bool SaveRegistry() const;
-		// Replaces the registry with the one on disk (a missing file yields an empty registry).
+		// Replaces the registry with the one on disk (a missing file yields an empty registry, as for a new project).
+		// Returns false, with an error logged, if the file exists but cannot be read: too large, nested too deeply,
+		// malformed (merge-conflict markers, say) or unreadable. Nothing is registered then, and SaveRegistry refuses
+		// until a LoadRegistry succeeds, so imports, removals and reloads fail instead of replacing the file, and every
+		// handle it lists, with only what was registered since. To recover, repair the file or restore it (from
+		// version control, say), then reopen the project or call LoadRegistry. (Deleting the file gives up what it
+		// listed; saves then create a new one.)
 		bool LoadRegistry();
 
 		// Converts between absolute paths and registry paths (relative, '/' separators). Returns nullopt for
@@ -120,6 +127,7 @@ namespace Paralax {
 	private:
 		std::filesystem::path m_AssetDirectory;
 		size_t m_MaxRegistryBytes = MaxRegistryBytes;
+		bool m_RegistryUnreadable = false; // The file on disk exists but the last LoadRegistry could not read it.
 		std::unordered_map<uint64_t, AssetMetadata> m_Registry;
 		std::unordered_map<uint64_t, Ref<Asset>> m_Loaded;
 		// Handles that are unknown or failed to load, reported once (cleared by imports, reloads and registry loads).

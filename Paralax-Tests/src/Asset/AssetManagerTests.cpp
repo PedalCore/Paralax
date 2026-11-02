@@ -376,6 +376,55 @@ TEST_CASE("AssetManager: an oversized registry is refused before reading, and re
 	std::filesystem::remove(directory / AssetManager::RegistryFileName);
 }
 
+TEST_CASE("AssetManager: a registry that cannot be read is never overwritten, and imports fail until it loads")
+{
+	// A merge left conflict markers in the file: it lists the project's assets, but cannot be parsed. Saving the
+	// empty in-memory registry over it (as the next import would) would lose every handle the scenes use.
+	const std::filesystem::path directory = MakeProject("AssetRegistryUnreadable");
+	const std::filesystem::path registry = directory / AssetManager::RegistryFileName;
+	const std::string entry = R"({"Handle":"5003","Type":"Material","Path":"Brick.pxmat"})";
+	const std::string conflicted = "<<<<<<< HEAD\n" + std::string(R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[)") + entry + "]}\n=======\n" +
+								   std::string(R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[]})") + "\n>>>>>>> other\n";
+	REQUIRE(WriteFileAtomically(registry, conflicted));
+	Paralax::Testing::ScopedLogCapture log;
+	AssetManager assets(directory);
+	CHECK(log.Contains(spdlog::level::err, "is malformed"));
+	CHECK(assets.GetRegisteredAssets().empty());
+
+	CHECK_FALSE(assets.ImportAsset("Textures/Brick.png").IsValid());
+	CHECK(log.Contains(spdlog::level::err, "could not be read"));
+	CHECK(assets.GetRegisteredAssets().empty());
+	CHECK_FALSE(assets.SaveRegistry());
+	CHECK(Paralax::Testing::ReadFileText(registry) == conflicted);
+
+	// Too large to read (here at the seam's small limit) is protected the same way.
+	{
+		REQUIRE(WriteFileAtomically(registry, R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[)" + entry + "]}"));
+		const std::string valid = Paralax::Testing::ReadFileText(registry);
+		AssetManager limited(directory, valid.size() - 1);
+		CHECK_FALSE(limited.ImportAsset("Textures/Brick.png").IsValid());
+		CHECK(Paralax::Testing::ReadFileText(registry) == valid);
+		REQUIRE(WriteFileAtomically(registry, conflicted));
+	}
+
+	// Repaired, and loaded again: the old entry is back, and imports are recorded beside it.
+	REQUIRE(WriteFileAtomically(registry, R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[)" + entry + "]}"));
+	CHECK(assets.LoadRegistry());
+	CHECK(assets.IsRegistered(AssetHandle(5003)));
+	const AssetHandle texture = assets.ImportAsset("Textures/Brick.png");
+	REQUIRE(texture.IsValid());
+	AssetManager reopened(directory);
+	CHECK(reopened.IsRegistered(AssetHandle(5003)));
+	CHECK(reopened.IsRegistered(texture));
+
+	// Deleting an unreadable registry gives up what it listed: saves then create a new one.
+	REQUIRE(WriteFileAtomically(registry, conflicted));
+	AssetManager discarded(directory);
+	std::filesystem::remove(registry);
+	CHECK(discarded.ImportAsset("Brick.pxmat").IsValid());
+	CHECK(std::filesystem::is_regular_file(registry));
+}
+
 TEST_CASE("AssetManager: one registry byte limit governs loading and saving, and an import past it is undone")
 {
 	// At a small limit (the constructor's seam), the cases a 64 MiB registry would take minutes to reach.
