@@ -209,9 +209,11 @@ namespace Paralax::Editor {
 
 	// Registers the built-in editor commands (scene, entity, component, asset, selection, undo, play, render).
 	void RegisterBuiltinCommands(CommandRegistry& registry);
-	// Fills the open scene with a small lit demo (the editor shows it when it starts without a scene). The demo is the
-	// starting point, not an edit: afterwards the scene is clean and there is nothing to undo.
-	void CreateDemoScene(EditorContext& context);
+	// Fills the scene with a small lit demo when there is nothing else to show: only if no scene file is open and the
+	// scene is empty (the editor calls it at start, so a --scene or start scene that opened, even an empty one, is
+	// kept). The demo is the starting point, not an edit: afterwards the scene is clean and there is nothing to undo.
+	// Returns whether the demo was created.
+	bool CreateDemoScene(EditorContext& context);
 	// Registers the script and prefab commands (script.create/eval/errors, prefab.create/instantiate).
 	void RegisterScriptingCommands(CommandRegistry& registry);
 	// Registers the project commands (project.info, project.set_start_scene, project.export).

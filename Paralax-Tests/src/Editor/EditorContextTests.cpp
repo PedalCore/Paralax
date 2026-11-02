@@ -54,7 +54,7 @@ TEST_CASE("EditorContext: a failed command that changed nothing keeps the same S
 TEST_CASE("EditorContext: the demo scene is the starting point, clean and with nothing to undo")
 {
 	EditorContext context;
-	CreateDemoScene(context);
+	CHECK(CreateDemoScene(context));
 	CHECK(context.GetEditorScene().GetEntityCount() == 6);
 	CHECK(context.GetEditorScene().GetPrimaryCameraEntity().has_value());
 	const json info = context.Execute("scene.info").Result;
@@ -68,8 +68,37 @@ TEST_CASE("EditorContext: the demo scene is the starting point, clean and with n
 	const std::string id = CreateEntity(context, {{"name", "Extra"}});
 	CHECK(context.IsSceneDirty());
 	CHECK(context.Execute("edit.undo").Success);
+	CHECK_FALSE(context.ResolveEntity(id));
 	CHECK(context.GetEditorScene().GetEntityCount() == 6);
 	CHECK_FALSE(context.CanUndo());
+}
+
+TEST_CASE("EditorContext: the demo scene never fills a scene that was opened, even an empty one")
+{
+	const std::filesystem::path root = Paralax::Testing::CreateTestDirectory("EditorContextDemoScene");
+	{
+		EditorContext author(Project::Create(root / "Game", "Game"));
+		REQUIRE(author.GetProject());
+		REQUIRE(author.Execute("scene.save", {{"path", "Scenes/Empty"}}).Success);
+		REQUIRE(author.Execute("project.set_start_scene", {{"path", "Scenes/Empty.pxscene"}}).Success);
+	}
+
+	// What the editor does at start: open the start scene, then offer the demo.
+	EditorContext context(Project::Load(root / "Game"));
+	REQUIRE(context.GetProject());
+	REQUIRE(context.OpenScene("Scenes/Empty.pxscene"));
+	CHECK_FALSE(CreateDemoScene(context));
+	CHECK(context.GetEditorScene().GetEntityCount() == 0);
+	const json info = context.Execute("scene.info").Result;
+	CHECK(info["dirty"] == false);
+	CHECK(info["canUndo"] == false);
+	CHECK(info["path"].get<std::string>().find("Empty.pxscene") != std::string::npos);
+
+	// Nor an unsaved scene with entities in it.
+	EditorContext unsaved;
+	CreateEntity(unsaved, {{"name", "Mine"}});
+	CHECK_FALSE(CreateDemoScene(unsaved));
+	CHECK(unsaved.GetEditorScene().GetEntityCount() == 1);
 }
 
 TEST_CASE("EditorContext: ResetHistory forgets undo and redo and marks the scene clean, but not during a change")

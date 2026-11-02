@@ -153,8 +153,8 @@ namespace Paralax {
 				if (const AssetMetadata* metadata = active->GetAssetManager().GetMetadata(active->GetStartScene()))
 					m_Context.OpenScene(metadata->FilePath);
 			}
-			if (m_Context.GetEditorScene().GetEntityCount() == 0)
-				Editor::CreateDemoScene(m_Context);
+			// Only when no scene opened: an empty --scene or start scene is the user's file and stays empty.
+			Editor::CreateDemoScene(m_Context);
 
 			// A windowed editor plays sound; headless ones (agents, CI) mix silently and deterministically.
 			if (!specification.Window.Headless)

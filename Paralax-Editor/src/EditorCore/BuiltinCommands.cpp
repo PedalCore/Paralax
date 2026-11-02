@@ -85,8 +85,12 @@ namespace Paralax::Editor {
 
 	}
 
-	void CreateDemoScene(EditorContext& context)
+	bool CreateDemoScene(EditorContext& context)
 	{
+		// A scene file that opened is the user's, empty or not: filling it would put demo entities into their file at
+		// the next save, unmarked as changes.
+		if (!context.GetScenePath().empty() || context.GetEditorScene().GetEntityCount() != 0)
+			return false;
 		// Through the same commands an agent would use, so the demo is a scene like any other.
 		auto mesh = [](uint64_t handle) { return json{{"Mesh", std::to_string(handle)}}; };
 		const json entities[] = {
@@ -105,6 +109,7 @@ namespace Paralax::Editor {
 		context.ClearSelection();
 		// Nobody has edited anything yet: the editor starts clean, with nothing to undo.
 		context.ResetHistory();
+		return true;
 	}
 
 	void RegisterBuiltinCommands(CommandRegistry& registry)

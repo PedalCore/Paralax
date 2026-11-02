@@ -39,11 +39,11 @@ windowed one.
 
 ## The loop
 
-1. **Set up.** Start with `--new-project <dir>` (or `--project`). Without a scene to open, the editor shows a demo
-   scene; it is the starting point, not an edit, so `scene.info` reports it clean with nothing to undo. Use
-   `scene.new`, then `entity.create` with a `components` object. Components and their fields are listed by
-   `component.types`, and documented for scripts in
-   [Scripting.md](Scripting.md). Asset handles are strings (built-ins: `"1"` cube, `"2"` sphere, `"3"` plane,
+1. **Set up.** Start with `--new-project <dir>` (or `--project`). When the editor opens no scene file at start (no
+   `--scene` and no start scene, or one that cannot be opened), it shows a demo scene; that is the starting point,
+   not an edit, so `scene.info` reports it clean with nothing to undo. A scene that opens is shown as it is, even
+   empty. Use `scene.new`, then `entity.create` with a `components` object. Components and their fields are listed by
+   `component.types`, and documented for scripts in [Scripting.md](Scripting.md). Asset handles are strings (built-ins: `"1"` cube, `"2"` sphere, `"3"` plane,
    `"4"` cylinder, `"5"` capsule; see `asset.list`). Make materials with `material.create`, prefabs with
    `prefab.create`, and import files placed under `Assets/` with `asset.import`. Show a score or a message with a
    `Text` component (screen space by default: position it with the Transform's X/Y as fractions of the viewport),
