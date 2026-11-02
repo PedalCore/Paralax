@@ -5,6 +5,7 @@
 #include <nvrhi/nvrhi.h>
 
 #include <unordered_map>
+#include <unordered_set>
 
 struct ImDrawData;
 struct ImTextureData;
@@ -60,6 +61,9 @@ namespace Paralax {
 		std::unordered_map<nvrhi::ITexture*, CachedBindingSet> m_BindingSets;
 		// GPU textures for ImGui-managed textures (font atlas), by ImTextureData::UniqueID.
 		std::unordered_map<int, nvrhi::TextureHandle> m_Textures;
+		// ImGui textures whose creation failed and has been logged: ImGui asks again every frame, so the failure is
+		// reported once per texture, until it is created.
+		std::unordered_set<int> m_ReportedTextures;
 		uint64_t m_Frame = 0;
 	};
 
