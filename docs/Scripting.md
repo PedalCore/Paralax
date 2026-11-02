@@ -250,7 +250,8 @@ on with the new clip from its start; pausing play mode in the editor pauses soun
   timestep, the same `dt` that `OnUpdate` gets. By default that is the real time each frame took; under a fixed
   timestep (see [Determinism](#determinism)) it is the fixed step, so runs are reproducible.
 - `Log.Trace(...)`, `Log.Info(...)`, `Log.Warn(...)`, `Log.Error(...)` and `print(...)` write to the engine log and the
-  editor console.
+  editor console, their arguments converted with `tostring` and separated by tabs. A line keeps at most 16 KiB of its
+  text; a longer one is cut there and ends in `... (N bytes)`, giving its full size.
 
 ## Math
 
@@ -313,7 +314,7 @@ Scripts get no file, OS or process access, and cannot crash or stall the engine:
 - A scene's scripts may allocate up to 256 MB in total. One callback may create at most 10,000 entities, counting
   prefab instances by their entity count.
 - Errors anywhere, including the engine's own calls into Lua, are reported to the log and `script.errors`. They
-  never crash the engine.
+  never crash the engine. Each keeps at most 16 KiB of its text, as a logged line does.
 
 ## Prefabs
 

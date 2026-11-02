@@ -6,8 +6,11 @@
 #include <EditorCore/ConsoleSink.h>
 #include <EditorCore/EditorContext.h>
 
+#include <Paralax/Asset/AssetManager.h>
 #include <Paralax/Core/JsonText.h>
+#include <Paralax/Scripting/ScriptAsset.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -165,6 +168,30 @@ TEST_CASE("ConsoleCommands: each message keeps at most the console's byte limit 
 	PX_CORE_INFO("abc\xE6\x97\xA5");
 	PX_CORE_INFO("abcd\xC3\xA9");
 	CHECK(Texts(fixture.Get({{"sinceRevision", start}})) == std::vector<std::string>{"abcde", "abc... (6 bytes)", "abcd... (6 bytes)"});
+}
+
+TEST_CASE("ConsoleCommands: a script's long line and error reach the console as the script system cut them")
+{
+	// The script system cuts them to MaxMessageBytes; the console keeps enough more that their full sizes survive.
+	ConsoleFixture fixture;
+	Ref<ScriptAsset> script = ScriptAsset::Create("Loud.lua", "local Loud = {} function Loud:OnCreate() local text = string.rep('a', 16 * 1024 * 1024) print(text) error(text) end return Loud");
+	script->Handle = AssetHandle(9002);
+	fixture.Context.GetAssets().AddMemoryAsset(script);
+	REQUIRE(fixture.Context.Execute("entity.create", {{"components", {{"Script", {{"Script", "9002"}}}}}}).Success);
+	const uint64_t start = fixture.Get()["revision"].get<uint64_t>();
+	REQUIRE(fixture.Context.Execute("play.start", {{"paused", true}}).Success);
+	REQUIRE(fixture.Context.Execute("play.step").Success);
+	const std::vector<std::string> texts = Texts(fixture.Get({{"sinceRevision", start}, {"minLevel", "trace"}}));
+	REQUIRE(fixture.Context.Execute("play.stop").Success);
+
+	CHECK(std::find(texts.begin(), texts.end(), std::string(MaxMessageBytes, 'a') + "... (16777216 bytes)") != texts.end());
+	const auto error = std::find_if(texts.begin(), texts.end(), [](const std::string& text) { return text.starts_with("Script error: "); });
+	REQUIRE(error != texts.end());
+	CHECK(error->size() < MaxMessageBytes + 64);
+	CHECK(error->find("OnCreate: ") != std::string::npos);
+	CHECK(error->find("... (16777") != std::string::npos); // The error's own size (16 MiB and its context), not the console's cut.
+	for (const std::string& text : texts)
+		CHECK(text.size() < MaxMessageBytes + 64);
 }
 
 TEST_CASE("ConsoleCommands: an agent reads why a command failed over JSON-RPC")
