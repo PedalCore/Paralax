@@ -14,8 +14,11 @@
 #include <Paralax/Scripting/ScriptAsset.h>
 #include <Paralax/Scripting/ScriptSystem.h>
 
+#include <algorithm>
 #include <chrono>
 #include <fstream>
+#include <set>
+#include <sstream>
 
 using namespace Paralax;
 
@@ -808,6 +811,31 @@ TEST_CASE("ScriptSystem: the API listing names every binding")
 		CAPTURE(name);
 		CHECK_FALSE(name.find("__") != std::string::npos);
 	}
+	CHECK(std::find(api.begin(), api.end(), "Key.W") == api.end()); // Constants are not API functions.
+
+	// The listing is derived from the tables the bindings create, so every global table a script sees is either listed
+	// (which makes the docs and the feature test require it) or one of the known exceptions: the Lua standard libraries,
+	// the Key/Mouse constants, and Component, whose members are the reflected fields of each component type (resolved
+	// by its index metamethod and covered by the component tests). A binding table that this check finds unlisted was
+	// created without CreateApiTable.
+	ScriptFixture fixture;
+	fixture.Start();
+	const std::string globals = fixture.Eval("local names = {} for name, value in pairs(_G) do if type(value) == 'table' then names[#names + 1] = name end end "
+											 "table.sort(names) return table.concat(names, ' ')");
+	const std::set<std::string> exceptions = {"_G", "base", "coroutine", "math", "string", "table", "utf8", "Key", "Mouse", "Component"};
+	std::istringstream stream(globals);
+	std::string global;
+	size_t listed = 0;
+	while (stream >> global)
+	{
+		if (exceptions.contains(global))
+			continue;
+		CAPTURE(global);
+		const bool found = std::any_of(api.begin(), api.end(), [&](const std::string& name) { return name.starts_with(global + '.') || name.starts_with(global + ':'); });
+		CHECK_MESSAGE(found, "A global table scripts can use is missing from GetApiNames: create it with CreateApiTable");
+		listed++;
+	}
+	CHECK(listed >= 12); // Scene, Input, Log, Time, Physics, Audio, Game, Entity, vec2, vec3, vec4, quat.
 }
 
 TEST_CASE("ScriptAsset: missing and oversized files are rejected")

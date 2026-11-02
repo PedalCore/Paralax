@@ -245,11 +245,12 @@ on with the new clip from its start; pausing play mode in the editor pauses soun
   `Key.LeftShift`, `Key.LeftControl`, `Key.F1`–`Key.F12`, `Key.KP0`–`Key.KP9`, and more (see `s_KeyNames`).
 - `Time.delta`, `Time.elapsed` (seconds since play started) and `Time.frame` (update count) come from the engine's
   timestep. They never use wall-clock time, so runs are reproducible under a fixed timestep.
-- `Log.Trace/Info/Warn/Error(...)` and `print(...)` write to the engine log and the editor console.
+- `Log.Trace(...)`, `Log.Info(...)`, `Log.Warn(...)`, `Log.Error(...)` and `print(...)` write to the engine log and the
+  editor console.
 
 ## Math
 
-`vec2`, `vec3`, `vec4` and `quat` are value types. Their components are read/write (`v.x`).
+`vec2`, `vec3`, `vec4` and `quat` are value types. Their components are read/write (`v.x`, `v.y`, `v.z`, `v.w`).
 
 - Constructors: `vec3()`, `vec3(s)`, `vec3(x, y, z)`; `quat()` is the identity, `quat(w, x, y, z)`.
 - Operators: `+ - * /` (with vectors or scalars, scalars on either side of `*`), unary `-`, `==` and `tostring`.

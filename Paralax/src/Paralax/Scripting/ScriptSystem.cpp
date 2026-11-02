@@ -403,6 +403,10 @@ namespace Paralax {
 		sol::function Defines;
 		// The Time table the engine updates (held here, so a script reassigning the global cannot break updates).
 		sol::table TimeTable;
+		// The global API tables, in creation order. GetApiNames enumerates exactly these, so a table made with
+		// CreateApiTable is listed by script.api and required in docs/Scripting.md and the feature test
+		// (FeatureTestCoverageTests) with no list to keep in step. Constant tables (Key, Mouse) are not API tables.
+		std::vector<std::string> ApiTables;
 
 		// Per top-level call (a callback, a chunk, an Evaluate): instructions executed, whether the budget ran out,
 		// and entities created. Nested calls (e.g. OnDestroy run by a Destroy inside a callback) share the budget.
@@ -920,6 +924,7 @@ namespace Paralax {
 		{
 			Memory = {};
 			Memory.Limit = Specification.MemoryLimitBytes;
+			ApiTables.clear();
 			Lua.emplace(sol::default_at_panic, &LuaAllocate, &Memory);
 			sol::state& lua = *Lua;
 			*static_cast<Impl**>(lua_getextraspace(lua.lua_state())) = this;
@@ -952,9 +957,16 @@ namespace Paralax {
 			BindAudio(lua);
 			BindGame(lua);
 
-			TimeTable = lua.create_table_with("delta", 0.0, "elapsed", 0.0, "frame", 0);
-			lua["Time"] = TimeTable;
+			TimeTable = CreateApiTable(lua, "Time");
+			TimeTable.raw_set("delta", 0.0, "elapsed", 0.0, "frame", 0);
 			lua.set_function("require", [this](const std::string& name) { return Require(name); });
+		}
+
+		// Creates a global table of API functions (or fields) and records it for GetApiNames.
+		sol::table CreateApiTable(sol::state& lua, const char* name)
+		{
+			ApiTables.emplace_back(name);
+			return lua.create_named_table(name);
 		}
 
 		void BindMath(sol::state& lua)
@@ -1009,7 +1021,7 @@ namespace Paralax {
 				}
 				return message;
 			};
-			sol::table log = lua.create_named_table("Log");
+			sol::table log = CreateApiTable(lua, "Log");
 			log.set_function("Trace", [join](sol::variadic_args args, sol::this_state s) { PX_TRACE("{}", join(args, s)); });
 			log.set_function("Info", [join](sol::variadic_args args, sol::this_state s) { PX_INFO("{}", join(args, s)); });
 			log.set_function("Warn", [join](sol::variadic_args args, sol::this_state s) { PX_WARN("{}", join(args, s)); });
@@ -1163,7 +1175,7 @@ namespace Paralax {
 
 		void BindScene(sol::state& lua)
 		{
-			sol::table scene = lua.create_named_table("Scene");
+			sol::table scene = CreateApiTable(lua, "Scene");
 			scene.set_function("CreateEntity", [this](sol::optional<std::string> name, sol::optional<ScriptEntity> parent) {
 				Scene& active = GetScene();
 				std::optional<Entity> resolvedParent;
@@ -1266,7 +1278,7 @@ namespace Paralax {
 
 		void BindPhysics(sol::state& lua)
 		{
-			sol::table physics = lua.create_named_table("Physics");
+			sol::table physics = CreateApiTable(lua, "Physics");
 			// Body controls return false when the entity has no (dynamic) body; that is not an error.
 			physics.set_function("AddForce", [this](const ScriptEntity& entity, const glm::vec3& force) { return GetPhysics().AddForce(Resolve(entity).GetUUID(), force); });
 			physics.set_function("AddImpulse", [this](const ScriptEntity& entity, const glm::vec3& impulse) { return GetPhysics().AddImpulse(Resolve(entity).GetUUID(), impulse); });
@@ -1307,7 +1319,7 @@ namespace Paralax {
 
 		void BindAudio(sol::state& lua)
 		{
-			sol::table audio = lua.create_named_table("Audio");
+			sol::table audio = CreateApiTable(lua, "Audio");
 			// Source controls return false when the entity has no AudioSource with a playable clip; not an error.
 			audio.set_function("Play", [this](const ScriptEntity& entity) { return GetAudio().Play(Resolve(entity).GetUUID()); });
 			audio.set_function("Pause", [this](const ScriptEntity& entity) { return GetAudio().Pause(Resolve(entity).GetUUID()); });
@@ -1357,7 +1369,7 @@ namespace Paralax {
 
 		void BindGame(sol::state& lua)
 		{
-			sol::table game = lua.create_named_table("Game");
+			sol::table game = CreateApiTable(lua, "Game");
 			// Values that survive Scene.Load and Scene.Reload: booleans, numbers and strings. Setting nil removes.
 			game.set_function("Set", [this](const std::string& key, const sol::object& value, sol::this_state caller) {
 				GameState& state = GetState();
@@ -1399,6 +1411,8 @@ namespace Paralax {
 
 		void BindInput(sol::state& lua)
 		{
+			// Constant tables, not API tables: their members are the names from GetKeyNames/GetMouseButtonNames, which
+			// docs/Scripting.md describes as ranges, so script.api and the coverage test do not list them one by one.
 			sol::table keys = lua.create_named_table("Key");
 			for (const InputName<KeyCode>& name : GetKeyNames())
 				keys[name.Name] = name.Code;
@@ -1416,7 +1430,7 @@ namespace Paralax {
 					ScriptError(fmt::format("unknown mouse button {}", code));
 				return static_cast<MouseCode>(code);
 			};
-			sol::table input = lua.create_named_table("Input");
+			sol::table input = CreateApiTable(lua, "Input");
 			input.set_function("IsKeyDown", [key](int64_t code) { return Input::IsKeyDown(key(code)); });
 			input.set_function("WasKeyPressed", [key](int64_t code) { return Input::WasKeyPressed(key(code)); });
 			input.set_function("WasKeyReleased", [key](int64_t code) { return Input::WasKeyReleased(key(code)); });
@@ -1614,9 +1628,9 @@ namespace Paralax {
 					lua_pop(L, 1);
 				}
 			};
-			for (const char* table : {"Scene", "Input", "Log", "Time", "Physics", "Audio", "Game"})
+			for (const std::string& table : m_Impl->ApiTables)
 			{
-				lua_getglobal(L, table);
+				lua_getglobal(L, table.c_str());
 				if (lua_istable(L, -1))
 					collect(table, '.', false);
 				lua_pop(L, 1);

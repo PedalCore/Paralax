@@ -1,6 +1,7 @@
 -- The feature test: exercises every scripting API function and checks the scene contains every component type.
 -- Run headless by CTest and CI (Paralax-Runtime --fail-on-script-error); any failed assert fails the run.
--- Paralax-Tests/src/Scripting/FeatureTestCoverageTests.cpp verifies every API name appears in this file.
+-- Paralax-Tests/src/Scripting/FeatureTestCoverageTests.cpp verifies this file's code calls every API function by its
+-- qualified name (Table.Function(...), value:Method(...)) and reads every field; comments and strings do not count.
 local Util = require("Scripts/Util")
 
 local FeatureTest = { finishFrame = 45 }

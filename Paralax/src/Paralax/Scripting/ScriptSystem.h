@@ -95,8 +95,10 @@ namespace Paralax {
 		// running or the code fails. The instruction budget and memory limit apply.
 		std::optional<std::string> Evaluate(std::string_view code, std::string& outError);
 
-		// Every name scripts can use, as "Table.Function" for the global API tables and "Type:Member" for methods and
-		// properties of userdata types (Entity, Component, vec2/3/4, quat). Works whether or not the scene runs.
+		// Every name scripts can use, as "Table.Function" for the global API tables (Time's fields included) and
+		// "Type:Member" for methods and properties of userdata types (Entity, Component, vec2/3/4, quat). The tables
+		// are enumerated from the bindings, so a new one is listed as soon as it exists; the Key and Mouse constants
+		// are not listed (see GetKeyNames). Works whether or not the scene runs.
 		std::vector<std::string> GetApiNames();
 
 	private:
