@@ -429,10 +429,19 @@ namespace Paralax::Editor {
 							   std::error_code existsError;
 							   if (std::filesystem::exists(context.GetAssets().ToAbsolutePath(*registryPath), existsError))
 								   return CommandResult::Fail(fmt::format("'{}' already exists; use material.set to change it", registryPath->generic_string()));
-							   if (!MaterialSerializer::SaveToFile(material, context.GetAssets().ToAbsolutePath(*registryPath)))
+							   const std::filesystem::path file = context.GetAssets().ToAbsolutePath(*registryPath);
+							   if (!MaterialSerializer::SaveToFile(material, file))
 								   return CommandResult::Fail("Could not write the material file");
 							   const AssetHandle handle = context.GetAssets().ImportAsset(*registryPath);
-							   return handle.IsValid() ? CommandResult::Ok({{"handle", IdString(handle)}}) : CommandResult::Fail("Import failed");
+							   if (!handle.IsValid())
+							   {
+								   // The file is new (checked above): remove it, so the failed command leaves nothing behind and a
+								   // retry is not refused because the file exists.
+								   std::error_code removeError;
+								   std::filesystem::remove(file, removeError);
+								   return CommandResult::Fail("Import failed (see the log for details: console.get)");
+							   }
+							   return CommandResult::Ok({{"handle", IdString(handle)}});
 						   }});
 
 		registry.Register({"material.set", "Changes material fields; file-backed materials are saved, others (e.g. glTF sub-materials) change in memory.", {{"handle", "string", "Material asset handle.", true}, {"fields", "object", "Fields to change.", true}}, false, [](EditorContext& context, const json& params) {

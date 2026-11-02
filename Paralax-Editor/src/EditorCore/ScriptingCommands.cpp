@@ -84,6 +84,20 @@ return {name}
 			return resolved;
 		}
 
+		// Imports a file the command has just written to a NewAssetPath. If the import fails (the asset registry cannot
+		// be saved, say), the file is removed again: a failed command leaves nothing behind, and a retry is not refused
+		// because the file exists.
+		AssetHandle ImportNewFile(EditorContext& context, const std::filesystem::path& path)
+		{
+			const AssetHandle handle = context.GetAssets().ImportAsset(path);
+			if (!handle.IsValid())
+			{
+				std::error_code error;
+				std::filesystem::remove(path, error);
+			}
+			return handle;
+		}
+
 		// An existing script file of the project, by path relative to Assets (or its handle as a string): its handle
 		// and its file (resolved and checked to lie inside the project).
 		std::optional<std::pair<AssetHandle, std::filesystem::path>> FindScript(EditorContext& context, const std::string& requested, std::string& outError)
@@ -162,7 +176,7 @@ return {name}
 								   return CommandResult::Fail("The script is too large");
 							   if (!WriteFileAtomically(*path, source))
 								   return CommandResult::Fail("Could not write the script file");
-							   const AssetHandle handle = context.GetAssets().ImportAsset(*path);
+							   const AssetHandle handle = ImportNewFile(context, *path);
 							   if (!handle.IsValid())
 								   return CommandResult::Fail("Import failed (see the log for details: console.get)");
 							   return CommandResult::Ok({{"handle", IdString(handle)}, {"path", context.GetAssets().GetMetadata(handle)->FilePath.generic_string()}});
@@ -237,7 +251,7 @@ return {name}
 							   Ref<PrefabAsset> prefab = PrefabAsset::CreateFromEntity(context.GetActiveScene(), *entity);
 							   if (!prefab->SaveToFile(*path))
 								   return CommandResult::Fail("Could not write the prefab file");
-							   const AssetHandle handle = context.GetAssets().ImportAsset(*path);
+							   const AssetHandle handle = ImportNewFile(context, *path);
 							   if (!handle.IsValid())
 								   return CommandResult::Fail("Import failed (see the log for details: console.get)");
 							   return CommandResult::Ok({{"handle", IdString(handle)}, {"entities", prefab->GetEntityCount()}});
@@ -321,7 +335,7 @@ return {name}
 							   std::filesystem::create_directories(path->parent_path(), directoryError);
 							   if (!prefab->SaveToFile(*path))
 								   return CommandResult::Fail("Could not write the prefab file");
-							   const AssetHandle prefabHandle = assets.ImportAsset(*path);
+							   const AssetHandle prefabHandle = ImportNewFile(context, *path);
 							   if (!prefabHandle.IsValid())
 								   return CommandResult::Fail("Import failed (see the log for details: console.get)");
 

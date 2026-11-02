@@ -64,6 +64,31 @@ TEST_CASE("ScriptingCommands: script.create writes a runnable template or the gi
 	CHECK(fixture.Run("script.create", {{"path", "Scripts/Custom.lua"}, {"source", "return {}"}})["path"] == "Scripts/Custom.lua");
 }
 
+TEST_CASE("ScriptingCommands: a script or prefab whose import fails leaves no file behind, so it can be created again")
+{
+	ProjectFixture fixture("ScriptingCommandsRegistryLocked");
+	const std::filesystem::path assets = fixture.Context.GetAssets().GetAssetDirectory();
+	const std::filesystem::path registry = assets / AssetManager::RegistryFileName;
+	const std::string crate = fixture.Run("entity.create", {{"name", "Crate"}})["id"].get<std::string>();
+
+	// A directory where the registry file belongs: the registry cannot be saved, so imports fail.
+	std::error_code error;
+	std::filesystem::remove(registry, error);
+	std::filesystem::create_directories(registry);
+	Paralax::Testing::ScopedLogCapture capture;
+	CHECK_FALSE(fixture.Context.Execute("script.create", {{"path", "Scripts/Mover.lua"}}).Success);
+	CHECK_FALSE(std::filesystem::exists(assets / "Scripts" / "Mover.lua"));
+	CHECK_FALSE(fixture.Context.Execute("prefab.create", {{"id", crate}, {"path", "Prefabs/Crate"}}).Success);
+	CHECK_FALSE(std::filesystem::exists(assets / "Prefabs" / "Crate.pxprefab"));
+
+	// Writable again: the same commands go through.
+	std::filesystem::remove_all(registry);
+	fixture.Run("script.create", {{"path", "Scripts/Mover.lua"}});
+	fixture.Run("prefab.create", {{"id", crate}, {"path", "Prefabs/Crate"}});
+	CHECK(std::filesystem::is_regular_file(assets / "Scripts" / "Mover.lua"));
+	CHECK(std::filesystem::is_regular_file(assets / "Prefabs" / "Crate.pxprefab"));
+}
+
 TEST_CASE("ScriptingCommands: scripts run in play mode and script.eval reaches the running scene")
 {
 	ProjectFixture fixture("ScriptPlay");

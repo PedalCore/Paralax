@@ -259,6 +259,26 @@ TEST_CASE("BuiltinCommands: material.create does not overwrite an existing mater
 	CHECK_FALSE(EditorContext().Execute("material.create", {{"path", "M.pxmat"}}).Success); // No project.
 }
 
+TEST_CASE("BuiltinCommands: material.create leaves no file behind when the import fails")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("MaterialCreateRegistryLocked") / "Game";
+	EditorContext context(Project::Create(directory, "Game"));
+	REQUIRE(context.GetProject());
+	// A directory where the registry file belongs: the registry cannot be saved, so the import fails.
+	const std::filesystem::path registry = directory / "Assets" / AssetManager::RegistryFileName;
+	std::error_code error;
+	std::filesystem::remove(registry, error);
+	std::filesystem::create_directories(registry);
+	Paralax::Testing::ScopedLogCapture capture;
+	CHECK_FALSE(context.Execute("material.create", {{"path", "M.pxmat"}}).Success);
+	CHECK_FALSE(std::filesystem::exists(directory / "Assets" / "M.pxmat"));
+
+	// Writable again: the same command goes through.
+	std::filesystem::remove_all(registry);
+	CHECK(context.Execute("material.create", {{"path", "M.pxmat"}}).Success);
+	CHECK(std::filesystem::is_regular_file(directory / "Assets" / "M.pxmat"));
+}
+
 TEST_CASE("BuiltinCommands: play.step validates its frame count and time step")
 {
 	EditorContext context;
