@@ -1,6 +1,8 @@
 #include "pxpch.h"
 #include "Paralax/Core/Reflection.h"
 
+#include "Paralax/Core/JsonText.h"
+
 #include <spdlog/fmt/ranges.h>
 
 #include <charconv>
@@ -74,6 +76,21 @@ namespace Paralax {
 
 		}
 
+		void ErrorList::Add(std::string error)
+		{
+			if (m_Listed.size() < MaxListed)
+				m_Listed.push_back(std::move(error));
+			m_Count++;
+		}
+
+		std::string ErrorList::Join() const
+		{
+			std::string message = fmt::format("{}", fmt::join(m_Listed, "; "));
+			if (m_Count > m_Listed.size())
+				message += fmt::format("; and {} more", m_Count - m_Listed.size());
+			return message;
+		}
+
 		json GetField(const FieldInfo& field, const void* object)
 		{
 			void* pointer = field.Access(const_cast<void*>(object));
@@ -126,7 +143,8 @@ namespace Paralax {
 		{
 			void* pointer = field.Access(object);
 			auto fail = [&](const char* expected) {
-				outError = fmt::format("Field '{}' expects {}, got {}", field.Name, expected, value.dump(-1, ' ', false, json::error_handler_t::replace));
+				// The value is described, not dumped: dumped whole, a 16 MiB string would come back in the error.
+				outError = fmt::format("Field '{}' expects {}, got {}", field.Name, expected, DescribeJsonValue(value));
 				return false;
 			};
 
@@ -300,23 +318,25 @@ namespace Paralax {
 				return false;
 			}
 
-			std::vector<std::string> errors;
+			ErrorList errors;
 			for (auto it = document.begin(); it != document.end(); ++it)
 			{
 				const FieldInfo* field = FindField(fields, it.key());
 				if (!field)
 				{
-					errors.push_back(fmt::format("Unknown field '{}.{}'", ownerName, it.key()));
+					bool cut = false;
+					const std::string key = PreviewText(it.key(), &cut);
+					errors.Add(cut ? fmt::format("Unknown field '{}.{}' (a name of {} bytes)", ownerName, key, it.key().size()) : fmt::format("Unknown field '{}.{}'", ownerName, key));
 					continue;
 				}
 
 				std::string error;
 				if (!SetField(*field, object, it.value(), error))
-					errors.push_back(std::move(error));
+					errors.Add(std::move(error));
 			}
 
-			outError = fmt::format("{}", fmt::join(errors, "; "));
-			return errors.empty();
+			outError = errors.Join();
+			return errors.IsEmpty();
 		}
 
 	}

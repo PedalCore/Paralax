@@ -206,6 +206,74 @@ TEST_CASE("ScriptSystem: invalid component access raises a script error and chan
 	CHECK(entity.GetComponent<TransformComponent>().Translation == glm::vec3(0.0f));
 }
 
+namespace {
+
+	// Evaluates code that must fail and returns its error, which must be short and well formed whatever the code
+	// sent. (The Lua error adds a traceback; the message itself is a few hundred bytes at most.)
+	std::string ExpectShortError(ScriptFixture& fixture, const std::string& code)
+	{
+		constexpr size_t ShortErrorBytes = 1024;
+		std::string error;
+		std::optional<std::string> result;
+		CHECK_NOTHROW(result = fixture.System->Evaluate(code, error));
+		CHECK_FALSE(result);
+		CHECK_MESSAGE(error.size() < ShortErrorBytes, error.substr(0, ShortErrorBytes));
+		CHECK(IsWellFormedUtf8(error));
+		return error;
+	}
+
+	std::string EntityExpression(Entity entity)
+	{
+		return "Scene.GetEntity('" + std::to_string(static_cast<uint64_t>(entity.GetUUID())) + "')";
+	}
+
+}
+
+TEST_CASE("ScriptSystem: a refused value of any size or bytes gives a short script error, not an exception")
+{
+	ScriptFixture fixture;
+	Entity entity = fixture.World.CreateEntity("Target");
+	entity.AddComponent<CameraComponent>();
+	fixture.Start();
+	fixture.Update();
+	const std::string target = EntityExpression(entity);
+	auto fails = [&](const std::string& code) { return ExpectShortError(fixture, code); };
+	const std::string replacement = "\xEF\xBF\xBD";
+
+	// A Lua string reaches SetField as it is, whatever its bytes: one that is not UTF-8 is shown with U+FFFD.
+	std::string error = fails(target + ":GetComponent('Camera').Projection = 'Fish\\xFFeye'");
+	CHECK_MESSAGE(error.find("Camera.Projection: Field 'Projection' expects one of: Perspective, Orthographic, got \"Fish" + replacement + "eye\" (string)") != std::string::npos, error);
+	error = fails(target + ":AddComponent('Camera', { Projection = string.rep('\\xFF', 1 << 24) })");
+	CHECK_MESSAGE(error.find("Camera.Projection: Field 'Projection' expects one of: Perspective, Orthographic, got \"" + replacement) != std::string::npos, error);
+	CHECK_MESSAGE(error.find("... (string of 16777216 bytes)") != std::string::npos, error);
+	CHECK(entity.GetComponent<CameraComponent>().Camera.Projection == SceneCamera::ProjectionType::Perspective);
+
+	// A 16 MiB name, refused for its length.
+	error = fails(target + ":GetComponent('Tag').Name = string.rep('n', 1 << 24)");
+	CHECK_MESSAGE(error.find("Tag.Name: Field 'Name' expects at most 256 bytes, got \"nnnn") != std::string::npos, error);
+	CHECK_MESSAGE(error.find("... (string of 16777216 bytes)") != std::string::npos, error);
+	CHECK(entity.GetName() == "Target");
+}
+
+TEST_CASE("ScriptSystem: a script that sends a refused value of bytes that are not UTF-8 reports a script error")
+{
+	ScriptFixture fixture;
+	Entity entity = fixture.CreateScripted(R"(
+		local S = {}
+		function S:OnCreate()
+			self.entity:AddComponent('Camera', { Projection = 'Wide\xFF' })
+		end
+		return S
+	)");
+	CHECK_NOTHROW(fixture.Start());
+	CHECK_NOTHROW(fixture.Update());
+	REQUIRE(fixture.System->GetErrors().size() == 1);
+	const std::string& error = fixture.System->GetErrors()[0];
+	CHECK(IsWellFormedUtf8(error));
+	CHECK_MESSAGE(error.find("got \"Wide\xEF\xBF\xBD\" (string)") != std::string::npos, error);
+	CHECK_FALSE(entity.HasComponent<CameraComponent>());
+}
+
 TEST_CASE("ScriptSystem: the Scene API creates, finds, parents and destroys entities")
 {
 	ScriptFixture fixture;

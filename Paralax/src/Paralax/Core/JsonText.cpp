@@ -2,10 +2,213 @@
 #include "Paralax/Core/JsonText.h"
 
 #include "Paralax/Core/Assert.h"
+#include "Paralax/Core/PathEncoding.h"
 
 #include <nlohmann/json.hpp>
 
+#include <cmath>
+
 namespace Paralax {
+
+	namespace {
+
+		using json = nlohmann::json;
+
+		constexpr std::string_view Ellipsis = "...";
+		constexpr std::string_view ReplacementCharacter = "\xEF\xBF\xBD"; // U+FFFD
+
+		// Appends token whole, or returns false and leaves out unchanged if it would grow past limit.
+		bool AppendToken(std::string& out, std::string_view token, size_t limit)
+		{
+			if (out.size() + token.size() > limit)
+				return false;
+			out += token;
+			return true;
+		}
+
+		// Control characters (C0, DEL and C1, where a terminal may read U+009B as the start of an escape sequence) and
+		// the line and paragraph separators, which could break a log line or fake the start of another.
+		bool NeedsUnicodeEscape(char32_t code)
+		{
+			return code < U' ' || (code >= U'\x7F' && code <= U'\x9F') || code == U'\x2028' || code == U'\x2029';
+		}
+
+		// Appends text escaped as inside a JSON string, one character at a time, until the next character would grow
+		// out past limit. Returns false if it stopped before the end of the text.
+		bool AppendEscaped(std::string& out, std::string_view text, size_t limit)
+		{
+			char escape[6];
+			for (size_t index = 0; index < text.size();)
+			{
+				const size_t start = index;
+				const std::optional<char32_t> code = DecodeUtf8(text, index);
+				std::string_view character = text.substr(start, index - start);
+				if (!code)
+					character = ReplacementCharacter;
+				else if (*code == U'"')
+					character = "\\\"";
+				else if (*code == U'\\')
+					character = "\\\\";
+				else if (*code == U'\b')
+					character = "\\b";
+				else if (*code == U'\f')
+					character = "\\f";
+				else if (*code == U'\n')
+					character = "\\n";
+				else if (*code == U'\r')
+					character = "\\r";
+				else if (*code == U'\t')
+					character = "\\t";
+				else if (NeedsUnicodeEscape(*code))
+				{
+					// Every such character is below U+10000, so four hex digits hold it.
+					constexpr char Hex[] = "0123456789abcdef";
+					escape[0] = '\\';
+					escape[1] = 'u';
+					escape[2] = Hex[(*code >> 12) & 0xF];
+					escape[3] = Hex[(*code >> 8) & 0xF];
+					escape[4] = Hex[(*code >> 4) & 0xF];
+					escape[5] = Hex[*code & 0xF];
+					character = std::string_view(escape, sizeof(escape));
+				}
+				if (!AppendToken(out, character, limit))
+					return false;
+			}
+			return true;
+		}
+
+		bool AppendNumber(std::string& out, const json& value, size_t limit)
+		{
+			if (value.is_number_float())
+			{
+				const double number = value.get<double>();
+				// dump() would write these as null, which reads as a different mistake.
+				if (std::isnan(number))
+					return AppendToken(out, "NaN", limit);
+				if (std::isinf(number))
+					return AppendToken(out, number > 0.0 ? "Infinity" : "-Infinity", limit);
+			}
+			// A number's dump() never recurses and never meets a string, so it cannot throw.
+			return AppendToken(out, value.dump(), limit);
+		}
+
+		// Appends value as compact JSON until out would grow past limit; returns false if it stopped short. The walk
+		// keeps its own stack instead of recursing, and every level it enters appends a bracket first, so the stack
+		// never grows deeper than limit.
+		bool AppendJsonPreview(std::string& out, const json& root, size_t limit)
+		{
+			struct Level
+			{
+				const json* Container;
+				json::const_iterator Next;
+				bool First = true;
+			};
+			std::vector<Level> levels;
+
+			// Appends a scalar whole, or opens a container (pushing a level for one that is not empty).
+			auto enter = [&](const json& value) {
+				switch (value.type())
+				{
+					case json::value_t::null: return AppendToken(out, "null", limit);
+					case json::value_t::boolean: return AppendToken(out, value.get<bool>() ? "true" : "false", limit);
+					case json::value_t::number_integer:
+					case json::value_t::number_unsigned:
+					case json::value_t::number_float: return AppendNumber(out, value, limit);
+					case json::value_t::string:
+						return AppendToken(out, "\"", limit) && AppendEscaped(out, value.get_ref<const std::string&>(), limit) && AppendToken(out, "\"", limit);
+					case json::value_t::binary: return AppendToken(out, "<binary>", limit);
+					case json::value_t::discarded: return AppendToken(out, "<discarded>", limit);
+					case json::value_t::array:
+					case json::value_t::object:
+					{
+						const bool isArray = value.is_array();
+						if (value.empty())
+							return AppendToken(out, isArray ? "[]" : "{}", limit);
+						if (!AppendToken(out, isArray ? "[" : "{", limit))
+							return false;
+						levels.push_back({&value, value.cbegin()});
+						return true;
+					}
+				}
+				return AppendToken(out, "?", limit);
+			};
+
+			if (!enter(root))
+				return false;
+			while (!levels.empty())
+			{
+				Level& level = levels.back();
+				const bool isArray = level.Container->is_array();
+				if (level.Next == level.Container->cend())
+				{
+					if (!AppendToken(out, isArray ? "]" : "}", limit))
+						return false;
+					levels.pop_back();
+					continue;
+				}
+				if (!level.First && !AppendToken(out, ",", limit))
+					return false;
+				level.First = false;
+				const json::const_iterator element = level.Next++;
+				if (!isArray && !(AppendToken(out, "\"", limit) && AppendEscaped(out, element.key(), limit) && AppendToken(out, "\":", limit)))
+					return false;
+				// May push a level, which invalidates the reference to this one; it is not used after this.
+				if (!enter(element.value()))
+					return false;
+			}
+			return true;
+		}
+
+		std::string Count(size_t count, std::string_view singular, std::string_view plural)
+		{
+			return fmt::format("{} {}", count, count == 1 ? singular : plural);
+		}
+
+	}
+
+	std::string PreviewText(std::string_view text, bool* outCut)
+	{
+		std::string preview;
+		const bool complete = AppendEscaped(preview, text, MaxPreviewBytes);
+		if (!complete)
+			preview += Ellipsis;
+		if (outCut)
+			*outCut = !complete;
+		return preview;
+	}
+
+	std::string QuoteText(std::string_view text)
+	{
+		bool cut = false;
+		const std::string preview = PreviewText(text, &cut);
+		if (!cut)
+			return fmt::format("'{}'", preview);
+		return fmt::format("'{}' ({})", preview, Count(text.size(), "byte", "bytes"));
+	}
+
+	std::string DescribeJsonValue(const nlohmann::json& value)
+	{
+		if (value.is_null())
+			return "null";
+		if (value.is_binary())
+			return fmt::format("binary data ({})", Count(value.get_binary().size(), "byte", "bytes"));
+		if (value.is_discarded())
+			return "a discarded value";
+
+		std::string preview;
+		if (AppendJsonPreview(preview, value, MaxPreviewBytes))
+			return fmt::format("{} ({})", preview, value.type_name());
+
+		// Only strings and containers are ever cut: no number or boolean is longer than the limit.
+		std::string size;
+		if (value.is_string())
+			size = Count(value.get_ref<const std::string&>().size(), "byte", "bytes");
+		else if (value.is_array())
+			size = Count(value.size(), "element", "elements");
+		else
+			size = Count(value.size(), "member", "members");
+		return fmt::format("{}{} ({} of {})", preview, Ellipsis, value.type_name(), size);
+	}
 
 	std::string FormatJsonDocument(const nlohmann::json& document)
 	{

@@ -197,13 +197,34 @@ namespace Paralax {
 			return field;
 		}
 
+		// Gathers the errors of one operation into one message. It lists the first MaxListed and counts the rest: a
+		// hostile document can hold millions of mistakes, and the first few say what is wrong.
+		class ErrorList
+		{
+		public:
+			static constexpr size_t MaxListed = 8;
+
+			void Add(std::string error);
+			bool IsEmpty() const { return m_Count == 0; }
+			size_t GetCount() const { return m_Count; }
+			// The listed errors joined with "; ", then "; and N more" if any were left out ("" if there are none).
+			std::string Join() const;
+
+		private:
+			std::vector<std::string> m_Listed;
+			size_t m_Count = 0;
+		};
+
 		// Reads a field as JSON.
 		nlohmann::json GetField(const FieldInfo& field, const void* object);
 		// Writes a field from JSON. Returns false (and sets outError) if the value has the wrong shape, is out of range
-		// or names an unknown enum value; the field is left unchanged in that case.
+		// or names an unknown enum value; the field is left unchanged in that case. The error names the field and what
+		// it expects, and shows the refused value only as DescribeJsonValue does (JsonText.h), so it stays short
+		// however large the value is. Never throws, whatever bytes a string value holds.
 		bool SetField(const FieldInfo& field, void* object, const nlohmann::json& value, std::string& outError);
 		// All fields <-> JSON object. FromJson ignores missing fields (keeping current values) and reports unknown or
-		// invalid ones via outError, prefixed with ownerName (but still applies the valid ones).
+		// invalid ones via outError, prefixed with ownerName (but still applies the valid ones). It lists the first
+		// ErrorList::MaxListed problems and counts the rest, and shows each unknown key as PreviewText does.
 		nlohmann::json ToJson(std::span<const FieldInfo> fields, const void* object);
 		bool FromJson(std::span<const FieldInfo> fields, std::string_view ownerName, void* object, const nlohmann::json& document, std::string& outError);
 

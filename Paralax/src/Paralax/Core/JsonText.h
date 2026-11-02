@@ -35,4 +35,32 @@ namespace Paralax {
 	// Pure, so it is safe to call from any thread (the agent server calls it on its connection threads).
 	bool JsonExceedsDepth(std::string_view text, int maxDepth);
 
+	// Messages that echo a refused value (an error from SetField, a warning from a loader) show at most this many
+	// bytes of it. The value can be megabytes (a 16 MiB string sent to a number field), and the message is logged,
+	// returned to agents and kept in lists such as the script errors.
+	inline constexpr size_t MaxPreviewBytes = 64;
+
+	// Untrusted text (a name or key from a file, an agent or a script) as a message may show it. Characters are
+	// escaped as inside a JSON string: double quotes, backslashes, and as \uXXXX every control character (C0, DEL and
+	// C1) and U+2028/U+2029, so the text can neither break a log line nor start a terminal escape sequence. Every
+	// malformed UTF-8 sequence becomes U+FFFD (see DecodeUtf8), so the result is always well-formed UTF-8. The
+	// preview is cut between characters before it would exceed MaxPreviewBytes, and then ends in "..."; outCut, if
+	// given, says whether it was cut. Never throws, and reads only as much of the text as it shows. Pure; safe to
+	// call from any thread.
+	std::string PreviewText(std::string_view text, bool* outCut = nullptr);
+
+	// PreviewText in single quotes, then the text's full length if the preview was cut: 'Bogus', or
+	// 'aaaa...' (16777216 bytes). For echoing a refused name or key. Pure; safe to call from any thread.
+	std::string QuoteText(std::string_view text);
+
+	// Describes a JSON value for a message (a refused field value, say) without echoing it whole: a compact preview
+	// of the value as JSON, built as PreviewText builds its text, and the value's JSON type, as in "wide" (string),
+	// 1.5 (number) or [1,2] (array); null is just null. A preview cut short ends in "..." and the type then gives
+	// the value's full size: "aaaa... (string of 16777216 bytes), or [0,0,... (array of 10000 elements). Numbers
+	// JSON cannot hold, which a value built in code can, show as NaN, Infinity and -Infinity, and binary data only
+	// by its size. The walk is iterative and stops as soon as the preview is full, so neither the value's size nor
+	// its depth matters (depth is capped where documents are read, but not for values built in code). Never throws.
+	// Pure; safe to call from any thread, provided no other thread modifies the value.
+	std::string DescribeJsonValue(const nlohmann::json& value);
+
 }
