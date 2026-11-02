@@ -431,6 +431,9 @@ TEST_CASE("ScriptingCommands: entities created in play mode get the game's repro
 		CHECK(fixture.Run("script.eval", {{"code", "return Scene.CreateEntity('Spawned').id"}})["result"] == first);
 		CHECK(fixture.Run("entity.create", {{"name", "Commanded"}})["id"] == second);
 		fixture.Run("play.stop");
+		// The game's sequence stays with the game: the edited scene is back to random ids, not to wherever play left
+		// the sequence (which would hand out ids a later play run gives its spawns).
+		CHECK_FALSE(fixture.Context.GetActiveScene().GetEntityIdSequence().has_value());
 	}
 	// Outside play mode, ids are random: they are saved, and must stay unique across sessions.
 	const std::string edited = fixture.Run("entity.create", {{"name", "Edited"}})["id"];

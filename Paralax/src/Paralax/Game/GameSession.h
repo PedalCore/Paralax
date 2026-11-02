@@ -22,15 +22,15 @@ namespace Paralax {
 	{
 		AudioOutput Audio = AudioOutput::Offline;
 		ScriptSystemSpecification Scripts;
-		// Seed of the ids of entities created while the game runs (Scene.CreateEntity, Scene.Instantiate, editor commands
-		// in play mode). One UUIDSequence serves the whole session and continues across scene switches, so the same
-		// inputs give the same ids in the same order, and the session never hands out an id twice. The runtime and the
-		// editor's play mode both use this default, so a playtest spawns the ids the exported game spawns.
+		// Seed of the ids of entities created while the game runs (Scene.CreateEntity, Scene.Instantiate, editor
+		// commands in play mode). One UUIDSequence serves the whole session and continues across scene switches, so the
+		// same inputs give the same ids in the same order, and the session never hands out an id twice. The runtime and
+		// the editor's play mode both use this default, so a playtest spawns the ids the exported game spawns.
 		//
 		// A seed of its own rather than one derived from Scripts.RandomSeed: the two streams live differently
-		// (math.random restarts with every level and scripts reseed it; ids continue), entities are created by more than
-		// scripts, and retuning a game's random numbers should not renumber its entities, which would reorder their
-		// contact callbacks (those are sorted by id).
+		// (math.random restarts with every level and scripts reseed it; ids continue), entities are created by more
+		// than scripts, and retuning a game's random numbers should not renumber its entities, which would reorder
+		// their contact callbacks (those are sorted by id).
 		uint64_t EntityIdSeed = 0x1D5EED;
 	};
 

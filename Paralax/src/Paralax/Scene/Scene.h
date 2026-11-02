@@ -55,11 +55,11 @@ namespace Paralax {
 		Entity CopySubtreeFrom(Scene& source, Entity sourceRoot);
 		Entity CopySubtreeFrom(Scene& source, Entity sourceRoot, Entity parent);
 
-		// Where CreateEntity (and so DuplicateEntity and CopySubtreeFrom) gets new ids. Without a sequence (the default,
-		// as in the editor) each id is a random UUID, so entities saved to files stay unique across sessions. With one,
-		// ids are taken from it in order, so a game that spawns entities gets the same ids in the same order every run
-		// (GameSession gives the scene it plays one). Either way an id already used in this scene is skipped, which
-		// consumes it from the sequence like any other, so creation never clashes and stays reproducible. nullopt
+		// Where CreateEntity (and so DuplicateEntity and CopySubtreeFrom) gets new ids. Without a sequence (the
+		// default, as in the editor) each id is a random UUID, so entities saved to files stay unique across sessions.
+		// With one, ids are taken from it in order, so a game that spawns entities gets the same ids in the same order
+		// every run (GameSession gives the scene it plays one). Either way an id already used in this scene is skipped,
+		// which consumes it from the sequence like any other, so creation never clashes and stays reproducible. nullopt
 		// returns to random ids.
 		void SetEntityIdSequence(std::optional<UUIDSequence> sequence) { m_EntityIdSequence = sequence; }
 		// The sequence in its current state (its next value is the next id tried), or nullopt for random ids.

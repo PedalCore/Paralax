@@ -31,9 +31,9 @@ namespace Paralax {
 
 	// A reproducible sequence of UUIDs: splitmix64 (a counter stepped by an odd constant, then mixed), so a seed gives
 	// the same values in the same order on every platform and build. Next never returns 0 and repeats no value within
-	// 2^64 - 1 calls (every nonzero value once). A plain value: a copy continues the sequence independently. Not thread-safe (it has no shared state;
-	// guard an instance like the object that holds it). Ids of entities created while a game runs come from one (see
-	// Scene::SetEntityIdSequence).
+	// 2^64 - 1 calls (every nonzero value once). A plain value: a copy continues the sequence independently. Not
+	// thread-safe (it has no shared state; guard an instance like the object that holds it). Ids of entities created
+	// while a game runs come from one (see Scene::SetEntityIdSequence).
 	class UUIDSequence
 	{
 	public:
