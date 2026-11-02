@@ -26,6 +26,7 @@ local function TestMath()
 	local a4 = vec4(1, 2, 3, 4)
 	assert(near(a4.w, 4) and near(a4:Dot(vec4(1)), 10) and near(vec4(2, 0, 0, 0):Length(), 2) and a4:Lerp(a4, 1) == a4)
 	assert(a4 + vec4(1) == vec4(2, 3, 4, 5) and a4 - a4 == vec4() and a4 * 2 == vec4(2, 4, 6, 8) and -a4 == vec4(-1, -2, -3, -4))
+	assert(a4 / 2 == vec4(0.5, 1, 1.5, 2) and a4 / vec4(1, 2, 3, 4) == vec4(1) and near(a4:Normalized():Length(), 1) and vec4():Normalized() == vec4())
 	assert(tostring(vec4(0)):find("vec4") ~= nil)
 	-- quat
 	local q = quat.AngleAxis(math.pi / 2, vec3(0, 1, 0))

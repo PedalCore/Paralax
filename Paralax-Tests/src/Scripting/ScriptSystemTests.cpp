@@ -476,6 +476,15 @@ TEST_CASE("ScriptSystem: math types support arithmetic and conversions")
 	CHECK(fixture.Eval("vec3(1, 0, 0):Dot(vec3(0, 1, 0))") == "0.0");
 	CHECK(fixture.Eval("tostring(vec3(1, 0, 0):Cross(vec3(0, 1, 0)))") == "vec3(0, 0, 1)");
 	CHECK(fixture.Eval("tostring(-vec4(1, 2, 3, 4))") == "vec4(-1, -2, -3, -4)");
+	// Every vector type has the whole documented set: division by a vector or a scalar, and Normalized (the zero vector
+	// stays zero rather than becoming NaN).
+	CHECK(fixture.Eval("tostring(vec2(2, 4) / 2)") == "vec2(1, 2)");
+	CHECK(fixture.Eval("tostring(vec3(2, 4, 6) / vec3(2))") == "vec3(1, 2, 3)");
+	CHECK(fixture.Eval("tostring(vec4(2, 4, 6, 8) / 2)") == "vec4(1, 2, 3, 4)");
+	CHECK(fixture.Eval("tostring(vec4(2, 4, 6, 8) / vec4(1, 2, 3, 4))") == "vec4(2, 2, 2, 2)");
+	CHECK(fixture.Eval("tostring(vec4(0, 3, 0, 0):Normalized())") == "vec4(0, 1, 0, 0)");
+	CHECK(fixture.Eval("vec4(1, 2, 3, 4):Normalized():Length() - 1 < 1e-6") == "true");
+	CHECK(fixture.Eval("tostring(vec2():Normalized()) .. tostring(vec3():Normalized()) .. tostring(vec4():Normalized())") == "vec2(0, 0)vec3(0, 0, 0)vec4(0, 0, 0, 0)");
 	CHECK(fixture.Eval("vec3(1, 2, 3) == vec3(1, 2, 3)") == "true");
 	CHECK(fixture.Eval("local v = vec3(); v.y = 7; return v.y") == "7.0");
 

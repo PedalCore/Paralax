@@ -253,7 +253,8 @@ on with the new clip from its start; pausing play mode in the editor pauses soun
 
 - Constructors: `vec3()`, `vec3(s)`, `vec3(x, y, z)`; `quat()` is the identity, `quat(w, x, y, z)`.
 - Operators: `+ - * /` (with vectors or scalars, scalars on either side of `*`), unary `-`, `==` and `tostring`.
-- Vector methods: `:Length()`, `:Normalized()`, `:Dot(v)`, `:Lerp(v, t)`. vec3 also has `:Cross(v)` and `:Distance(v)`.
+- Vector methods: `:Length()`, `:Normalized()` (the zero vector stays zero), `:Dot(v)`, `:Lerp(v, t)`. vec3 also has
+  `:Cross(v)` and `:Distance(v)`.
 - Quaternions: `quat.FromEuler(vec3 radians)`, `quat.AngleAxis(radians, axis)`, `q:ToEuler()`, `q * q2`,
   `q * vec3` (rotates the vector), `:Normalized()`, `:Inverse()`, `:Slerp(q2, t)`.
 - `math.random` is deterministic for a run. `math.randomseed(n)` reseeds it.
