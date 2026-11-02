@@ -96,7 +96,7 @@ TEST_CASE("WriteFileAtomically: contents longer than the limit are refused and t
 	CHECK_FALSE(WriteFileAtomically(path, "longer", 5));
 	CHECK(log.Contains(spdlog::level::err, "too large"));
 	CHECK(Paralax::Testing::ReadFileText(path) == "kept");
-	CHECK_FALSE(std::filesystem::exists(path.string() + ".tmp"));
+	CHECK_FALSE(std::filesystem::exists(std::filesystem::path(path) += ".tmp"));
 	CHECK(WriteFileAtomically(path, "fits!", 5)); // Exactly the limit is written.
 	CHECK(Paralax::Testing::ReadFileText(path) == "fits!");
 
@@ -204,7 +204,7 @@ TEST_CASE("SceneSerializer: a scene too large to open again is not written, and 
 	CHECK_FALSE(SceneSerializer::SaveToFile(scene, path));
 	CHECK(log.Contains(spdlog::level::err, "too large"));
 	CHECK(Paralax::Testing::ReadFileText(path) == before);
-	CHECK_FALSE(std::filesystem::exists(path.string() + ".tmp"));
+	CHECK_FALSE(std::filesystem::exists(std::filesystem::path(path) += ".tmp"));
 	Ref<Scene> reopened = SceneSerializer::LoadFromFile(path);
 	REQUIRE(reopened);
 	CHECK(reopened->FindEntityByName("Kept").has_value());

@@ -186,7 +186,7 @@ TEST_CASE("ModelPrefab: a model without nodes is refused, and an empty root name
 TEST_CASE("ModelPrefab: a root name longer than an entity name may be is refused")
 {
 	MeshImportResult model;
-	model.Nodes.push_back(ImportedNode{"Only", std::nullopt, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(1.0f), 0, std::nullopt, std::nullopt});
+	model.Nodes.push_back(ImportedNode{"Only", std::nullopt, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(1.0f), 0, std::nullopt, std::nullopt, std::nullopt});
 	std::string error;
 	// The prefab file would refuse the name when loaded, so the prefab is never built with it.
 	CHECK_FALSE(BuildModelPrefab(model, std::string(TagComponent::MaxLength + 1, 'r'), error));
