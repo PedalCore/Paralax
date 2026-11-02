@@ -505,7 +505,11 @@ namespace Paralax {
 					camera.Far = Clamped(orthographic->zfar, -1000000.0f, 1000000.0f, 100.0f);
 				}
 				if (camera.Far <= camera.Near)
+				{
+					// Far follows near, and must stay within the planes' range (at most 1e6) as well.
+					camera.Near = std::min(camera.Near, 1000000.0f - 1.0f);
 					camera.Far = camera.Near + 1.0f;
+				}
 				record.Camera = camera;
 			}
 

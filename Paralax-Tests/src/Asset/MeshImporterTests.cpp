@@ -7,6 +7,8 @@
 #include <Paralax/Asset/MeshImporter.h>
 #include <Paralax/Core/PathEncoding.h>
 #include <Paralax/Renderer/Image.h>
+#include <Paralax/Scene/ComponentRegistry.h>
+#include <Paralax/Scene/Components.h>
 
 #include <glm/gtc/epsilon.hpp>
 #include <nlohmann/json.hpp>
@@ -218,6 +220,29 @@ TEST_CASE("MeshImporter: hostile node, camera and light values are made safe")
 	CHECK(result.Nodes[5].Light->Color == glm::vec3(1.0f, 0.0f, 0.5f));
 	CHECK(result.Nodes[6].Light->OuterConeAngle == doctest::Approx(glm::radians(89.0)));
 	CHECK(result.Nodes[6].Light->InnerConeAngle <= result.Nodes[6].Light->OuterConeAngle);
+}
+
+TEST_CASE("MeshImporter: orthographic planes at the edge of their range stay within it")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfOrthographicLimits");
+	json document = Paralax::Testing::MakeTriangleDocument(directory);
+	Paralax::Testing::AddCamerasAndLights(document);
+	// Both planes far beyond the range: each is clamped to 1e6, and far, moved past near, must not leave it.
+	document["cameras"][1]["orthographic"]["znear"] = 5e6;
+	document["cameras"][1]["orthographic"]["zfar"] = 5e6;
+	MeshImportResult result;
+	std::string error;
+	REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), result, error), error);
+	REQUIRE(result.Nodes[3].Camera);
+	const ImportedCamera& camera = *result.Nodes[3].Camera;
+	CHECK(camera.Orthographic);
+	CHECK(camera.Far > camera.Near);
+	CHECK(camera.Far == 1000000.0f);
+	// The scene format accepts both planes, so a prefab built from the model keeps them when it is loaded.
+	const ComponentInfo& info = *ComponentRegistry::Find("Camera");
+	CameraComponent component;
+	CHECK(ComponentRegistry::SetField(*info.FindField("OrthographicNear"), &component, camera.Near, error));
+	CHECK(ComponentRegistry::SetField(*info.FindField("OrthographicFar"), &component, camera.Far, error));
 }
 
 TEST_CASE("MeshImporter: per-node meshes keep their handles when a re-export renumbers them")
