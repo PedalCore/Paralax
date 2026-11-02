@@ -101,10 +101,13 @@ windowed one.
 ## Rules that keep runs reproducible
 
 - Prefer `play.start { paused: true }` and `play.step` over letting the game run with the editor's frames. Simulation
-  (scripts, physics, the time sound plays for) is deterministic for a given sequence of steps.
+  (scripts, physics, the time sound plays for, the ids of entities created while playing) is deterministic for a given
+  sequence of steps and commands.
 - Scripts have no file, OS or wall-clock access. Randomness comes from the seeded `math.random`, and time from `Time`.
 - Never hold an entity id from play mode across `play.stop`: play mode runs on a copy, and `Scene.Load`/`Scene.Reload`
-  in a game replace the scene. Look entities up again (`scene.find`) after either.
+  in a game replace the scene. Look entities up again (`scene.find`) after either. An id held over does not fail
+  safely: every run hands out the same ids in the same order, so an id from an entity spawned in one run names
+  whatever the next run spawned in its place.
 - Paths in commands are untrusted. They resolve inside the project's `Assets/` folder (or the project, for outputs);
   `project.export` is the one command that writes outside it, and it only replaces an empty folder or its own earlier
   export. Paths in parameters and results are UTF-8 strings separated by `/` on every platform, as in project files.

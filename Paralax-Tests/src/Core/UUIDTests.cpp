@@ -103,3 +103,33 @@ TEST_CASE("UUID: generation is thread-safe and unique across threads")
 
 	CHECK(all.size() == static_cast<size_t>(threadCount * perThread));
 }
+
+TEST_CASE("UUIDSequence: a seed gives the same splitmix64 values on every platform, and copies continue independently")
+{
+	// The published splitmix64 outputs for seed 0: ids that differ between platforms would break replays.
+	UUIDSequence zero(0);
+	CHECK(static_cast<uint64_t>(zero.Next()) == 0xE220A8397B1DCDAFull);
+	CHECK(static_cast<uint64_t>(zero.Next()) == 0x6E789E6AA1B965F4ull);
+	CHECK(static_cast<uint64_t>(zero.Next()) == 0x06C45D188009454Full);
+
+	UUIDSequence original(0x1D5EED);
+	UUIDSequence copy = original;
+	std::vector<UUID> fromOriginal;
+	std::vector<UUID> fromCopy;
+	for (int i = 0; i < 1000; i++)
+		fromOriginal.push_back(original.Next());
+	for (int i = 0; i < 1000; i++)
+		fromCopy.push_back(copy.Next());
+	CHECK(fromOriginal == fromCopy);
+	CHECK(std::unordered_set<UUID>(fromOriginal.begin(), fromOriginal.end()).size() == fromOriginal.size());
+	CHECK(UUIDSequence(1).Next() != UUIDSequence(2).Next());
+}
+
+TEST_CASE("UUIDSequence: the one state that would give 0 is stepped over")
+{
+	// The counter is stepped before mixing, so this seed reaches state 0 first, which the finaliser maps to 0.
+	UUIDSequence sequence(0ull - 0x9E3779B97F4A7C15ull);
+	const UUID first = sequence.Next();
+	CHECK(first.IsValid());
+	CHECK(first == UUIDSequence(0).Next()); // The value after the skipped one.
+}

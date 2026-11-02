@@ -87,7 +87,19 @@ namespace Paralax {
 
 	Entity Scene::CreateEntity(const std::string& name)
 	{
-		return CreateEntityWithUUID(UUID(), name);
+		return CreateEntityWithUUID(GenerateEntityId(), name);
+	}
+
+	UUID Scene::GenerateEntityId()
+	{
+		// Neither source yields 0. A random id meets a used one only by a 2^-64 chance, but a sequence may run into ids
+		// the scene was loaded with, and must step past them the same way in every run.
+		for (;;)
+		{
+			const UUID id = m_EntityIdSequence ? m_EntityIdSequence->Next() : UUID();
+			if (!m_EntityMap.contains(id))
+				return id;
+		}
 	}
 
 	Entity Scene::CreateEntityWithUUID(UUID uuid, const std::string& name)

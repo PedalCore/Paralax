@@ -48,6 +48,15 @@ end
 
 local function TestComponents(self)
 	local probe = Scene.CreateEntity("Probe")
+	-- Entities created while playing take their ids from a sequence seeded alike in every session (the runtime, an
+	-- exported game and the editor's play mode), on every platform. The probe is the session's first, and the
+	-- sequence continues through Scene.Reload, so the reloaded run's probe gets a new id.
+	if self.reloaded then
+		assert(probe.id ~= Game.Get("FirstProbe"), "ids are not handed out twice in a session")
+	else
+		assert(probe.id == "9011776076156964590", "the first entity created in a session should get the sequence's first id, not " .. probe.id)
+		Game.Set("FirstProbe", probe.id)
+	end
 	-- Every component type: add (or get) it and round-trip a field through the reflection layer.
 	local transform = probe:GetComponent("Transform")
 	transform.Translation = vec3(1, 2, 3)

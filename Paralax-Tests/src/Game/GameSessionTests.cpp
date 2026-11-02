@@ -7,6 +7,7 @@
 #include <Paralax/Game/GameState.h>
 #include <Paralax/Scene/Components.h>
 #include <Paralax/Scene/Entity.h>
+#include <Paralax/Scene/Prefab.h>
 #include <Paralax/Scene/Scene.h>
 #include <Paralax/Scene/SceneSerializer.h>
 #include <Paralax/Scripting/ScriptAsset.h>
@@ -14,6 +15,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <sstream>
+#include <unordered_set>
 
 using namespace Paralax;
 
@@ -53,6 +56,152 @@ namespace {
 	bool HasEntity(GameSession& game, const std::string& name)
 	{
 		return game.GetScene().FindEntityByName(name).has_value();
+	}
+
+	// A game whose scripts spawn falling bodies two ways, Scene.CreateEntity and Scene.Instantiate of a prefab, and
+	// record into the Game table (which outlives scene switches) every spawn with its id, every collision callback, and
+	// what scripts see when they sort ids or key a table by them. The bodies of each spawn pair touch side by side and
+	// land on the ground in the same step, so their callbacks' order is decided by their ids. switchFrame > 0 makes
+	// the first level switch to a second one (the same game, loaded from its file) after that update.
+	struct SpawningGame
+	{
+		SpawningGame(const std::string& name, int switchFrame)
+			: Fixture(name)
+		{
+			Fixture.Script("Scripts/Trace.lua", R"(
+				local Trace = {}
+				function Trace.Add(line) Game.Set("Trace", Game.Get("Trace", "") .. line .. "\n") end
+				return Trace
+			)");
+			const AssetHandle recorder = Fixture.Script("Scripts/Recorder.lua", R"(
+				local Trace = require("Scripts/Trace")
+				local R = {}
+				function R:OnCollisionEnter(other) Trace.Add("enter " .. self.entity.name .. " " .. self.entity.id .. " " .. other.id) end
+				function R:OnCollisionExit(other) Trace.Add("exit " .. self.entity.name .. " " .. self.entity.id .. " " .. other.id) end
+				return R
+			)");
+
+			Scene prefabSource;
+			Entity ball = prefabSource.CreateEntity("Ball");
+			ball.AddComponent<RigidbodyComponent>();
+			ball.AddComponent<ColliderComponent>().Shape = ColliderShape::Sphere;
+			ball.AddComponent<ScriptComponent>().Script = recorder;
+			std::filesystem::create_directories(Fixture.Directory / "Prefabs");
+			REQUIRE(PrefabAsset::CreateFromEntity(prefabSource, ball)->SaveToFile(Fixture.Directory / "Prefabs" / "Ball.pxprefab"));
+			REQUIRE(Fixture.Assets.ImportAsset("Prefabs/Ball.pxprefab").IsValid());
+
+			const AssetHandle spawner = Fixture.Script("Scripts/Spawner.lua", fmt::format(R"(
+				local Trace = require("Scripts/Trace")
+				local S = {{}}
+				local function Spawned(entity, how)
+					entity.tag = "Spawned"
+					Trace.Add("spawn " .. how .. " " .. entity.name .. " " .. entity.id)
+				end
+				function S:OnUpdate()
+					local frame = Time.frame
+					if frame <= 4 then
+						local z = frame * 3
+						local made = Scene.CreateEntity("Made" .. frame)
+						made:GetComponent("Transform").Translation = vec3(0, 1.5, z)
+						made:AddComponent("Rigidbody")
+						made:AddComponent("Collider", {{ Shape = "Sphere" }})
+						made:AddComponent("Script", {{ Script = "{0}" }})
+						Spawned(made, "create")
+						local ball = Scene.Instantiate("Prefabs/Ball.pxprefab", {{ position = vec3(1, 1.5, z) }})
+						ball.name = "Ball" .. frame
+						Spawned(ball, "prefab")
+					elseif frame == 40 then
+						-- The balls' neighbours go: their exits name entities that no longer exist.
+						for _, entity in ipairs(Scene.FindEntitiesByTag("Spawned")) do
+							if entity.name:sub(1, 4) == "Made" then entity:Destroy() end
+						end
+					elseif frame == 41 then
+						local ids, byId = {{}}, {{}}
+						for _, entity in ipairs(Scene.FindEntitiesByTag("Spawned")) do
+							ids[#ids + 1] = entity.id
+							byId[entity.id] = entity.name
+						end
+						table.sort(ids)
+						local sorted, visited = {{}}, {{}}
+						for _, id in ipairs(ids) do sorted[#sorted + 1] = byId[id] end
+						for _, name in pairs(byId) do visited[#visited + 1] = name end
+						Trace.Add("sorted " .. table.concat(sorted, ",") .. " pairs " .. table.concat(visited, ","))
+					end
+					if frame == {1} and not Game.Get("Switched", false) then
+						Game.Set("Switched", true)
+						Scene.Load("Scenes/Second.pxscene")
+					end
+				end
+				return S
+			)",
+																						  static_cast<uint64_t>(recorder), switchFrame));
+
+			// Both levels: the ground and the spawner. The first plays from memory, the second from its file.
+			auto build = [&](Scene& scene) {
+				Entity ground = scene.CreateEntity("Ground");
+				ground.GetTransform().Translation = {0.0f, -0.5f, 6.0f};
+				ground.AddComponent<ColliderComponent>().Size = {20.0f, 1.0f, 40.0f};
+				scene.CreateEntity("Spawner").AddComponent<ScriptComponent>().Script = spawner;
+			};
+			build(Start);
+			Scene second;
+			build(second);
+			std::filesystem::create_directories(Fixture.Directory / "Scenes");
+			REQUIRE(SceneSerializer::SaveToFile(second, Fixture.Directory / "Scenes" / "Second.pxscene"));
+			REQUIRE(Fixture.Assets.ImportAsset("Scenes/Second.pxscene").IsValid());
+		}
+
+		SessionFixture Fixture;
+		Scene Start;
+	};
+
+	std::string GetTrace(GameSession& game)
+	{
+		const std::optional<GameState::Value> trace = game.GetState().Get("Trace");
+		return trace ? std::get<std::string>(*trace) : std::string();
+	}
+
+	// The lines of a trace that start with prefix.
+	std::vector<std::string> TraceLines(const std::string& trace, const std::string& prefix)
+	{
+		std::vector<std::string> lines;
+		std::istringstream stream(trace);
+		for (std::string line; std::getline(stream, line);)
+		{
+			if (line.starts_with(prefix))
+				lines.push_back(line);
+		}
+		return lines;
+	}
+
+	// Every entity's id, in hierarchy order.
+	std::vector<UUID> EntityIds(Scene& scene)
+	{
+		std::vector<UUID> ids;
+		scene.ForEachEntity([&](Entity entity) { ids.push_back(entity.GetUUID()); });
+		return ids;
+	}
+
+	// Every entity id of each session, in hierarchy order, after each update.
+	struct LockstepRun
+	{
+		std::vector<std::vector<UUID>> FirstIds;
+		std::vector<std::vector<UUID>> SecondIds;
+	};
+
+	// Plays two sessions of the same game in lockstep (so state shared between them would show) for frames fixed
+	// updates.
+	LockstepRun PlayInLockstep(GameSession& first, GameSession& second, int frames)
+	{
+		LockstepRun run;
+		for (int i = 0; i < frames; i++)
+		{
+			first.Update(Timestep(1.0f / 60.0f));
+			second.Update(Timestep(1.0f / 60.0f));
+			run.FirstIds.push_back(EntityIds(first.GetScene()));
+			run.SecondIds.push_back(EntityIds(second.GetScene()));
+		}
+		return run;
 	}
 
 }
@@ -298,4 +447,125 @@ TEST_CASE("GameSession: hostile Game values are refused, integers stay integers,
 		CHECK_FALSE(game.GetScripts()->Evaluate(hostile, error));
 	}
 	CHECK_FALSE(game.GetState().Get("Bad"));
+}
+
+TEST_CASE("GameSession: entities spawned while playing get the same ids, and their contacts the same callbacks, in every run")
+{
+	SpawningGame game("GameSessionSpawnIds", 0);
+	GameSession first(game.Fixture.Assets, game.Start);
+	GameSession second(game.Fixture.Assets, game.Start);
+	const LockstepRun run = PlayInLockstep(first, second, 60);
+	CHECK(first.GetScriptErrors().empty());
+	CHECK(second.GetScriptErrors().empty());
+
+	const std::string trace = GetTrace(first);
+	CHECK(trace == GetTrace(second));
+	CHECK(run.FirstIds == run.SecondIds);
+
+	// The run did what it is meant to compare: spawns both ways, landings, touching pairs, exits after destruction.
+	const std::vector<std::string> spawns = TraceLines(trace, "spawn ");
+	CHECK(spawns.size() == 8);
+	CHECK(TraceLines(trace, "spawn create ").size() == 4);
+	CHECK(TraceLines(trace, "enter ").size() >= 8);
+	CHECK(TraceLines(trace, "exit ").size() >= 4);
+	CHECK(TraceLines(trace, "sorted ").size() == 1);
+
+	// Every spawned id is valid and new: none is one of the level's own.
+	const UUID groundId = game.Start.FindEntityByName("Ground")->GetUUID();
+	const UUID spawnerId = game.Start.FindEntityByName("Spawner")->GetUUID();
+	std::unordered_set<UUID> spawned;
+	for (const std::string& line : spawns)
+	{
+		const UUID id(std::stoull(line.substr(line.rfind(' ') + 1)));
+		CHECK(id.IsValid());
+		CHECK(id != groundId);
+		CHECK(id != spawnerId);
+		CHECK(spawned.insert(id).second);
+	}
+	// The first comes from the specification's seed.
+	UUIDSequence expected(GameSessionSpecification{}.EntityIdSeed);
+	CHECK(spawns.front() == fmt::format("spawn create Made1 {}", static_cast<uint64_t>(expected.Next())));
+}
+
+TEST_CASE("GameSession: spawned ids stay reproducible across a scene switch and are never handed out twice in a session")
+{
+	SpawningGame game("GameSessionSpawnIdsSwitch", 45);
+	GameSession first(game.Fixture.Assets, game.Start);
+	GameSession second(game.Fixture.Assets, game.Start);
+	const LockstepRun run = PlayInLockstep(first, second, 110);
+	CHECK(first.GetScriptErrors().empty());
+	CHECK(second.GetScriptErrors().empty());
+	CHECK(first.GetSceneSwitches() == 1);
+	CHECK(second.GetSceneSwitches() == 1);
+
+	const std::string trace = GetTrace(first);
+	CHECK(trace == GetTrace(second));
+	CHECK(run.FirstIds == run.SecondIds);
+
+	// Both levels spawned and collided; the second level's spawns continue the sequence instead of restarting it.
+	const std::vector<std::string> spawns = TraceLines(trace, "spawn ");
+	CHECK(spawns.size() == 16);
+	CHECK(TraceLines(trace, "sorted ").size() == 2);
+	CHECK(TraceLines(trace, "enter ").size() >= 16);
+	std::unordered_set<std::string> ids;
+	for (const std::string& line : spawns)
+		CHECK(ids.insert(line.substr(line.rfind(' ') + 1)).second);
+}
+
+TEST_CASE("GameSession: a spawned entity skips an id the level already uses, and the seed is the specification's")
+{
+	SessionFixture fixture("GameSessionIdCollision");
+	UUIDSequence expected(GameSessionSpecification{}.EntityIdSeed);
+	const UUID taken = expected.Next();
+	const UUID next = expected.Next();
+	// Constructed collision: the level already holds the first id the session would hand out.
+	Scene start;
+	start.CreateEntityWithUUID(taken, "Authored");
+	{
+		GameSession game(fixture.Assets, start);
+		std::string error;
+		CHECK(game.GetScripts()->Evaluate("return Scene.CreateEntity('Spawned').id", error) == std::to_string(static_cast<uint64_t>(next)));
+		CHECK(game.GetScene().GetEntityByUUID(taken).GetName() == "Authored");
+	}
+
+	GameSessionSpecification specification;
+	specification.EntityIdSeed = 99;
+	GameSession seeded(fixture.Assets, start, specification);
+	std::string error;
+	CHECK(seeded.GetScripts()->Evaluate("return Scene.CreateEntity('Spawned').id", error) == std::to_string(static_cast<uint64_t>(UUIDSequence(99).Next())));
+	// The scene the session was given keeps random ids: only the running copy has the sequence.
+	CHECK_FALSE(start.GetEntityIdSequence().has_value());
+}
+
+TEST_CASE("GameSession: entities created by OnDestroy at a switch use the sequence, and the next level continues after them")
+{
+	SessionFixture fixture("GameSessionIdsOnDestroy");
+	const AssetHandle script = fixture.Script("Scripts/Leaver.lua", R"(
+		local S = {}
+		function S:OnCreate() Game.Set("Created" .. Game.Get("Runs", 0), Scene.CreateEntity("Created").id) end
+		function S:OnDestroy()
+			Game.Set("Leaving" .. Game.Get("Runs", 0), Scene.CreateEntity("Leaving").id)
+			Game.Set("Runs", Game.Get("Runs", 0) + 1)
+		end
+		return S
+	)");
+	Scene start;
+	start.CreateEntity("Leaver").AddComponent<ScriptComponent>().Script = script;
+	GameSession game(fixture.Assets, start);
+	game.Update(Timestep(1.0f / 60.0f));
+	std::string error;
+	REQUIRE(game.GetScripts()->Evaluate("Scene.Reload()", error));
+	game.Update(Timestep(1.0f / 60.0f)); // The level stops (OnDestroy) and restarts.
+	game.Update(Timestep(1.0f / 60.0f)); // The new level's OnCreate.
+	CHECK(game.GetSceneSwitches() == 1);
+	CHECK(game.GetScriptErrors().empty());
+
+	UUIDSequence expected(GameSessionSpecification{}.EntityIdSeed);
+	auto id = [&](const char* key) {
+		const std::optional<GameState::Value> value = game.GetState().Get(key);
+		return value ? std::get<std::string>(*value) : std::string();
+	};
+	CHECK(id("Created0") == std::to_string(static_cast<uint64_t>(expected.Next())));
+	CHECK(id("Leaving0") == std::to_string(static_cast<uint64_t>(expected.Next())));
+	CHECK(id("Created1") == std::to_string(static_cast<uint64_t>(expected.Next())));
 }

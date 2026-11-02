@@ -35,10 +35,11 @@ namespace Paralax {
 		Scene(const Scene&) = delete;
 		Scene& operator=(const Scene&) = delete;
 
-		// Deep copy: same entities (same UUIDs), components and hierarchy. Used to enter play mode. Systems are not
-		// copied (they belong to a running scene).
+		// Deep copy: same entities (same UUIDs), components and hierarchy. Used to enter play mode. Systems and the
+		// entity id sequence are not copied (they belong to a running scene).
 		static Ref<Scene> Copy(const Scene& source);
 
+		// Creates a root entity with a new id (see SetEntityIdSequence).
 		Entity CreateEntity(const std::string& name = "Entity");
 		// Creates an entity with a specific UUID. Verifies the UUID is valid and unused.
 		Entity CreateEntityWithUUID(UUID uuid, const std::string& name = "Entity");
@@ -53,6 +54,16 @@ namespace Paralax {
 		// child of parent). Verifies the entities are valid. Used to instantiate prefabs.
 		Entity CopySubtreeFrom(Scene& source, Entity sourceRoot);
 		Entity CopySubtreeFrom(Scene& source, Entity sourceRoot, Entity parent);
+
+		// Where CreateEntity (and so DuplicateEntity and CopySubtreeFrom) gets new ids. Without a sequence (the default,
+		// as in the editor) each id is a random UUID, so entities saved to files stay unique across sessions. With one,
+		// ids are taken from it in order, so a game that spawns entities gets the same ids in the same order every run
+		// (GameSession gives the scene it plays one). Either way an id already used in this scene is skipped, which
+		// consumes it from the sequence like any other, so creation never clashes and stays reproducible. nullopt
+		// returns to random ids.
+		void SetEntityIdSequence(std::optional<UUIDSequence> sequence) { m_EntityIdSequence = sequence; }
+		// The sequence in its current state (its next value is the next id tried), or nullopt for random ids.
+		const std::optional<UUIDSequence>& GetEntityIdSequence() const { return m_EntityIdSequence; }
 
 		Entity GetEntityByUUID(UUID uuid);
 		std::optional<Entity> TryGetEntityByUUID(UUID uuid);
@@ -127,6 +138,8 @@ namespace Paralax {
 		}
 
 	private:
+		// A new entity id: from the sequence if there is one, else random; never 0 or an id already in this scene.
+		UUID GenerateEntityId();
 		void DestroyEntityImmediate(entt::entity handle);
 		void NotifySystemsOfDestruction(entt::entity root);
 		void FlushPendingDestruction();
@@ -144,6 +157,7 @@ namespace Paralax {
 		entt::registry m_Registry;
 		std::unordered_map<uint64_t, entt::entity> m_EntityMap;
 		std::vector<UUID> m_RootEntities;
+		std::optional<UUIDSequence> m_EntityIdSequence;
 
 		bool m_IsRunning = false;
 		uint32_t m_UpdateDepth = 0;

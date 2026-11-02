@@ -8,6 +8,8 @@
 
 #include <glm/gtc/epsilon.hpp>
 
+#include <unordered_set>
+
 using namespace Paralax;
 using Paralax::Testing::AssertionFailedError;
 using Paralax::Testing::ScopedAssertionCapture;
@@ -258,6 +260,66 @@ TEST_CASE("Scene: Copy produces an independent scene with identical IDs, compone
 	copy->DestroyEntity(copy->GetEntityByUUID(parent.GetUUID()));
 	CHECK(child.GetComponent<MeshComponent>().Mesh == UUID(99));
 	CHECK(source.GetEntityCount() == 2);
+}
+
+TEST_CASE("Scene: with an id sequence, new entities take its ids in order and skip ids already in the scene")
+{
+	constexpr uint64_t Seed = 7;
+	UUIDSequence expected(Seed);
+	std::vector<UUID> values;
+	for (int i = 0; i < 8; i++)
+		values.push_back(expected.Next());
+
+	// Constructed collisions: the sequence's next values are already entities of the scene, as entities loaded from a
+	// file could be. The first two are taken, so creation starts at the third.
+	Scene scene;
+	scene.CreateEntityWithUUID(values[0], "TakenFirst");
+	scene.CreateEntityWithUUID(values[1], "TakenSecond");
+	scene.SetEntityIdSequence(UUIDSequence(Seed));
+	Entity a = scene.CreateEntity("A");
+	CHECK(a.GetUUID() == values[2]);
+	CHECK(scene.GetEntityByUUID(values[0]).GetName() == "TakenFirst");
+	CHECK(scene.GetEntityByUUID(values[1]).GetName() == "TakenSecond");
+
+	// Duplicates and copied subtrees draw from the same sequence, parents before children.
+	Entity child = scene.CreateEntity("Child");
+	CHECK(child.GetUUID() == values[3]);
+	scene.SetParent(child, a);
+	Entity duplicate = scene.DuplicateEntity(a);
+	CHECK(duplicate.GetUUID() == values[4]);
+	REQUIRE(duplicate.GetComponent<RelationshipComponent>().Children.size() == 1);
+	CHECK(duplicate.GetComponent<RelationshipComponent>().Children[0] == values[5]);
+	Scene other;
+	Entity source = other.CreateEntity("Source");
+	CHECK(scene.CopySubtreeFrom(other, source).GetUUID() == values[6]);
+
+	// The scene's sequence has moved past everything it handed out (or skipped).
+	REQUIRE(scene.GetEntityIdSequence().has_value());
+	UUIDSequence remaining = *scene.GetEntityIdSequence();
+	CHECK(remaining.Next() == values[7]);
+
+	// A copy (play mode's starting point) does not carry the sequence: its owner gives it one.
+	CHECK_FALSE(Scene::Copy(scene)->GetEntityIdSequence().has_value());
+
+	// Without the sequence again, ids are random.
+	scene.SetEntityIdSequence(std::nullopt);
+	const UUID random = scene.CreateEntity("Random").GetUUID();
+	CHECK(random.IsValid());
+	CHECK(random != values[7]);
+}
+
+TEST_CASE("Scene: without an id sequence, as in the editor, new entities get random ids that differ between scenes")
+{
+	// Editor entities are saved to files, so they must stay unique across sessions: no two fresh scenes may agree.
+	std::unordered_set<UUID> seen;
+	for (int i = 0; i < 16; i++)
+	{
+		Scene scene;
+		CHECK_FALSE(scene.GetEntityIdSequence().has_value());
+		const UUID id = scene.CreateEntity().GetUUID();
+		CHECK(id.IsValid());
+		CHECK(seen.insert(id).second);
+	}
 }
 
 TEST_CASE("Scene: lookup by name and tag, and primary camera selection")

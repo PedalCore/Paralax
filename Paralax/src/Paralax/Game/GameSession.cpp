@@ -13,6 +13,7 @@ namespace Paralax {
 	GameSession::GameSession(AssetManager& assets, const Scene& scene, GameSessionSpecification specification)
 		: m_Assets(assets)
 		, m_Specification(std::move(specification))
+		, m_EntityIds(m_Specification.EntityIdSeed)
 	{
 		Start(Scene::Copy(scene));
 	}
@@ -26,6 +27,7 @@ namespace Paralax {
 	{
 		m_Level = std::move(level);
 		m_Scene = Scene::Copy(*m_Level);
+		m_Scene->SetEntityIdSequence(m_EntityIds);
 		// Scripts first: forces they apply in OnUpdate act in the same update's physics step. Animation next, so clips
 		// scripts start or seek take effect at once and animated kinematic bodies move in the same physics step. Audio
 		// last, so it hears where everything else left things this frame.
@@ -49,6 +51,9 @@ namespace Paralax {
 		// Stopping runs OnDestroy, which can fail too: collect the errors after it.
 		m_Scene->OnRuntimeStop();
 		RecordErrors(m_Scripts->GetErrors());
+		// Taken back after OnDestroy, which may create entities too; the next level continues from here.
+		if (const std::optional<UUIDSequence>& ids = m_Scene->GetEntityIdSequence())
+			m_EntityIds = *ids;
 		m_Scene = nullptr;
 		m_Scripts = nullptr;
 		m_Animation = nullptr;

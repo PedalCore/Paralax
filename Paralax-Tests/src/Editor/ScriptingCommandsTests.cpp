@@ -7,6 +7,8 @@
 
 #include <Paralax/Asset/MeshAsset.h>
 #include <Paralax/Core/Input.h>
+#include <Paralax/Core/UUID.h>
+#include <Paralax/Game/GameSession.h>
 #include <Paralax/Scene/Components.h>
 #include <Paralax/Scene/Entity.h>
 #include <Paralax/Scripting/ScriptAsset.h>
@@ -411,6 +413,29 @@ TEST_CASE("ScriptingCommands: injected input reaches the game one step at a time
 	CHECK_FALSE(fixture.Context.Execute("input.mouse_move", {{"x", 1e300}, {"y", 0}}).Success); // Beyond a float.
 	CHECK_FALSE(fixture.Context.Execute("input.scroll", {{"x", 0}, {"y", -1e7}}).Success);
 	CHECK(fixture.Run("input.state")["queued"] == 0);
+}
+
+TEST_CASE("ScriptingCommands: entities created in play mode get the game's reproducible ids, and edited ones random ids")
+{
+	ProjectFixture fixture("PlayEntityIds");
+	fixture.Run("entity.create", {{"name", "Authored"}});
+	// Play mode is a GameSession with the default specification, as the exported runtime plays: the same ids.
+	UUIDSequence expected(GameSessionSpecification{}.EntityIdSeed);
+	const std::string first = std::to_string(static_cast<uint64_t>(expected.Next()));
+	const std::string second = std::to_string(static_cast<uint64_t>(expected.Next()));
+	for (int run = 0; run < 2; run++)
+	{
+		CAPTURE(run);
+		fixture.Run("play.start", {{"paused", true}});
+		// A script and an editor command both create entities in the running game, from its one sequence.
+		CHECK(fixture.Run("script.eval", {{"code", "return Scene.CreateEntity('Spawned').id"}})["result"] == first);
+		CHECK(fixture.Run("entity.create", {{"name", "Commanded"}})["id"] == second);
+		fixture.Run("play.stop");
+	}
+	// Outside play mode, ids are random: they are saved, and must stay unique across sessions.
+	const std::string edited = fixture.Run("entity.create", {{"name", "Edited"}})["id"];
+	CHECK(edited != first);
+	CHECK(edited != second);
 }
 
 TEST_CASE("ScriptingCommands: scripts switch scenes in play mode, and stopping returns to the edited scene")

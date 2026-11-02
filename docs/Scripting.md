@@ -67,7 +67,7 @@ instance is disabled. Other scripts keep running.
 
 | Member | Description |
 |---|---|
-| `entity.id` | UUID as a string: stable for the entity's lifetime, and saved in scenes (entities created while playing get new ids each run). |
+| `entity.id` | UUID as a string: stable for the entity's lifetime, and saved in scenes. Entities created while playing get ids that are the same in every run with the same inputs (see [Determinism](#determinism)). |
 | `entity.name`, `entity.tag` | Read/write. Names cannot be empty; both are limited to 256 bytes. |
 | `entity:IsValid()` | False once the entity has been destroyed. Using a destroyed entity raises an error. |
 | `entity:GetComponent(name)` | A component reference, or `nil` if the entity doesn't have it. |
@@ -283,8 +283,12 @@ Some things in Lua itself need care even under a fixed timestep:
   keys. Never let gameplay depend on the order of `pairs` over such a table: keep sets of entities or script
   instances in arrays (`table.insert`, remove by index) and walk them with `ipairs`, or key them by a string or
   integer of your own.
-- `entity.id` of an entity created while playing (by `Scene.CreateEntity` or `Scene.Instantiate`) is different in
-  every run, so do not key tables by it or sort by it either; only ids saved in the scene file stay the same.
+- `entity.id` of an entity created while playing (by `Scene.CreateEntity`, `Scene.Instantiate`, or an editor command
+  in play mode) comes from a sequence that starts from the same seed in every game session and carries on through
+  `Scene.Load` and `Scene.Reload`. The same inputs give the same ids in the same order, in the editor's play mode and
+  in the exported game alike, so keying a table by them, sorting by them or saving them in `Game` replays exactly,
+  and a session never hands out an id twice. The ids depend on creation order, though: creating one more entity
+  earlier renumbers every later one, so never write one into a script; only ids saved in the scene file are fixed.
 - `tostring` of a plain table or a function contains its address, and so does `string.format('%p', value)`: neither
   is a usable key or sort value.
 

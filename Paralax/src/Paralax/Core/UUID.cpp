@@ -79,4 +79,16 @@ namespace Paralax {
 		return Mix(seed ^ counter);
 	}
 
+	UUID UUIDSequence::Next()
+	{
+		// The finaliser is a bijection, so over the counter's 2^64 states every value comes out once; the one state
+		// that maps to 0 (UUID 0 means "none") is stepped over.
+		for (;;)
+		{
+			m_State += 0x9E3779B97F4A7C15ull;
+			if (const uint64_t value = Mix(m_State); value != 0)
+				return UUID(value);
+		}
+	}
+
 }
