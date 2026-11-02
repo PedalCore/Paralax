@@ -575,3 +575,38 @@ TEST_CASE("EditorContext: an output symlink with the right name cannot redirect 
 	std::string message;
 	CHECK_FALSE(context.ResolveOutputPath("Shot.png", ".png", message));
 }
+
+TEST_CASE("EditorContext: a refused path is named briefly in errors and the log, however long it is")
+{
+	const std::filesystem::path root = Paralax::Testing::CreateTestDirectory("EditorContextLongPaths");
+	Ref<Project> project = Project::Create(root / "Game", "Game");
+	REQUIRE(project);
+	EditorContext context(project);
+	Paralax::Testing::ScopedLogCapture log;
+
+	// A path that resolves, outside the project, too long to quote whole: named by its start and its length. (It
+	// stays short enough for Windows without long paths, where a longer one would fail to resolve instead.)
+	const std::string escaping = "../" + std::string(120, 'd');
+	std::string error;
+	CHECK_FALSE(context.ResolveProjectPath(FromUtf8(escaping + "/A.pxscene"), error));
+	CHECK(error.starts_with("'../ddd"));
+	CHECK(error.find(fmt::format("...' ({} bytes) is outside the project's asset directory", escaping.size() + 10)) != std::string::npos);
+	CHECK(error.size() < 200);
+	CHECK_FALSE(context.ResolveOutputPath(FromUtf8(escaping + "/A.png"), ".png", error));
+	CHECK(error.find(fmt::format("...' ({} bytes) is outside the project directory", escaping.size() + 6)) != std::string::npos);
+	CHECK(error.size() < 200);
+	// Control characters in a path cannot break the message's line.
+	CHECK_FALSE(context.ResolveProjectPath(FromUtf8("../Line\nBreak.pxscene"), error));
+	CHECK(error == "'../Line\\nBreak.pxscene' is outside the project's asset directory");
+
+	// A 16 MiB path sent to scene.open and scene.save is refused, and what is logged about it stays short.
+	const std::string huge(16 * 1024 * 1024, 'p');
+	CHECK_FALSE(context.Execute("scene.open", {{"path", huge}}).Success);
+	CHECK_FALSE(context.Execute("scene.save", {{"path", huge}}).Success);
+	CHECK_FALSE(context.ResolveProjectPath(FromUtf8(huge), error));
+	CHECK(error.size() < 200);
+	CHECK(log.Contains(spdlog::level::err, "Cannot open scene: "));
+	CHECK(log.Contains(spdlog::level::err, "Cannot save scene: "));
+	for (const Paralax::Testing::ScopedLogCapture::Entry& entry : log.GetEntries())
+		CHECK(entry.Message.size() < 200);
+}
