@@ -131,8 +131,9 @@ jobs:
               exit 1
             fi
             args=(--headless --frames 10 --fixed-timestep 0.016)
-            # The runtime needs a game: play the feature test project, failing on any script error (also covers
-            # Dist builds, which have no test binary).
+            # The runtime needs a game: play the feature test project, failing on any script error. Every entry,
+            # Dist included, also builds and runs Paralax-Tests (configured with PX_BUILD_TESTS=ON above), so this
+            # is a direct check of the built executables, not Dist's only coverage.
             [[ "$exe" == Paralax-Runtime ]] && args=(--project Paralax-Tests/FeatureTest --headless --frames 60 --fixed-timestep 0.0166667 --fail-on-script-error)
             .github/scripts/run-step.sh "Smoke test $exe" "$path" "${args[@]}"
           done

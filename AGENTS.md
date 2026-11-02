@@ -45,6 +45,7 @@ cmake --preset debug && cmake --build build/debug && ctest --preset debug -j8
 | `tsan` | Debug + ThreadSanitizer (Clang only: GCC's TSan does not support the atomic fence Jolt uses, so configuring it with GCC is an error). |
 
 - Build configurations are **Debug / Release / Dist** only. They define `PX_DEBUG`, `PX_RELEASE` or `PX_DIST`.
+- The local `dist` preset builds no tests, but CI builds and runs `Paralax-Tests` in Dist too (every CI configuration sets `PX_BUILD_TESTS=ON`), so Dist-only behaviour must pass its tests. To run them locally, configure Dist with tests as the `build-and-test` skill shows.
 - Warnings are errors (`PX_WARNINGS_AS_ERRORS=ON`) on every compiler. Fix warnings; never silence them with pragmas unless the warning comes from a third-party header, and comment why.
 - Headless runs need no display server: `Paralax-Editor --headless --frames 10`. Tests always use headless windows (GLFW null platform).
 - Before you commit, build and test at least `debug` (clang) and `asan` (gcc). CI covers MSVC and AppleClang; check CI after you push.
