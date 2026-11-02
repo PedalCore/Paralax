@@ -139,6 +139,12 @@ namespace Paralax {
 		bool IsRegistryReadOnly() const { return m_RegistryGuard != RegistryGuard::None; }
 		// How many entries the last LoadRegistry skipped because it could not read them.
 		size_t GetSkippedRegistryEntryCount() const { return m_SkippedEntries; }
+		// Whether the registry file is no longer the one the last LoadRegistry read in full or the last SaveRegistry wrote,
+		// so that SaveRegistry refuses it as changed: a file that appeared where there was none counts, and so does one
+		// that could not be read in full when it was loaded; a missing one does not, since a save creates it. Reads the
+		// file and logs nothing. nullopt if that cannot be told (the file is there but cannot be read); false without an
+		// asset directory.
+		std::optional<bool> HasRegistryChangedOnDisk() const;
 
 		// Converts between absolute paths and registry paths (relative, '/' separators). Returns nullopt for
 		// paths outside the asset directory, and for names that are not well-formed UTF-8 (the registry and scenes
@@ -181,6 +187,9 @@ namespace Paralax {
 		// Whether SaveRegistry may replace the file at path: there is none, or it is, unchanged, the file the last
 		// LoadRegistry read in full or the last SaveRegistry wrote. Logs why not.
 		bool CanReplaceRegistryFile(const std::filesystem::path& path) const;
+		// Whether the registry file at path, which exists, is the one m_RegistryIdentity describes (never, if none was
+		// recorded). nullopt, with outError set, if it cannot be read.
+		std::optional<bool> RegistryFileMatches(const std::filesystem::path& path, std::string& outError) const;
 
 	private:
 		std::filesystem::path m_AssetDirectory;

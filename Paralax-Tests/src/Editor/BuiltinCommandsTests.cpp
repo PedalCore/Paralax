@@ -373,6 +373,13 @@ TEST_CASE("BuiltinCommands: asset.reload_registry takes in a registry changed on
 	const std::string checkedOut = R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[{"Handle":"5003","Type":"Material","Path":"Other.pxmat"}]})";
 	REQUIRE(WriteFileAtomically(registry, checkedOut));
 	{
+		// asset.list tells beforehand that a save would be refused, and why.
+		const CommandResult listed = context.Execute("asset.list");
+		REQUIRE(listed.Success);
+		CHECK(listed.Result["changedOnDisk"] == true);
+		CHECK(listed.Result["readOnly"] == false);
+	}
+	{
 		Paralax::Testing::ScopedLogCapture capture;
 		const CommandResult refused = context.Execute("material.create", {{"path", "N.pxmat"}});
 		CHECK_FALSE(refused.Success);
@@ -397,6 +404,7 @@ TEST_CASE("BuiltinCommands: asset.reload_registry takes in a registry changed on
 	CHECK(reloaded.Result["readOnly"] == false);
 	CHECK_FALSE(reloaded.Result.contains("warnings"));
 	CHECK(context.Execute("asset.list").Result["readOnly"] == false);
+	CHECK(context.Execute("asset.list").Result["changedOnDisk"] == false);
 	CHECK(context.GetAssets().IsRegistered(AssetHandle(5003)));
 	REQUIRE(context.Execute("material.create", {{"path", "N.pxmat"}}).Success);
 	{

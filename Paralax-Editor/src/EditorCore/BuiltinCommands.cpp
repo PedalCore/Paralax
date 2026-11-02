@@ -421,7 +421,7 @@ namespace Paralax::Editor {
 						   }});
 
 		// --- Assets ----------------------------------------------------------------------------------
-		registry.Register({"asset.list", "Lists registered assets (handle, type, path, parent) and the built-in assets, and whether the registry is read-only (readOnly; skipped counts the entries the last load could not read).", {}, false, [](EditorContext& context, const json&) {
+		registry.Register({"asset.list", "Lists registered assets (handle, type, path, parent) and the built-in assets, and why commands that register files may be unable to save the registry: readOnly (the file could not be read, or had entries the last load skipped, which skipped counts) and changedOnDisk (the file is not the one the editor last read or wrote; null if it cannot be read). Either way, fix the file if need be and run asset.reload_registry.", {}, false, [](EditorContext& context, const json&) {
 							   json assets = json::array();
 							   for (const AssetMetadata& metadata : context.GetAssets().GetRegisteredAssets())
 							   {
@@ -430,11 +430,13 @@ namespace Paralax::Editor {
 							   json builtins = json::array();
 							   for (const BuiltinAssetInfo& info : AssetManager::GetBuiltinAssets())
 								   builtins.push_back({{"handle", IdString(AssetHandle(info.Handle))}, {"type", std::string(AssetTypeToString(info.Type))}, {"name", info.Name}});
-							   // Whether commands that register files can save the registry at all (see asset.reload_registry).
+							   // The two reasons SaveRegistry refuses besides a write failing, so an agent can tell before a command fails.
+							   const std::optional<bool> changedOnDisk = context.GetAssets().HasRegistryChangedOnDisk();
 							   return CommandResult::Ok({{"assets", assets},
 														 {"builtins", builtins},
 														 {"readOnly", context.GetAssets().IsRegistryReadOnly()},
-														 {"skipped", context.GetAssets().GetSkippedRegistryEntryCount()}});
+														 {"skipped", context.GetAssets().GetSkippedRegistryEntryCount()},
+														 {"changedOnDisk", changedOnDisk ? json(*changedOnDisk) : json(nullptr)}});
 						   }});
 
 		registry.Register({"asset.import", "Registers a file inside the project's Assets folder (path relative to Assets, or absolute).", {{"path", "string", "File to import.", true}}, false, [](EditorContext& context, const json& params) {

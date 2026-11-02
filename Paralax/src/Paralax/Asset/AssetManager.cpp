@@ -632,28 +632,57 @@ namespace Paralax {
 
 		// Any other file than the one last read or written was put there by someone else (a version-control checkout or
 		// merge, another editor), and this registry, which never saw it, would replace it.
-		auto changed = [&] {
+		std::string reason;
+		const std::optional<bool> matches = RegistryFileMatches(path, reason);
+		if (!matches)
+			return cannotCheck(reason);
+		if (!*matches)
+		{
 			PX_CORE_ERROR("Not saving the asset registry: '{}' has changed on disk since it was loaded or last saved (by a version-control checkout or merge, or "
 						  "another editor, say), and saving would replace that change. Reload the registry (asset.reload_registry in the editor) or reopen the "
 						  "project, then try again.",
 						  ToUtf8(path));
 			return false;
-		};
+		}
+		return true;
+	}
+
+	std::optional<bool> AssetManager::RegistryFileMatches(const std::filesystem::path& path, std::string& outError) const
+	{
 		if (!m_RegistryIdentity)
-			return changed();
+			return false;
+		std::error_code error;
 		const uintmax_t size = std::filesystem::file_size(path, error);
 		if (error)
-			return cannotCheck(error.message());
+		{
+			outError = error.message();
+			return std::nullopt;
+		}
 		if (static_cast<uint64_t>(size) != m_RegistryIdentity->Size)
-			return changed();
+			return false;
 		// The size matches one this manager read or wrote, so it is within m_MaxRegistryBytes.
 		std::string text;
-		std::string readError;
-		if (!ReadTextFile(path, text, readError, m_MaxRegistryBytes))
-			return cannotCheck(readError);
-		if (IdentifyRegistryText(text) != *m_RegistryIdentity)
-			return changed();
-		return true;
+		if (!ReadTextFile(path, text, outError, m_MaxRegistryBytes))
+			return std::nullopt;
+		return IdentifyRegistryText(text) == *m_RegistryIdentity;
+	}
+
+	std::optional<bool> AssetManager::HasRegistryChangedOnDisk() const
+	{
+		if (m_AssetDirectory.empty())
+			return false;
+		const std::filesystem::path path = m_AssetDirectory / RegistryFileName;
+		std::error_code error;
+		const bool exists = std::filesystem::exists(path, error);
+		if (error)
+			return std::nullopt;
+		if (!exists)
+			return false; // A save would create it: nothing on disk differs from what it would replace.
+		std::string reason;
+		const std::optional<bool> matches = RegistryFileMatches(path, reason);
+		if (!matches)
+			return std::nullopt;
+		return !*matches;
 	}
 
 	bool AssetManager::SaveRegistry() const

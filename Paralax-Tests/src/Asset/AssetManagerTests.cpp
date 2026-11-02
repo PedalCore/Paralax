@@ -545,9 +545,16 @@ TEST_CASE("AssetManager: a registry changed on disk since it was loaded or saved
 	const AssetHandle material = assets.ImportAsset("Brick.pxmat");
 	REQUIRE(material.IsValid());
 	REQUIRE(assets.GetAsset<MaterialAsset>(material));
+	CHECK(assets.HasRegistryChangedOnDisk() == false);
 	const std::string checkedOut = R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[{"Handle":"5003","Type":"Material","Path":"Brick.pxmat"},)"
 								   R"({"Handle":"5004","Type":"Texture","Path":"Textures/Brick.png"}]})";
 	REQUIRE(WriteFileAtomically(registry, checkedOut));
+	// Seen without trying to save, and without a word in the log.
+	{
+		Paralax::Testing::ScopedLogCapture quiet;
+		CHECK(assets.HasRegistryChangedOnDisk() == true);
+		CHECK(quiet.GetEntries().empty());
+	}
 
 	{
 		Paralax::Testing::ScopedLogCapture log;
@@ -567,7 +574,9 @@ TEST_CASE("AssetManager: a registry changed on disk since it was loaded or saved
 	CHECK_FALSE(assets.IsRegistered(material));
 	CHECK_FALSE(assets.IsLoaded(material));
 	CHECK(assets.GetHandleForPath("Textures/Brick.png") == AssetHandle(5004));
+	CHECK(assets.HasRegistryChangedOnDisk() == false);
 	CHECK(assets.SaveRegistry());
+	CHECK(assets.HasRegistryChangedOnDisk() == false);
 
 	// Whatever stands in the file's place but cannot be compared (here a folder) is not replaced either.
 	std::filesystem::remove(registry);
@@ -576,8 +585,10 @@ TEST_CASE("AssetManager: a registry changed on disk since it was loaded or saved
 		Paralax::Testing::ScopedLogCapture log;
 		CHECK_FALSE(assets.SaveRegistry());
 		CHECK(log.Contains(spdlog::level::err, "'" + ToUtf8(assets.GetAssetDirectory() / AssetManager::RegistryFileName) + "' cannot be checked"));
+		CHECK_FALSE(assets.HasRegistryChangedOnDisk().has_value());
 	}
 	std::filesystem::remove_all(registry);
+	CHECK(assets.HasRegistryChangedOnDisk() == false); // A missing file is created by the next save.
 	CHECK(assets.SaveRegistry());
 
 	// A rewrite of the same size differs in its bytes: the hash tells it apart.
@@ -587,6 +598,7 @@ TEST_CASE("AssetManager: a registry changed on disk since it was loaded or saved
 	sameSize.replace(sameSize.find("\"5004\""), 6, "\"5005\"");
 	REQUIRE(sameSize.size() == saved.size());
 	REQUIRE(WriteFileAtomically(registry, sameSize));
+	CHECK(assets.HasRegistryChangedOnDisk() == true);
 	{
 		Paralax::Testing::ScopedLogCapture log;
 		CHECK_FALSE(assets.RemoveAsset(AssetHandle(5003)));
@@ -604,7 +616,10 @@ TEST_CASE("AssetManager: a registry changed on disk since it was loaded or saved
 	// A file that appears where there was none is someone else's too; one removed since loses nothing when saved.
 	std::filesystem::remove(registry);
 	AssetManager fresh(directory);
+	CHECK(fresh.HasRegistryChangedOnDisk() == false);
 	REQUIRE(WriteFileAtomically(registry, checkedOut));
+	CHECK(fresh.HasRegistryChangedOnDisk() == true);
+	CHECK(AssetManager().HasRegistryChangedOnDisk() == false); // No project.
 	{
 		Paralax::Testing::ScopedLogCapture log;
 		CHECK_FALSE(fresh.ImportAsset("Brick.pxmat").IsValid());
