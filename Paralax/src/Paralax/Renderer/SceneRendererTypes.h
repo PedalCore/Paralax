@@ -76,8 +76,9 @@ namespace Paralax::GPU {
 		glm::vec4 NormalMatrix0;
 		glm::vec4 NormalMatrix1;
 		glm::vec4 NormalMatrix2;
+		glm::uvec4 Geometry; // index offset, vertex offset, global triangle base, count | clockwise-front bit31
 	};
-	static_assert(sizeof(DrawConstants) == 112, "Must fit the 128-byte push constant minimum");
+	static_assert(sizeof(DrawConstants) == 128, "Must fit the 128-byte push constant minimum");
 
 	struct IBLConstants
 	{

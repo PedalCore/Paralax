@@ -4,6 +4,7 @@
 #include "Paralax/Core/Base.h"
 #include "Paralax/Core/Reflection.h"
 #include "Paralax/Math/AABB.h"
+#include "Paralax/Renderer/DeferredSurfaces.h"
 #include "Paralax/Renderer/EnvironmentLighting.h"
 #include "Paralax/Renderer/GPUResourceCache.h"
 #include "Paralax/Renderer/LocalShadowMaps.h"
@@ -11,6 +12,7 @@
 #include "Paralax/Renderer/ProbeGI.h"
 #include "Paralax/Renderer/SceneRendererTypes.h"
 #include "Paralax/Renderer/TextRenderer.h"
+#include "Paralax/Renderer/VisibilitySurfaces.h"
 
 #include <glm/glm.hpp>
 #include <nvrhi/nvrhi.h>
@@ -29,6 +31,13 @@ namespace Paralax {
 	class GraphicsDevice;
 	class MaterialAsset;
 	class Scene;
+
+	enum class RenderPath
+	{
+		Forward = 0,
+		Deferred = 1,
+		Visibility = 2
+	};
 
 	enum class TonemapOperator
 	{
@@ -76,6 +85,7 @@ namespace Paralax {
 	// Renderer settings. Reflected (GetFields) so the editor UI, scene tooling and agents share one description.
 	struct SceneRendererSettings
 	{
+		RenderPath Path = RenderPath::Forward;
 		float Exposure = 1.0f;
 		TonemapOperator Tonemapper = TonemapOperator::AgX;
 		bool Shadows = true;
@@ -142,6 +152,11 @@ namespace Paralax {
 
 	struct SceneRenderStats
 	{
+		RenderPath RequestedPath = RenderPath::Forward, EffectivePath = RenderPath::Forward;
+		std::string PathFallbackReason;
+		uint64_t SurfaceOwnedBytes = 0, SurfaceAllocationAttempts = 0;
+		uint32_t SurfaceResolveDrawCalls = 0, VisibilityResolveDrawCalls = 0;
+		uint64_t VisibilityOwnedBytes = 0, VisibilityGeometryBytes = 0, VisibilityAllocationAttempts = 0;
 		uint32_t DrawCalls = 0;
 		uint32_t ShadowDrawCalls = 0;
 		uint32_t CulledSubmeshes = 0;
@@ -163,7 +178,7 @@ namespace Paralax {
 	{
 	public:
 		// The optional allocation factory is non-owning and must outlive the renderer.
-		SceneRenderer(GraphicsDevice& device, AssetManager& assets, LocalShadowResourceFactory* shadowFactory = nullptr);
+		SceneRenderer(GraphicsDevice& device, AssetManager& assets, LocalShadowResourceFactory* shadowFactory = nullptr, DeferredResourceFactory* deferredFactory = nullptr);
 		~SceneRenderer();
 
 		SceneRenderer(const SceneRenderer&) = delete;
@@ -201,6 +216,8 @@ namespace Paralax {
 		struct DrawItem
 		{
 			const GPUMesh* Mesh = nullptr;
+			uint64_t EntityID = 0;
+			uint32_t SubmeshOrdinal = 0, TriangleBase = 0;
 			uint32_t IndexOffset = 0;
 			uint32_t IndexCount = 0;
 			uint32_t VertexOffset = 0;
@@ -209,6 +226,7 @@ namespace Paralax {
 			bool Blend = false;
 			bool DoubleSided = false;
 			bool AlphaMask = false;
+			bool CompactSurface = true;
 			bool CastShadows = true;
 			bool Visible = true;   // Inside the camera frustum (otherwise only drawn into shadow maps).
 			bool Mirrored = false; // Negative-determinant transform (reversed winding).
@@ -225,6 +243,7 @@ namespace Paralax {
 			bool Blend = false;
 			bool DoubleSided = false;
 			bool AlphaMask = false;
+			bool CompactSurface = true;
 			uint64_t LastValidatedFrame = 0;
 		};
 
@@ -241,6 +260,8 @@ namespace Paralax {
 		void CollectLights(Scene& scene, const CameraView& camera, LocalShadowHistory* history);
 		void RenderLocalShadows();
 		void RenderForward(const GPU::ViewConstants& view);
+		bool PrepareVisibilityDraws();
+		void RenderVisibilityOpaque();
 
 	private:
 		GraphicsDevice& m_GraphicsDevice;
@@ -253,6 +274,8 @@ namespace Paralax {
 		TextRenderer m_Text;
 		ProbeGI m_ProbeGI;
 		LocalShadowMaps m_LocalShadowMaps;
+		DeferredSurfaces m_Deferred;
+		VisibilitySurfaces m_Visibility;
 		LocalShadowResourceFactory* m_ShadowFactory;
 		EnvironmentMaps m_EnvironmentMaps;
 		bool m_Initialized = false;
@@ -261,6 +284,7 @@ namespace Paralax {
 		bool m_ReportedGIFailure = false;
 		bool m_ReportedLocalPipelineFailure = false;
 		bool m_ReportedLocalCapacity = false;
+		bool m_ReportedSurfaceRange = false;
 		uint32_t m_QueuedGIUpdates = 0;
 
 		nvrhi::CommandListHandle m_CommandList;

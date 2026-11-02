@@ -131,7 +131,7 @@ TEST_CASE("EditorLayer: render.stats reports the statistics of the latest frame 
 	EditorContext& context = editor.Context;
 
 	// Nothing has been rendered yet.
-	const json empty = {{"drawCalls", 0}, {"shadowDrawCalls", 0}, {"triangles", 0}, {"culledSubmeshes", 0}, {"textGlyphs", 0}, {"lights", 0}, {"staticLightingGenerations", 0}, {"requestedLocalShadows", 0}, {"shadowedLocalLights", 0}, {"localShadowLayers", 0}, {"localShadowCapacity", 0}, {"localShadowDrawCalls", 0}, {"localShadowAllocationAttempts", 0}, {"shadowedLocalLightIDs", json::array()}};
+	const json empty = {{"visibilityResolveDrawCalls", 0}, {"visibilityOwnedBytes", 0}, {"visibilityGeometryBytes", 0}, {"visibilityAllocationAttempts", 0}, {"requestedRenderPath", "Forward"}, {"effectiveRenderPath", "Forward"}, {"renderPathFallbackReason", ""}, {"surfaceOwnedBytes", 0}, {"surfaceAllocationAttempts", 0}, {"surfaceResolveDrawCalls", 0}, {"drawCalls", 0}, {"shadowDrawCalls", 0}, {"triangles", 0}, {"culledSubmeshes", 0}, {"textGlyphs", 0}, {"lights", 0}, {"staticLightingGenerations", 0}, {"requestedLocalShadows", 0}, {"shadowedLocalLights", 0}, {"localShadowLayers", 0}, {"localShadowCapacity", 0}, {"localShadowDrawCalls", 0}, {"localShadowAllocationAttempts", 0}, {"shadowedLocalLightIDs", json::array()}};
 	CHECK(Run(context, "render.stats") == empty);
 
 	// A cube in view, one behind the camera (culled, but still drawn into the shadow map), a sun and a point light,
@@ -156,6 +156,29 @@ TEST_CASE("EditorLayer: render.stats reports the statistics of the latest frame 
 	CHECK(stats["lights"] == 1); // Point and spot lights; the sun is not counted.
 	CHECK(stats["textGlyphs"] == 0);
 	CHECK(stats.size() == empty.size());
+
+	Run(context, "render.settings.set", {{"settings", {{"RenderPath", "Deferred"}}}});
+	CHECK(Run(context, "render.settings.get")["RenderPath"] == "Deferred");
+	CHECK_FALSE(context.Execute("render.settings.set", {{"settings", {{"RenderPath", "Unknown"}}}}).Success);
+	Run(context, "render.capture", {{"path", ToUtf8(image)}, {"width", 64}, {"height", 64}, {"camera", "editor"}});
+	const json deferred = Run(context, "render.stats");
+	CHECK(deferred["requestedRenderPath"] == "Deferred");
+	CHECK(deferred["effectiveRenderPath"] == "Deferred");
+	CHECK(deferred["renderPathFallbackReason"] == "");
+	CHECK(deferred["surfaceOwnedBytes"].get<uint64_t>() >= 64 * 64 * 24);
+	CHECK(deferred["surfaceResolveDrawCalls"] == 1);
+	Run(context, "render.settings.set", {{"settings", {{"RenderPath", "Visibility"}}}});
+	CHECK(Run(context, "render.settings.get")["RenderPath"] == "Visibility");
+	Run(context, "render.capture", {{"path", ToUtf8(image)}, {"width", 64}, {"height", 64}, {"camera", "editor"}});
+	const json visibility = Run(context, "render.stats");
+	CHECK(visibility["requestedRenderPath"] == "Visibility");
+	CHECK(visibility["effectiveRenderPath"] == "Visibility");
+	CHECK(visibility["renderPathFallbackReason"] == "");
+	CHECK(visibility["visibilityOwnedBytes"].get<uint64_t>() >= 64 * 64 * 4);
+	CHECK(visibility["visibilityGeometryBytes"].get<uint64_t>() > 0);
+	CHECK(visibility["visibilityResolveDrawCalls"] == 1);
+	CHECK(visibility["surfaceResolveDrawCalls"] == 1);
+	Run(context, "render.settings.set", {{"settings", {{"RenderPath", "Forward"}}}});
 
 	// The statistics are the latest frame's, not totals: an empty scene renders nothing.
 	Run(context, "scene.new");

@@ -36,7 +36,20 @@ namespace Paralax {
 
 	const GPUMesh* GPUResourceCache::GetMesh(const MeshAsset& mesh, nvrhi::ICommandList* commandList)
 	{
-		if (mesh.Vertices.empty() || mesh.Indices.empty())
+		auto& validation = m_MeshValidation[mesh.Handle];
+		if (!validation.Checked || validation.Version != mesh.Version)
+		{
+			std::string error;
+			validation.Checked = true;
+			validation.Version = mesh.Version;
+			validation.Valid = mesh.Validate(error) && !mesh.Vertices.empty() && !mesh.Indices.empty();
+			if (!validation.Valid)
+			{
+				PX_CORE_ERROR("Rejected renderer mesh {} version {}: {}", static_cast<uint64_t>(mesh.Handle), mesh.Version, error.empty() ? "empty geometry" : error);
+				m_Meshes.erase(mesh.Handle);
+			}
+		}
+		if (!validation.Valid)
 			return nullptr;
 
 		GPUMesh& entry = m_Meshes[mesh.Handle];
@@ -46,18 +59,30 @@ namespace Paralax {
 		nvrhi::BufferDesc vertexDesc;
 		vertexDesc.byteSize = mesh.Vertices.size() * sizeof(MeshVertex);
 		vertexDesc.isVertexBuffer = true;
+		vertexDesc.canHaveRawViews = true;
 		vertexDesc.debugName = "MeshVertices";
 		vertexDesc.initialState = nvrhi::ResourceStates::VertexBuffer;
 		vertexDesc.keepInitialState = true;
-		entry.VertexBuffer = m_Device->createBuffer(vertexDesc);
+		auto vertices = m_Device->createBuffer(vertexDesc);
 
 		nvrhi::BufferDesc indexDesc;
 		indexDesc.byteSize = mesh.Indices.size() * sizeof(uint32_t);
 		indexDesc.isIndexBuffer = true;
+		indexDesc.canHaveRawViews = true;
 		indexDesc.debugName = "MeshIndices";
 		indexDesc.initialState = nvrhi::ResourceStates::IndexBuffer;
 		indexDesc.keepInitialState = true;
-		entry.IndexBuffer = m_Device->createBuffer(indexDesc);
+		auto indices = m_Device->createBuffer(indexDesc);
+		if (!vertices || !indices)
+		{
+			if (!validation.ReportedAllocationFailure)
+				PX_CORE_ERROR("Failed to allocate renderer mesh {}", static_cast<uint64_t>(mesh.Handle));
+			validation.ReportedAllocationFailure = true;
+			return nullptr;
+		}
+		validation.ReportedAllocationFailure = false;
+		entry.VertexBuffer = std::move(vertices);
+		entry.IndexBuffer = std::move(indices);
 
 		commandList->writeBuffer(entry.VertexBuffer, mesh.Vertices.data(), vertexDesc.byteSize);
 		commandList->writeBuffer(entry.IndexBuffer, mesh.Indices.data(), indexDesc.byteSize);
@@ -99,12 +124,14 @@ namespace Paralax {
 	void GPUResourceCache::Remove(AssetHandle handle)
 	{
 		m_Meshes.erase(handle);
+		m_MeshValidation.erase(handle);
 		m_Textures.erase(handle);
 	}
 
 	void GPUResourceCache::Clear()
 	{
 		m_Meshes.clear();
+		m_MeshValidation.clear();
 		m_Textures.clear();
 	}
 

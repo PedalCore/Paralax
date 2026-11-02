@@ -110,8 +110,17 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
     check(not isinstance(captured, AgentError) and not isinstance(stats, AgentError), f"batch failed: {captured}, {stats}")
     check(set(stats) == {"drawCalls", "shadowDrawCalls", "triangles", "culledSubmeshes", "textGlyphs", "lights",
                          "staticLightingGenerations", "requestedLocalShadows", "shadowedLocalLights", "localShadowLayers",
-                         "localShadowCapacity", "localShadowDrawCalls", "localShadowAllocationAttempts", "shadowedLocalLightIDs"},
+                         "localShadowCapacity", "localShadowDrawCalls", "localShadowAllocationAttempts", "shadowedLocalLightIDs",
+                         "requestedRenderPath", "effectiveRenderPath", "renderPathFallbackReason",
+                         "surfaceOwnedBytes", "surfaceAllocationAttempts", "surfaceResolveDrawCalls",
+                         "visibilityOwnedBytes", "visibilityAllocationAttempts", "visibilityGeometryBytes", "visibilityResolveDrawCalls"},
           f"unexpected render statistics: {stats}")
+    check(settings["RenderPath"] == "Forward" and stats["requestedRenderPath"] == "Forward"
+          and stats["effectiveRenderPath"] == "Forward" and stats["renderPathFallbackReason"] == "",
+          f"unexpected default render path: {stats}")
+    for key in ("surfaceOwnedBytes", "surfaceAllocationAttempts", "surfaceResolveDrawCalls", "visibilityOwnedBytes",
+                "visibilityAllocationAttempts", "visibilityGeometryBytes", "visibilityResolveDrawCalls"):
+        check(type(stats[key]) is int and stats[key] == 0, f"default Forward consumed optional resources: {key}={stats[key]}")
     check(captured["stats"] == stats, "capture did not include statistics from its own frame")
     check(stats["requestedLocalShadows"] == 0 and stats["shadowedLocalLights"] == 0 and stats["localShadowLayers"] == 0
           and stats["localShadowDrawCalls"] == 0 and stats["shadowedLocalLightIDs"] == [], "empty local-light set consumed shadow slots")

@@ -32,6 +32,8 @@ namespace Paralax {
 	public:
 		explicit GPUResourceCache(nvrhi::IDevice* device);
 
+		// Validates mutable mesh geometry once per asset version; returns null and logs on invalid data or allocation failure.
+		// The returned cache entry is non-owning; increment the asset version after editing its data.
 		const GPUMesh* GetMesh(const MeshAsset& mesh, nvrhi::ICommandList* commandList);
 		nvrhi::ITexture* GetTexture(const TextureAsset& texture, nvrhi::ICommandList* commandList);
 
@@ -54,6 +56,12 @@ namespace Paralax {
 
 	private:
 		nvrhi::DeviceHandle m_Device;
+		struct MeshValidation
+		{
+			uint32_t Version = 0;
+			bool Checked = false, Valid = false, ReportedAllocationFailure = false;
+		};
+		std::unordered_map<uint64_t, MeshValidation> m_MeshValidation;
 		std::unordered_map<uint64_t, GPUMesh> m_Meshes;
 		std::unordered_map<uint64_t, GPUTexture> m_Textures;
 		nvrhi::TextureHandle m_White;

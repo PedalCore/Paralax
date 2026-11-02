@@ -23,6 +23,7 @@ namespace Paralax {
 		using Reflection::FieldOptions;
 		using Reflection::MakeField;
 		static const std::vector<FieldInfo> s_Fields = {
+			MakeField<&SceneRendererSettings::Path>("RenderPath", FieldOptions().Enum({"Forward", "Deferred", "Visibility"}).Describe("Opaque shading path; transparency remains forward. See render.stats for effective path and fallback reason.")),
 			MakeField<&SceneRendererSettings::Exposure>("Exposure", FieldOptions().Range(0.05f, 8.0f).Describe("Exposure multiplier applied before tonemapping.")),
 			MakeField<&SceneRendererSettings::Tonemapper>("Tonemapper", FieldOptions().Enum({"AgX", "ACES", "None"})),
 			MakeField<&SceneRendererSettings::Shadows>("Shadows", FieldOptions().Describe("Directional and local-light shadows; GI tracing remains independent.")),
@@ -149,7 +150,7 @@ namespace Paralax {
 		return view;
 	}
 
-	SceneRenderer::SceneRenderer(GraphicsDevice& device, AssetManager& assets, LocalShadowResourceFactory* shadowFactory)
+	SceneRenderer::SceneRenderer(GraphicsDevice& device, AssetManager& assets, LocalShadowResourceFactory* shadowFactory, DeferredResourceFactory* deferredFactory)
 		: m_GraphicsDevice(device)
 		, m_Assets(assets)
 		, m_Device(device.GetDevice())
@@ -158,6 +159,8 @@ namespace Paralax {
 		, m_Text(device.GetDevice())
 		, m_ProbeGI(device.GetDevice(), device.GetInfo().Limits)
 		, m_LocalShadowMaps(device.GetDevice(), device.GetInfo().Limits, shadowFactory)
+		, m_Deferred(device, deferredFactory)
+		, m_Visibility(device, deferredFactory)
 		, m_ShadowFactory(shadowFactory)
 	{
 	}
@@ -619,6 +622,14 @@ namespace Paralax {
 		entry.Blend = material->Alpha == AlphaMode::Blend;
 		entry.AlphaMask = material->Alpha == AlphaMode::Mask;
 		entry.DoubleSided = material->DoubleSided;
+		// Color metadata does not constrain authored values. Preserve out-of-range and HDR materials through
+		// the Forward oracle instead of letting compact normalized/half attachments silently clip them.
+		entry.CompactSurface = true;
+		for (int channel = 0; channel < 3; ++channel)
+			entry.CompactSurface &= std::isfinite(constants.BaseColorFactor[channel]) && constants.BaseColorFactor[channel] >= 0.0f && constants.BaseColorFactor[channel] <= 1.0f &&
+									std::isfinite(constants.EmissiveFactor[channel]) && std::abs(constants.EmissiveFactor[channel]) <= 65504.0f;
+		for (uint32_t slot : {0u, 3u, 4u})
+			entry.CompactSurface &= bound[slot]->getDesc().format != nvrhi::Format::RGBA32_FLOAT;
 		return &entry;
 	}
 
@@ -641,6 +652,7 @@ namespace Paralax {
 				continue;
 
 			const glm::mat4 world = scene.GetWorldTransform(entity);
+			uint32_t ordinal = 0;
 			for (const Submesh& submesh : mesh->Submeshes)
 			{
 				const glm::mat4 submeshWorld = world * submesh.Transform;
@@ -654,6 +666,8 @@ namespace Paralax {
 				MaterialEntry* material = GetMaterial(materialHandle);
 
 				DrawItem item;
+				item.EntityID = static_cast<uint64_t>(entity.GetUUID());
+				item.SubmeshOrdinal = ordinal++;
 				item.Mesh = gpuMesh;
 				item.IndexOffset = submesh.IndexOffset;
 				item.IndexCount = submesh.IndexCount;
@@ -663,6 +677,7 @@ namespace Paralax {
 				item.Blend = material->Blend;
 				item.DoubleSided = material->DoubleSided;
 				item.AlphaMask = material->AlphaMask;
+				item.CompactSurface = material->CompactSurface;
 				item.CastShadows = component.CastShadows && !material->Blend;
 				item.ViewDepth = -(camera.View * glm::vec4(worldBounds.IsValid() ? worldBounds.GetCenter() : glm::vec3(submeshWorld[3]), 1.0f)).z;
 
@@ -988,6 +1003,62 @@ namespace Paralax {
 			}
 	}
 
+	bool SceneRenderer::PrepareVisibilityDraws()
+	{
+		std::vector<DrawItem*> ordered;
+		for (DrawItem& draw : m_Draws)
+			if (draw.Visible && !draw.Blend)
+				ordered.push_back(&draw);
+		std::sort(ordered.begin(), ordered.end(), [](const DrawItem* a, const DrawItem* b) {
+			return a->EntityID != b->EntityID ? a->EntityID < b->EntityID : a->SubmeshOrdinal < b->SubmeshOrdinal;
+		});
+		uint64_t triangles = 0;
+		for (DrawItem* draw : ordered)
+		{
+			if (draw->IndexCount % 3 != 0 || uint64_t(draw->IndexOffset) + draw->IndexCount > draw->Mesh->IndexBuffer->getDesc().byteSize / sizeof(uint32_t) ||
+				!VisibilitySurfaces::FitsTriangleIDs(triangles, draw->IndexCount / 3))
+			{
+				m_Stats.PathFallbackReason = "triangle identifier or index capacity exceeded";
+				m_Visibility.EndPreparation(false);
+				return false;
+			}
+			draw->TriangleBase = static_cast<uint32_t>(triangles);
+			triangles += draw->IndexCount / 3;
+			if (!m_Visibility.PrepareMesh(*draw->Mesh))
+			{
+				m_Stats.PathFallbackReason = m_Visibility.GetFallbackReason();
+				m_Visibility.EndPreparation(false);
+				return false;
+			}
+		}
+		m_Visibility.EndPreparation(true);
+		m_Stats.PathFallbackReason.clear();
+		return true;
+	}
+
+	void SceneRenderer::RenderVisibilityOpaque()
+	{
+		m_Visibility.Clear(m_CommandList);
+		for (bool resolve : {false, true})
+			for (const DrawItem& draw : m_Draws)
+			{
+				if (!draw.Visible || draw.Blend)
+					continue;
+				nvrhi::GraphicsState state;
+				state.pipeline = resolve ? m_Visibility.GetResolvePipeline() : m_Visibility.GetPipeline(draw.DoubleSided, draw.Mirrored);
+				state.framebuffer = resolve ? m_Deferred.GetFramebuffer() : m_Visibility.GetFramebuffer();
+				state.bindings = {m_ViewBindings, draw.Material, m_ProbeGI.GetBindings(), m_Visibility.GetBindings(*draw.Mesh, resolve)};
+				state.viewport.addViewportAndScissorRect(nvrhi::Viewport(float(m_Width), float(m_Height)));
+				m_CommandList->setGraphicsState(state);
+				GPU::DrawConstants constants = MakeDrawConstants(draw.World);
+				constants.Geometry = {draw.IndexOffset, draw.VertexOffset, draw.TriangleBase, draw.IndexCount / 3 | (draw.Mirrored && !draw.DoubleSided ? 0x80000000u : 0u)};
+				m_CommandList->setPushConstants(&constants, sizeof(constants));
+				m_CommandList->draw(nvrhi::DrawArguments().setVertexCount(resolve ? 3 : draw.IndexCount));
+				++m_Stats.DrawCalls;
+				m_Stats.VisibilityResolveDrawCalls += resolve ? 1 : 0;
+			}
+	}
+
 	void SceneRenderer::RenderForward(const GPU::ViewConstants& view)
 	{
 		m_CommandList->clearTextureFloat(m_HDRTarget, nvrhi::AllSubresources, nvrhi::Color(0.0f, 0.0f, 0.0f, 1.0f));
@@ -1005,7 +1076,9 @@ namespace Paralax {
 								 : draw.DoubleSided ? m_OpaqueDoubleSidedPipeline
 								 : draw.Mirrored    ? m_OpaqueMirroredPipeline
 													: m_OpaquePipeline;
-				state.framebuffer = m_HDRFramebuffer;
+				if (!blendPass && m_Stats.EffectivePath != RenderPath::Forward)
+					state.pipeline = m_Deferred.GetMaterialPipeline(draw.DoubleSided, draw.Mirrored);
+				state.framebuffer = !blendPass && m_Stats.EffectivePath != RenderPath::Forward ? m_Deferred.GetFramebuffer() : m_HDRFramebuffer.Get();
 				state.bindings = {m_ViewBindings, draw.Material, m_ProbeGI.GetBindings()};
 				state.vertexBuffers = {nvrhi::VertexBufferBinding().setBuffer(draw.Mesh->VertexBuffer)};
 				state.indexBuffer = nvrhi::IndexBufferBinding().setBuffer(draw.Mesh->IndexBuffer).setFormat(nvrhi::Format::R32_UINT);
@@ -1019,7 +1092,18 @@ namespace Paralax {
 			}
 		};
 
-		drawItems(false);
+		if (m_Stats.EffectivePath != RenderPath::Forward)
+			m_Deferred.ClearCoverage(m_CommandList);
+		if (m_Stats.EffectivePath == RenderPath::Visibility)
+			RenderVisibilityOpaque();
+		else
+			drawItems(false);
+		if (m_Stats.EffectivePath != RenderPath::Forward)
+		{
+			m_Deferred.Resolve(m_CommandList, m_ViewBindings, m_ProbeGI.GetBindings());
+			++m_Stats.DrawCalls;
+			++m_Stats.SurfaceResolveDrawCalls;
+		}
 
 		// Raw lighting diagnostics describe surfaces; preserve the sky in the original material debug views.
 		if (view.DebugView < static_cast<uint32_t>(RenderDebugView::DirectDiffuse))
@@ -1086,8 +1170,39 @@ namespace Paralax {
 		m_Stats = SceneRenderStats();
 		m_FrameIndex++;
 		EnsureTargets(outputInfo.width, outputInfo.height);
+		const uint64_t surfaceGeneration = m_Deferred.GetGeneration();
+		const uint64_t visibilityGeneration = m_Visibility.GetGeneration();
+		m_Stats.RequestedPath = m_Settings.Path;
+		const bool requestedSurface = m_Settings.Path == RenderPath::Deferred || m_Settings.Path == RenderPath::Visibility;
+		const bool deferred = m_Deferred.Prepare(requestedSurface, m_HDRTarget, m_DepthTarget, m_InputLayout, m_ViewLayout, m_MaterialLayout, m_ProbeGI.GetLayout());
+		const bool visibility = m_Visibility.Prepare(deferred && m_Settings.Path == RenderPath::Visibility, m_DepthTarget, m_Deferred.GetFramebuffer(), m_ViewLayout, m_MaterialLayout, m_ProbeGI.GetLayout());
+		m_Stats.EffectivePath = visibility ? RenderPath::Visibility : deferred && m_Settings.Path == RenderPath::Deferred ? RenderPath::Deferred
+																														  : RenderPath::Forward;
+		m_Stats.PathFallbackReason = !requestedSurface && m_Settings.Path != RenderPath::Forward ? "invalid render path" : !deferred && requestedSurface ? m_Deferred.GetFallbackReason()
+																																						 : m_Visibility.GetFallbackReason();
 
 		m_CommandList->open();
+		// Mesh uploads and portable resolve descriptors must precede any static lighting generation too.
+		CollectDraws(scene, camera);
+		const bool incompatibleMaterial = requestedSurface && std::any_of(m_Draws.begin(), m_Draws.end(), [](const DrawItem& draw) { return draw.Visible && !draw.Blend && !draw.CompactSurface; });
+		if (incompatibleMaterial)
+		{
+			m_Stats.EffectivePath = RenderPath::Forward;
+			m_Stats.PathFallbackReason = "material exceeds compact surface range";
+			if (!m_ReportedSurfaceRange)
+				PX_CORE_WARN("Material exceeds compact surface range; using Forward to preserve authored values");
+		}
+		m_ReportedSurfaceRange = incompatibleMaterial;
+		if (visibility && incompatibleMaterial)
+			m_Visibility.EndPreparation(false);
+		if (visibility && !incompatibleMaterial && !PrepareVisibilityDraws())
+			m_Stats.EffectivePath = RenderPath::Forward;
+		m_StaticLightingDirty |= surfaceGeneration != m_Deferred.GetGeneration() || visibilityGeneration != m_Visibility.GetGeneration();
+		m_Stats.SurfaceOwnedBytes = m_Deferred.GetOwnedBytes();
+		m_Stats.SurfaceAllocationAttempts = m_Deferred.GetAllocationAttempts();
+		m_Stats.VisibilityOwnedBytes = m_Visibility.GetOwnedBytes();
+		m_Stats.VisibilityGeometryBytes = m_Visibility.GetGeometryBytes();
+		m_Stats.VisibilityAllocationAttempts = m_Visibility.GetAllocationAttempts();
 
 		if (m_StaticLightingDirty)
 		{
@@ -1127,7 +1242,6 @@ namespace Paralax {
 			m_CommandList->writeBuffer(m_LocalShadowBuffer, m_LocalShadowSlots.data(), m_LocalShadowSlots.size() * sizeof(GPU::LocalShadowSlot));
 
 		UpdateEnvironment(scene, hasSun ? sunDirection : glm::vec3(0.0f), sunColor);
-		CollectDraws(scene, camera);
 
 		GPU::ViewConstants view{};
 		view.View = camera.View;
