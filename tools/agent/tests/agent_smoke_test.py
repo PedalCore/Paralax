@@ -220,12 +220,27 @@ def exercise_mcp(info_file: Path, output: Path) -> None:
     check(bridge.returncode == 0, f"bridge exited with {bridge.returncode}")
 
 
+def check_unwritable_info_file(executable: Path, directory: Path) -> None:
+    """An editor that cannot write its agent connection file, which holds the token, closes at once with exit code 1
+    rather than leave a launcher waiting for the file until it gives up."""
+    blocker = directory / "NotADirectory"
+    blocker.write_text("a file, so nothing can be created inside it", encoding="utf-8")
+    info = blocker / "AgentServer.json"
+    # Were the failure ignored, the editor would run all its frames and exit with 0.
+    result = subprocess.run([str(executable), "--headless", "--frames", "600", "--agent-port", "0", "--agent-info", str(info)],
+                            cwd=directory, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=240)
+    log = result.stdout + result.stderr
+    check(result.returncode == 1, f"expected exit code 1 without a connection file, got {result.returncode}: {log[-2000:]}")
+    check("agent connection file" in log and "closing the editor" in log, f"the editor did not say why it closed: {log[-2000:]}")
+    check(not info.exists(), "a connection file appeared where none can be written")
+
+
 def main() -> int:
     # Absolute, because the editor runs in the output directory (where its log goes) and takes these paths there.
     executable, output = Path(sys.argv[1]).absolute(), Path(sys.argv[2]).absolute()
     output.mkdir(parents=True, exist_ok=True)
     # Each editor session runs in a directory of its own, so the second does not truncate the first's Logs/Editor.log.
-    sessions = {name: output / name for name in ("RpcSession", "ProjectSession")}
+    sessions = {name: output / name for name in ("RpcSession", "InfoFileSession", "ProjectSession")}
     for directory in sessions.values():
         directory.mkdir(exist_ok=True)
     editor = None
@@ -244,6 +259,8 @@ def main() -> int:
     # With --validation a Vulkan validation error fails the run (exit code 3, unless an earlier failure already set a
     # code), so 0 also means there were none.
     check(code == 0, f"editor exited with code {code}")
+
+    check_unwritable_info_file(executable, sessions["InfoFileSession"])
 
     project = output / "Project"
     shutil.rmtree(project, ignore_errors=True)

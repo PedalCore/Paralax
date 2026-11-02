@@ -64,10 +64,8 @@ namespace Paralax {
 				// installed: the network threads log, and sink changes must not race them (see Log).
 				if (!m_Server->Run())
 				{
-					// An agent asked for control and cannot get it: fail the launch rather than leave it waiting.
 					PX_CORE_ERROR("The agent server could not start; closing the editor");
-					Application::Get().SetExitCode(1);
-					Application::Get().Close();
+					FailLaunch();
 					return;
 				}
 				{
@@ -90,7 +88,8 @@ namespace Paralax {
 				std::filesystem::permissions(m_InfoFile, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write, error);
 				if (error)
 				{
-					PX_CORE_ERROR("Could not restrict access to the agent connection file '{}': {}", ToUtf8(m_InfoFile), error.message());
+					PX_CORE_ERROR("Could not restrict access to the agent connection file '{}': {}; closing the editor", ToUtf8(m_InfoFile), error.message());
+					FailLaunch();
 					return;
 				}
 				std::ofstream file(m_InfoFile, std::ios::trunc);
@@ -98,7 +97,8 @@ namespace Paralax {
 				file.close();
 				if (!file)
 				{
-					PX_CORE_ERROR("Could not write the agent connection file '{}'", ToUtf8(m_InfoFile));
+					PX_CORE_ERROR("Could not write the agent connection file '{}'; closing the editor", ToUtf8(m_InfoFile));
+					FailLaunch();
 					return;
 				}
 				PX_CORE_INFO("Agent connection details written to '{}'", ToUtf8(m_InfoFile));
@@ -123,6 +123,15 @@ namespace Paralax {
 			}
 
 		private:
+			// An agent asked for control and cannot get it, without a server or without the connection file (which
+			// holds the token no agent can connect without): fail the launch rather than leave a launcher waiting for
+			// the file until it gives up. The editor closes at the end of the frame, with exit code 1.
+			static void FailLaunch()
+			{
+				Application::Get().SetExitCode(1);
+				Application::Get().Close();
+			}
+
 			Editor::EditorContext& m_Context;
 			Scope<Editor::AgentServer> m_Server;
 			std::shared_ptr<AgentServerWake> m_Wake;

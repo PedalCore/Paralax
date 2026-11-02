@@ -32,8 +32,10 @@ with EditorSession.launch("build/release/bin/Paralax-Editor", ["--headless", "--
 ```
 
 **Raw JSON-RPC 2.0**: `Paralax-Editor --agent-port 0` listens on 127.0.0.1 and writes the port and a token to
-`<project>/.paralax/AgentServer.json` (owner-readable only). Send one JSON object per line; the first request must be
-`session.authenticate` with the token. `editor.quit` closes the editor.
+`<project>/.paralax/AgentServer.json` (owner-readable only), or to the file `--agent-info` names. An editor that
+cannot start the server or write that file exits at once with code 1, so a launcher waiting for the file can stop
+waiting when the process ends. Send one JSON object per line; the first request must be `session.authenticate` with
+the token. `editor.quit` closes the editor.
 
 `--headless` needs no display. A headless editor mixes audio silently, and its play mode behaves exactly like a
 windowed one.
