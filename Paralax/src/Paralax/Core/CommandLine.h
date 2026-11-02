@@ -63,9 +63,11 @@ namespace Paralax {
 	// which Windows derives from the UTF-16 one with best-fit mapping. Characters the code page lacks become '?' or
 	// look-alikes, and some look-alikes are quotes or backslashes (U+FF02 becomes '"'), so a crafted file name could
 	// split into other arguments, options included. The UTF-16 command line is split instead, by
-	// SplitWindowsCommandLine. Only if Windows cannot provide it is argv used, converted from the code page (so the
-	// characters it can represent survive), with a warning logged. On POSIX argv is returned unchanged: its bytes are
-	// the file names, whatever their encoding, and FromUtf8 passes them through.
+	// SplitWindowsCommandLine. If it is empty (a launcher may give none), the program's own path is the only argument,
+	// as the C runtime's argv[0] is then. Only if Windows gives no command line at all, which it does not document as
+	// possible, is argv used, converted from the code page (so the characters it can represent survive), with a warning
+	// logged. On POSIX argv is returned unchanged: its bytes are the file names, whatever their encoding, and FromUtf8
+	// passes them through.
 	//
 	// Never throws (other than std::bad_alloc). Main thread only, called once at startup by the entry point, after
 	// Log::Init so the warning can be reported.
@@ -79,17 +81,19 @@ namespace Paralax {
 	// UTF-8 (an unpaired surrogate becomes U+FFFD). It follows the Universal C Runtime's parse_command_line, which
 	// builds argv for every MSVC program since Visual Studio 2015, so the arguments are the ones the C runtime would
 	// give a program whose code page could represent them, and the ones the tools that start programs quote for
-	// (CMake, Python, cmd). CommandLineToArgvW is not used: it differs from the C runtime on "" inside quotes.
+	// (CMake, Python, libuv). CommandLineToArgvW is not used: it differs from the C runtime on "" inside quotes.
 	//   - Program path: '"' toggles quoting and is dropped; everything else, '\' included, is literal. It ends at a
-	//     space or tab outside quotes. (A leading space therefore gives an empty program path.)
+	//     space or tab outside quotes. (A leading space or tab therefore gives an empty program path.)
 	//   - Other arguments are separated by runs of spaces and tabs (only those) outside quotes.
-	//   - 2n backslashes then '"': n backslashes, and the quote toggles quoting.
 	//   - 2n+1 backslashes then '"': n backslashes and a literal '"'.
+	//   - 2n backslashes (none included) then '"': n backslashes, and the quote toggles quoting, except that inside
+	//     quotes "" is a literal '"' and quoting continues (the rule since Visual Studio 2008).
 	//   - Backslashes not followed by '"' are literal.
-	//   - Inside quotes, "" is a literal '"' and quoting continues (the rule since Visual Studio 2008).
-	//   - The line ends at its end or at a NUL. Trailing spaces add no argument; "" (or a lone '"') is an empty one.
-	// An empty command line gives one empty program path. Pure; safe to call from any thread. Public so every platform
-	// tests it; only Windows uses it.
+	//   - The line ends at its end or at a NUL. Trailing spaces add no argument; "", or a lone '"' at the end of the
+	//     line, is an empty one.
+	// An empty command line gives one empty program path (GetProcessArguments substitutes the program's own path, as
+	// the C runtime does). Never fails; throws only std::bad_alloc. Pure; safe to call from any thread. Public so
+	// every platform tests it; only Windows uses it.
 	std::vector<std::string> SplitWindowsCommandLine(std::u16string_view commandLine);
 
 }
