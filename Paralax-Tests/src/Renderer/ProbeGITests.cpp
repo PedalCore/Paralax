@@ -716,7 +716,9 @@ TEST_CASE("ProbeGI: initialization and recording preconditions are verified in e
 	CHECK_THROWS_AS(ProbeGI(nullptr, {}), Testing::AssertionFailedError);
 	if (!Testing::RequireTestGraphicsDevice())
 		return;
-	auto* device = Testing::GetTestGraphicsDevice()->GetDevice();
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	auto* device = graphics.GetDevice();
 	ProbeGI gi(device, Testing::GetTestGraphicsDevice()->GetInfo().Limits);
 	CHECK_THROWS_AS(gi.Initialize(nullptr), Testing::AssertionFailedError);
 	CHECK_THROWS_AS(gi.Disable(nullptr), Testing::AssertionFailedError);
@@ -731,6 +733,8 @@ TEST_CASE("ProbeGI: initialization and recording preconditions are verified in e
 	CHECK_THROWS_AS(fixture.GI.Disable(nullptr), Testing::AssertionFailedError);
 	fixture.Commands->close();
 	device->executeCommandList(fixture.Commands);
+	device->waitForIdle();
+	CHECK(graphics.GetValidationErrorCount() == errors);
 }
 
 TEST_CASE("ProbeGI: restricted adapter limits reject unsupported work before validation")
@@ -1390,6 +1394,15 @@ TEST_CASE("ProbeGI: small double-sided sheets shade both sides without invalidat
 	material->Handle = AssetHandle(61235);
 	material->DoubleSided = true;
 	material->EmissiveFactor = {2, 0, 0};
+	bool sunlight = false;
+	SUBCASE("emission on both sides") {}
+	SUBCASE("back face lit from below")
+	{
+		sunlight = true;
+		material->EmissiveFactor = glm::vec3(0.0f);
+		material->BaseColorFactor = glm::vec4(1.0f);
+		material->MetallicFactor = 0.0f;
+	}
 	assets.AddMemoryAsset(material);
 	Scene scene;
 	Entity sheet = scene.CreateEntity("Two sided sheet");
@@ -1399,7 +1412,13 @@ TEST_CASE("ProbeGI: small double-sided sheets shade both sides without invalidat
 	mesh.Materials = {material->Handle};
 	ProbeFixture fixture(graphics.GetDevice());
 	fixture.Specification.RaysPerProbe = 256;
+	fixture.Specification.BounceFeedback = false;
 	fixture.ViewData.EnvironmentParams.x = 0;
+	if (sunlight)
+	{
+		fixture.ViewData.SunDirection = {0, 1, 0, 1};
+		fixture.ViewData.SunColor = {6, 0, 0, 1};
+	}
 	REQUIRE(fixture.Update(scene, assets));
 	for (uint32_t probe = 0; probe < 8; ++probe)
 	{
@@ -1411,7 +1430,11 @@ TEST_CASE("ProbeGI: small double-sided sheets shade both sides without invalidat
 			CHECK(pixel.a == 1.0f);
 			CHECK(pixel.g == 0.0f);
 		}
-		CHECK(red > 0.1f);
+		// Grid Y is bit 1. Only the underside faces this sun: emission alone would not test either normal flip.
+		if (sunlight && (probe & 2u))
+			CHECK(red == 0.0f);
+		else
+			CHECK(red > 0.1f);
 	}
 	CHECK(graphics.GetValidationErrorCount() == errors);
 }

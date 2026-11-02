@@ -255,6 +255,33 @@ TEST_CASE("SceneSerializer: names and tags longer than the registry allows are s
 	CHECK(scene.GetEntityByUUID(UUID(2)).GetComponent<TagComponent>().Tag == std::string(256, 't'));
 }
 
+TEST_CASE("SceneSerializer: a Version that would wrap into range, a negative one and a float are refused as written")
+{
+	// 4294967297 and -4294967295 read as 1 through get<int>(), which keeps only the low 32 bits.
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("SceneHostileVersions");
+	Paralax::Testing::ScopedLogCapture log;
+	for (const char* version : {"4294967297", "-4294967295", "-1", "1.5"})
+	{
+		const std::string shownVersion = version; // doctest shows a const char* as its address.
+		CAPTURE(shownVersion);
+		const std::string expected = fmt::format("version: expected 1-{}, got {} (number)", SceneSerializer::CurrentVersion, version);
+		for (const char* type : {"Scene", "Prefab"})
+		{
+			const std::string shownType = type; // doctest shows a const char* as its address.
+			CAPTURE(shownType);
+			const std::string text = fmt::format(R"({{"Paralax": {{"Type": "{}", "Version": {}}}, "Entities": [{{"ID": "1", "Parent": "0"}}]}})", type, version);
+			Scene scene;
+			std::string error;
+			CHECK_NOTHROW(CHECK_FALSE(SceneSerializer::Deserialize(scene, json::parse(text), error, nullptr, type)));
+			CHECK(scene.GetEntityCount() == 0);
+			CHECK(error.find(expected) != std::string::npos);
+		}
+		REQUIRE(WriteFileAtomically(directory / "Hostile.pxscene", fmt::format(R"({{"Paralax": {{"Type": "Scene", "Version": {}}}, "Entities": []}})", version)));
+		CHECK(SceneSerializer::LoadFromFile(directory / "Hostile.pxscene") == nullptr);
+		CHECK(log.Contains(spdlog::level::err, "Unsupported scene " + expected));
+	}
+}
+
 TEST_CASE("SceneSerializer: wrongly typed headers are rejected without throwing")
 {
 	for (const json& header : {json{{"Type", 5}, {"Version", 1}}, json{{"Type", "Scene"}, {"Version", "1"}}, json{{"Type", nullptr}}})

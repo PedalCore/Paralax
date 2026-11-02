@@ -269,4 +269,35 @@ namespace Paralax {
 		return false;
 	}
 
+	std::optional<int> ReadDocumentVersion(const nlohmann::json& header, int currentVersion, std::string& outDescription)
+	{
+		PX_CORE_ASSERT(currentVersion >= 1, "A reader supports at least version 1");
+		// Where the assert is compiled out, a range that is empty stays empty, rather than converting to a huge one.
+		const uint64_t newest = currentVersion > 0 ? static_cast<uint64_t>(currentVersion) : 0;
+		outDescription.clear();
+		if (!header.is_object() || !header.contains("Version"))
+		{
+			outDescription = "none";
+			return std::nullopt;
+		}
+		const nlohmann::json& value = header["Version"];
+		// Parsed non-negative integers are unsigned and negative ones signed (a document built in memory may hold
+		// either); get<int>() would truncate both, reading 4294967297 as 1.
+		if (value.is_number_unsigned())
+		{
+			const uint64_t version = value.get<uint64_t>();
+			if (version >= 1 && version <= newest)
+				return static_cast<int>(version);
+		}
+		else if (value.is_number_integer())
+		{
+			const int64_t version = value.get<int64_t>();
+			if (version >= 1 && static_cast<uint64_t>(version) <= newest)
+				return static_cast<int>(version);
+		}
+		// At most 20 digits and a sign, an integer is always shown in full; anything else is bounded.
+		outDescription = DescribeJsonValue(value);
+		return std::nullopt;
+	}
+
 }

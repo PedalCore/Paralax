@@ -112,10 +112,10 @@ namespace Paralax {
 			PX_CORE_ERROR("'{}' is not a Paralax project", ToUtf8(file));
 			return nullptr;
 		}
-		const int version = header->contains("Version") && (*header)["Version"].is_number_integer() ? (*header)["Version"].get<int>() : 0;
-		if (version < 1 || version > CurrentVersion)
+		std::string foundVersion;
+		if (!ReadDocumentVersion(*header, CurrentVersion, foundVersion))
 		{
-			PX_CORE_ERROR("Unsupported project version {} in '{}'", version, ToUtf8(file));
+			PX_CORE_ERROR("Unsupported project version in '{}': expected 1-{}, got {}", ToUtf8(file), CurrentVersion, foundVersion);
 			return nullptr;
 		}
 

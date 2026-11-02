@@ -152,7 +152,8 @@ editor.call("render.settings.set", settings={"DebugView": "Lit"})
 
 `render.settings.get` reports the active controls. Rays per probe range from 32 to 256, probes updated per rendered
 frame from 1 to 1728, and hysteresis from 0 to 0.99. Higher ray counts reduce noise at greater tracing cost;
-higher hysteresis smooths noise but delays changes. `GINormalBias` is a normal offset in metres (default0.05, range0–0.05). `GIViewBias` is a fraction of probe spacing (default0.20, range0–0.5), with its view component limited to half the available camera/probe distance. The independent normal offset is not part of that clamp. `Indirect` (also named `IndirectDiffuse`) shows the exact composited diffuse GI term, including surface colour,
+higher hysteresis smooths noise but delays changes. Receiver bias controls are described below.
+`Indirect` (also named `IndirectDiffuse`) shows the exact composited diffuse GI term, including surface colour,
 Fresnel/metallic diffuse response and material occlusion. `GICoverage` shows where a volume replaces environment
 diffuse; coverage does not certify validity or lighting quality. `DirectDiffuse`, `DirectSpecular`,
 `EnvironmentDiffuse`, `EnvironmentSpecular` and `Emissive` isolate the other terms. These views and GI diagnostics
@@ -199,9 +200,10 @@ at traced hits, retaining first-bounce direct, emissive and environment lighting
 after changing feedback. `GIShowProbes` overlays probe centres after tone mapping: green valid, red inactive,
 yellow selected. These are x-ray markers, including probes behind walls, and never modify scene depth.
 
-GI receiver bias uses two explicit units: `GINormalBias` is in metres; `GIViewBias` is a **fraction of probe
-spacing** (default 0.20, range 0–0.5). The view bias is capped at half the receiver-to-camera distance in a
-perspective view, or half the known traced segment for probe-hit feedback. Orthographic views use parallel
+GI receiver bias uses two explicit units: `GINormalBias` is in metres (default 0.05, range 0–0.05);
+`GIViewBias` is a **fraction of probe spacing** (default 0.20, range 0–0.5). The view bias is capped at half the receiver-to-camera distance in a
+perspective view, or half the known traced segment for probe-hit feedback. The independent normal offset is not
+part of that clamp. Orthographic views use parallel
 rays with an origin at infinity, so no finite-distance cap applies. Distance moments use 32×32 tiles with
 30×30 interiors, separately from 8×8 irradiance tiles; the angular filter follows the distance resolution.
 The distance atlas pair consumes 54 MiB at the 1728-probe limit (15.75 MiB for 504 probes), in addition to
@@ -215,8 +217,9 @@ variance, trilinear/facing/visibility weights, raw and normalized weight, and di
 is insufficient: reconstruction normally divides by visible support, but a black prior limits amplification
 below 5% mean visibility or 0.01% eligible cell support. These dimensionless thresholds prevent all-occluded
 probes leaking full brightness and keep vanishing support continuous; they are not additional ambient light. Outside
-coverage, zero directions, uninitialized GI and unpaused play are errors. Reset, step and capture also reject
-unpaused play; `render.gi.state` is always read-only.
+coverage, zero directions, uninitialized GI and unpaused play are errors. Reset, step and captures with positive
+`giWarmupFrames` also reject unpaused play. Ordinary captures, including explicit zero warmup, work during play;
+`render.gi.state` is always read-only.
 Omit `viewDistance` for an unbounded view ray; otherwise supply a finite value in [0,1000000] to reproduce the perspective clamp. This query does not infer a camera distance from the unit view vector.
 Each neighbour reports `distanceSupportMass`, `distanceExpectedMass` (the analytic angular-filter integral), and `distanceConfidence` (their ratio clamped to 0–1). Distance moments and mass are blended together through history and bilinear reconstruction; normalization happens at lookup. Confidence weights eligible neighbour support before visibility normalization, so lack of sampling confidence is distinct from confirmed occlusion. Zero mass invalidates that neighbour.
 Each neighbour also includes `surfaceRay` and `biasedRay`: the production BVH tracer tests the segment
@@ -280,6 +283,22 @@ is not required. Software Vulkan tests establish correctness, not hardware frame
   page. (The last folder of `--new-project` names the project, so it must be 1 to 64 characters, each an ASCII letter
   or digit, a space, `_` or `-`; the folders above it may use anything.)
 - Commands that edit the scene are undoable, and they are rolled back if they fail partway.
+- The asset registry, `Assets/AssetRegistry.json`, lists every imported file under its handle. Commands that register
+  a file (`asset.import`, `material.create`, `script.create`, `prefab.create`, `model.create_prefab`,
+  `project.set_start_scene`, a scene's first `scene.save`) save it, but never over a file that has changed on disk
+  since the editor read or last wrote it (a version-control checkout or merge, another editor), nor over one it could
+  not read: malformed (merge-conflict markers, say) or of a newer `Version` than this build reads. A registry with
+  entries the editor had to skip (an asset type it does not know, a path outside `Assets/`, a broken parent) is
+  read-only too, since saving would drop them for good; the editor warns once with their count. Such a command fails
+  (a `scene.save` still writes the scene, and says under `warnings` that it is not registered), the file is left as
+  it is, and the log says why (`console.get`). `asset.list` shows both cases beforehand: `readOnly` (the file could
+  not be read, or had entries skipped, which `skipped` counts) and `changedOnDisk` (the file is not the one the editor
+  last read or wrote; null if it cannot be read). Once the file is as it should be, `asset.reload_registry` reads it
+  again (not while playing). A loaded asset whose entry the file dropped, or gave another type, file or parent, is
+  unloaded, and its next use loads what the entry now names; the rest stay loaded. The result counts the `assets`
+  registered and the entries `skipped`, and `readOnly` stays true while any are. Then the next command saves. A
+  reload of a file that still cannot be read fails and leaves nothing registered until one succeeds. A hand-edited
+  registry may list one file under several handles: all are kept, and a path names the lowest.
 
 ## Command reference
 
@@ -343,8 +362,16 @@ editor's commands, names and parameters both, so an entry cannot go missing or s
 ### Assets, materials and prefabs
 
 - `asset.list`: the project's registered assets, each `{ handle, type, path, parent }` (a model's sub-assets name it
-  as their `parent`), and the built-in ones, each `{ handle, type, name }`: `{ assets, builtins }`.
+  as their `parent`), and the built-in ones, each `{ handle, type, name }`, with whether commands that register files
+  would be refused and why (see the asset registry above): `{ assets, builtins, readOnly, skipped, changedOnDisk }`.
+  `readOnly` means the file could not be read or had entries skipped, which `skipped` counts; `changedOnDisk` means
+  it is not the file the editor last read or wrote (null if it cannot be read).
 - `asset.import { path: string }`: registers a file inside `Assets/` (relative to it, or absolute): `{ handle }`.
+- `asset.reload_registry`: reads `Assets/AssetRegistry.json` again, replacing the registry in memory, after a
+  checkout or merge changed it or once a file that could not be read, or had entries skipped, is fixed (see the
+  asset registry above): `{ assets, skipped, readOnly, warnings? }`, the numbers of entries registered and skipped,
+  and whether saves stay refused because some were. Assets whose entries it dropped or changed are unloaded. It is
+  refused while playing, and fails if the file cannot be read.
 - `material.create { path: string, fields?: object }`: writes a new `.pxmat` (failing if the file exists) with these
   fields, as in `{"BaseColor": [1, 0, 0, 1], "Roughness": 0.4}`, and imports it: `{ handle }`.
 - `material.set { handle: string, fields: object }`: changes material fields; a material file is saved, while a

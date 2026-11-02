@@ -689,6 +689,40 @@ TEST_CASE("SceneRenderer: diagnostic settings round trip and reject invalid valu
 	}
 }
 
+TEST_CASE("SceneRenderer: material debug views preserve sky while lighting diagnostics leave background black")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	{
+		SceneRenderer renderer(graphics, assets);
+		REQUIRE(renderer.Initialize());
+		auto output = CreateOutput(graphics.GetDevice(), 32, 32);
+		const auto camera = CameraView::LookAt({0, 1, 4}, {0, 1, 0}, glm::radians(50.0f), 1.0f);
+		renderer.Render(scene, camera, output.Framebuffer);
+		const auto sky = ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget());
+		REQUIRE(sky.size() == 32 * 32);
+		CHECK(glm::length(sky[16 * 32 + 16]) > 0.01f);
+		for (auto mode : {RenderDebugView::Normals, RenderDebugView::BaseColor})
+		{
+			renderer.GetSettings().DebugView = mode;
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget()) == sky);
+		}
+		for (auto mode : {RenderDebugView::DirectDiffuse, RenderDebugView::IndirectDiffuse})
+		{
+			renderer.GetSettings().DebugView = mode;
+			renderer.Render(scene, camera, output.Framebuffer);
+			for (const auto& pixel : ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget()))
+				CHECK(pixel == glm::vec3(0.0f));
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
 TEST_CASE("SceneRenderer: lighting diagnostic terms sum to the linear HDR composite")
 {
 	if (!Testing::RequireTestGraphicsDevice())

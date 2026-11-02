@@ -167,9 +167,9 @@ namespace Paralax {
 		const json* header = document.contains("Paralax") ? &document["Paralax"] : nullptr;
 		if (!header || !header->is_object() || !header->contains("Type") || !(*header)["Type"].is_string() || (*header)["Type"].get_ref<const std::string&>() != expectedType)
 			return fail(fmt::format("Not a Paralax {} (missing \"Paralax\": {{ \"Type\": \"{}\" }})", kind, expectedType));
-		const int version = header->contains("Version") && (*header)["Version"].is_number_integer() ? (*header)["Version"].get<int>() : 0;
-		if (version < 1 || version > CurrentVersion)
-			return fail(fmt::format("Unsupported {} version {} (this build reads 1-{})", kind, version, CurrentVersion));
+		std::string foundVersion;
+		if (!ReadDocumentVersion(*header, CurrentVersion, foundVersion))
+			return fail(fmt::format("Unsupported {} version: expected 1-{}, got {}", kind, CurrentVersion, foundVersion));
 
 		if (document.contains("Name") && document["Name"].is_string())
 			scene.SetName(document["Name"].get<std::string>());

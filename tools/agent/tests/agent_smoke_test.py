@@ -191,8 +191,10 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
         pass
     editor.call("render.settings.set", settings={"GIFreeze": True})
     editor.call("play.start", paused=False)
+    editor.call("render.capture", path=str(second), width=64, height=64)
+    editor.call("render.capture", path=str(second), width=64, height=64, giWarmupFrames=0)
     for method, params in [("render.gi.reset", {}), ("render.gi.step", {"frames": 1}),
-                           ("render.capture", {"path": str(second), "width": 64, "height": 64}),
+                           ("render.capture", {"path": str(second), "width": 64, "height": 64, "giWarmupFrames": 1}),
                            ("render.gi.inspect", {"position": [0, 1, 0], "normal": [0, 1, 0], "view": [0, 0, 1]})]:
         try:
             editor.call(method, params)

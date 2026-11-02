@@ -3,6 +3,7 @@
 #include <nlohmann/json_fwd.hpp>
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -79,5 +80,14 @@ namespace Paralax {
 	// neither the value's size nor its depth matters (depth is capped where documents are read, but not for values
 	// built in code). Never throws. Pure; safe to call from any thread, provided no other thread modifies the value.
 	std::string DescribeJsonValue(const nlohmann::json& value);
+
+	// Reads the "Version" of a document header ({ "Type": ..., "Version": n }) for a reader of versions 1 to
+	// currentVersion (asserted to be at least 1). Returns the version, or nullopt if the header is not an object or
+	// its Version is missing, not an integer or out of range; outDescription then shows what was found, for the
+	// reader's error: the value as DescribeJsonValue shows it ("4294967297 (number)", "1.5 (number)",
+	// "\"1\" (string)", "null"; an integer always in full), or "none". The range is checked at the number's full
+	// 64-bit width, before narrowing, so no value wraps into it. Pure and never throws, so it is safe to call from
+	// any thread.
+	std::optional<int> ReadDocumentVersion(const nlohmann::json& header, int currentVersion, std::string& outDescription);
 
 }

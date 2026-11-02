@@ -342,7 +342,7 @@ namespace Paralax::Editor {
 								   return CommandResult::Fail("The scene file does not exist (save the scene first)");
 							   const AssetHandle handle = project->GetAssetManager().ImportAsset(*path);
 							   if (!handle.IsValid())
-								   return CommandResult::Fail("Could not register the scene");
+								   return CommandResult::Fail("Could not register the scene (see the log for details: console.get)");
 							   project->SetStartScene(handle);
 							   if (!project->Save())
 								   return CommandResult::Fail("Could not save the project file");

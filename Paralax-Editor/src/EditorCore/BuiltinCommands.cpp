@@ -421,7 +421,7 @@ namespace Paralax::Editor {
 						   }});
 
 		// --- Assets ----------------------------------------------------------------------------------
-		registry.Register({"asset.list", "Lists registered assets (handle, type, path, parent) and the built-in assets.", {}, false, [](EditorContext& context, const json&) {
+		registry.Register({"asset.list", "Lists registered assets (handle, type, path, parent) and the built-in assets, and why commands that register files may be unable to save the registry: readOnly (the file could not be read, or had entries the last load skipped, which skipped counts) and changedOnDisk (the file is not the one the editor last read or wrote; null if it cannot be read). Either way, fix the file if need be and run asset.reload_registry.", {}, false, [](EditorContext& context, const json&) {
 							   json assets = json::array();
 							   for (const AssetMetadata& metadata : context.GetAssets().GetRegisteredAssets())
 							   {
@@ -430,7 +430,13 @@ namespace Paralax::Editor {
 							   json builtins = json::array();
 							   for (const BuiltinAssetInfo& info : AssetManager::GetBuiltinAssets())
 								   builtins.push_back({{"handle", IdString(AssetHandle(info.Handle))}, {"type", std::string(AssetTypeToString(info.Type))}, {"name", info.Name}});
-							   return CommandResult::Ok({{"assets", assets}, {"builtins", builtins}});
+							   // The two reasons SaveRegistry refuses besides a write failing, so an agent can tell before a command fails.
+							   const std::optional<bool> changedOnDisk = context.GetAssets().HasRegistryChangedOnDisk();
+							   return CommandResult::Ok({{"assets", assets},
+														 {"builtins", builtins},
+														 {"readOnly", context.GetAssets().IsRegistryReadOnly()},
+														 {"skipped", context.GetAssets().GetSkippedRegistryEntryCount()},
+														 {"changedOnDisk", changedOnDisk ? json(*changedOnDisk) : json(nullptr)}});
 						   }});
 
 		registry.Register({"asset.import", "Registers a file inside the project's Assets folder (path relative to Assets, or absolute).", {{"path", "string", "File to import.", true}}, false, [](EditorContext& context, const json& params) {
@@ -440,6 +446,34 @@ namespace Paralax::Editor {
 							   if (!handle.IsValid())
 								   return CommandResult::Fail("Import failed (see the log for details: console.get)");
 							   return CommandResult::Ok({{"handle", IdString(handle)}});
+						   }});
+
+		// The registry file is never saved over once it differs from what was last read or written, so a checkout or
+		// merge under a running editor survives; this is how an agent takes the new file in.
+		registry.Register({"asset.reload_registry",
+						   "Reads Assets/AssetRegistry.json from disk again, replacing the registry in memory (not while playing). Commands that register files "
+						   "(asset.import, material.create, a first scene.save, ...) refuse to save over a registry that changed on disk since it was read or last "
+						   "saved, by a version-control checkout or merge or another editor, that could not be read (malformed, or of a newer version), or that had "
+						   "entries this build skipped (readOnly in the result and in asset.list, with skipped counting them); once the file is as it should be, "
+						   "reload it with this. A loaded asset whose entry the file dropped or changed is unloaded, and its next use loads the new entry; the "
+						   "rest stay loaded. A file that cannot be read fails the reload and leaves nothing registered until a reload succeeds.",
+						   {},
+						   false,
+						   [](EditorContext& context, const json&) {
+							   if (!context.GetProject())
+								   return CommandResult::Fail("No project is open");
+							   // The running game resolves paths through the registry; it must not change under it.
+							   if (context.IsPlaying())
+								   return CommandResult::Fail("Stop play mode first (play.stop)");
+							   AssetManager& assets = context.GetAssets();
+							   if (!assets.LoadRegistry())
+								   return CommandResult::Fail("The asset registry could not be read: nothing is registered, and it is not saved over until it loads (see the log for details: console.get)");
+							   const size_t skipped = assets.GetSkippedRegistryEntryCount();
+							   json result = {{"assets", assets.GetRegisteredAssets().size()}, {"skipped", skipped}, {"readOnly", assets.IsRegistryReadOnly()}};
+							   if (skipped > 0)
+								   result["warnings"] = json::array({fmt::format("{} registry {} could not be read and {} skipped (see the log for details: console.get). Until the file is fixed and reloaded, the registry is read-only: commands that register files fail.",
+																				 skipped, skipped == 1 ? "entry" : "entries", skipped == 1 ? "was" : "were")});
+							   return CommandResult::Ok(std::move(result));
 						   }});
 
 		registry.Register({"material.create", "Creates a new .pxmat material file in the project (failing if it exists), imports it and returns its handle.", {{"path", "string", "Destination (relative to Assets), e.g. Materials/Red.pxmat.", true}, {"fields", "object", "Material fields, e.g. {\"BaseColor\": [1,0,0,1], \"Roughness\": 0.4}.", false}}, false, [](EditorContext& context, const json& params) {

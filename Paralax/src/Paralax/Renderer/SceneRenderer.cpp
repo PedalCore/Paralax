@@ -837,8 +837,8 @@ namespace Paralax {
 
 		drawItems(false);
 
-		// Diagnostic terms describe surfaces; sky pixels stay zero so they cannot be mistaken for a light term.
-		if (view.DebugView == 0)
+		// Raw lighting diagnostics describe surfaces; preserve the sky in the original material debug views.
+		if (view.DebugView < static_cast<uint32_t>(RenderDebugView::DirectDiffuse))
 		{
 			nvrhi::GraphicsState state;
 			state.pipeline = m_SkyPipeline;

@@ -390,14 +390,14 @@ namespace Paralax::Editor {
 		if (!m_Renderer)
 			return CommandResult::Fail("The renderer is not available");
 
-		if (m_Context.IsPlaying() && !m_Context.IsPaused())
-			return CommandResult::Fail("Pause play mode before capturing");
 		uint32_t warmup = 0;
 		if (params.contains("giWarmupFrames"))
 		{
 			if (params["giWarmupFrames"] < 0 || params["giWarmupFrames"] > 1024)
 				return CommandResult::Fail("giWarmupFrames must be 0..1024");
 			warmup = params["giWarmupFrames"].get<uint32_t>();
+			if (warmup > 0 && m_Context.IsPlaying() && !m_Context.IsPaused())
+				return CommandResult::Fail("Pause play mode before GI capture warmup");
 			if (warmup > 0 && (!m_Renderer->GetGIState().Available || !m_Renderer->GetSettings().GIFreeze))
 				return CommandResult::Fail("Warmup requires GIFreeze and an enabled, supported volume rendered at least once");
 		}

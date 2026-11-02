@@ -374,3 +374,80 @@ TEST_CASE("JsonText: CapMessage cuts between UTF-8 characters and takes the size
 	CHECK(CapMessage("abc", 10, 2) == "abc"); // A full size smaller than the text is the text's.
 	CHECK(CapMessage("abc", 10, 11) == "abc... (11 bytes)");
 }
+
+TEST_CASE("JsonText: ReadDocumentVersion accepts 1 to the current version, as built in memory or parsed")
+{
+	std::string found = "stale";
+	CHECK(ReadDocumentVersion({{"Version", 1}}, 1, found) == 1);
+	CHECK(found.empty());
+	CHECK(ReadDocumentVersion({{"Type", "Scene"}, {"Version", 3}}, 3, found) == 3);
+	CHECK(ReadDocumentVersion({{"Version", 2u}}, 3, found) == 2);
+	// Parsed, a non-negative integer is unsigned.
+	const nlohmann::json parsed = nlohmann::json::parse(R"({"Version": 1})");
+	REQUIRE(parsed["Version"].is_number_unsigned());
+	CHECK(ReadDocumentVersion(parsed, 1, found) == 1);
+}
+
+TEST_CASE("JsonText: ReadDocumentVersion refuses versions that would wrap into range and reports them in full")
+{
+	// Each would read as 1 through get<int>(), which keeps only the low 32 bits.
+	for (const char* number : {"4294967297", "-4294967295", "18446744069414584321", "-9223372032559808511"})
+	{
+		const std::string shownNumber = number; // doctest shows a const char* as its address.
+		CAPTURE(shownNumber);
+		const nlohmann::json header = nlohmann::json::parse(std::string(R"({"Version": )") + number + "}");
+		REQUIRE(static_cast<int>(header["Version"].get<int64_t>()) == 1);
+		std::string found;
+		CHECK_FALSE(ReadDocumentVersion(header, 1, found));
+		CHECK(found == shownNumber + " (number)"); // In full: an integer is never cut short.
+	}
+	std::string found;
+	CHECK_FALSE(ReadDocumentVersion({{"Version", int64_t(4294967297)}}, 1, found));
+	CHECK(found == "4294967297 (number)");
+	CHECK_FALSE(ReadDocumentVersion({{"Version", uint64_t(4294967297)}}, 1, found));
+	CHECK(found == "4294967297 (number)");
+	CHECK_FALSE(ReadDocumentVersion(nlohmann::json::parse(R"({"Version": 18446744073709551615})"), 1, found));
+	CHECK(found == "18446744073709551615 (number)");
+}
+
+TEST_CASE("JsonText: ReadDocumentVersion refuses out-of-range, fractional and non-numeric versions")
+{
+	auto refused = [](const nlohmann::json& header, int currentVersion) {
+		std::string found;
+		CHECK_NOTHROW(CHECK_FALSE(ReadDocumentVersion(header, currentVersion, found)));
+		return found;
+	};
+	CHECK(refused({{"Version", 0}}, 1) == "0 (number)");
+	CHECK(refused({{"Version", 2}}, 1) == "2 (number)");
+	CHECK(refused({{"Version", -1}}, 1) == "-1 (number)");
+	CHECK(refused(nlohmann::json::parse(R"({"Version": 1.5})"), 1) == "1.5 (number)");
+	CHECK(refused(nlohmann::json::parse(R"({"Version": 1.0})"), 1) == "1.0 (number)");
+	CHECK(refused({{"Version", "1"}}, 1) == "\"1\" (string)");
+	// A long value is shown only in part, with its size.
+	const std::string longText = refused({{"Version", std::string(100000, '9')}}, 1);
+	CHECK(longText.size() < MaxPreviewBytes + 40);
+	CHECK(longText.ends_with("... (string of 100000 bytes)"));
+	CHECK(refused({{"Version", nullptr}}, 1) == "null");
+	CHECK(refused({{"Version", true}}, 1) == "true (boolean)");
+	CHECK(refused({{"Version", nlohmann::json::array({1})}}, 1) == "[1] (array)");
+	CHECK(refused({{"Version", {{"Major", 1}}}}, 1) == "{\"Major\":1} (object)");
+	CHECK(refused({{"Type", "Scene"}}, 1) == "none");
+	CHECK(refused(nlohmann::json("Scene"), 1) == "none");
+	CHECK(refused(nlohmann::json(), 1) == "none");
+}
+
+TEST_CASE("JsonText: ReadDocumentVersion requires a current version of at least 1")
+{
+	std::string found;
+#if defined(PX_ENABLE_ASSERTS)
+	Paralax::Testing::ScopedAssertionCapture capture;
+	CHECK_THROWS_AS(ReadDocumentVersion({{"Version", 0}}, 0, found), Paralax::Testing::AssertionFailedError);
+	CHECK_THROWS_AS(ReadDocumentVersion({{"Version", 1}}, -1, found), Paralax::Testing::AssertionFailedError);
+#else
+	// Dist: the assert is compiled out, and no version lies in an empty range (a negative bound is not read as huge).
+	CHECK_FALSE(ReadDocumentVersion({{"Version", 0}}, 0, found));
+	CHECK_FALSE(ReadDocumentVersion({{"Version", 1}}, 0, found));
+	CHECK_FALSE(ReadDocumentVersion({{"Version", 1}}, -1, found));
+	CHECK_FALSE(ReadDocumentVersion({{"Version", uint64_t(4294967297)}}, -1, found));
+#endif
+}
