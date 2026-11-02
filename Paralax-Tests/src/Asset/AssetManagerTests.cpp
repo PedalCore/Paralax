@@ -374,40 +374,6 @@ TEST_CASE("AssetManager: an oversized registry is refused before reading, and re
 	std::filesystem::remove(directory / AssetManager::RegistryFileName);
 }
 
-TEST_CASE("AssetManager: a registry too large to load again is not saved, and the file on disk is kept")
-{
-	// A compact registry just under the cap loads; saving indents it, which takes it over the cap. Registry paths are
-	// not checked against the disk on loading, so long ones (within the system's path limits: 200-byte names, under
-	// 4096 bytes in all) keep the entry count, and the test, small.
-	const std::filesystem::path directory = MakeProject("AssetRegistryTooLargeToSave");
-	constexpr size_t entries = 24576;
-	const std::string header = R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[)";
-	const size_t entryBytes = (MaxTextFileBytes - 64 * 1024 - header.size()) / entries;
-	std::string text = header;
-	text.reserve(MaxTextFileBytes);
-	for (size_t i = 0; i < entries; i++)
-	{
-		std::string entry = fmt::format(R"({{"Handle":"{}","Type":"Texture","Path":"Dir{:05}/)", 100000 + i, i);
-		const size_t fill = entryBytes - entry.size() - 3;
-		for (size_t k = 0; k < fill; k++)
-			entry += k % 200 == 199 && k + 1 < fill ? '/' : 'p';
-		entry += i + 1 < entries ? "\"}," : "\"}]";
-		text += entry;
-	}
-	text += "}";
-	REQUIRE(text.size() <= MaxTextFileBytes);
-	REQUIRE(WriteFileAtomically(directory / AssetManager::RegistryFileName, text));
-	AssetManager assets(directory);
-	REQUIRE(assets.IsRegistered(AssetHandle(100000)));
-	REQUIRE(assets.IsRegistered(AssetHandle(100000 + entries - 1)));
-
-	Paralax::Testing::ScopedLogCapture log;
-	CHECK_FALSE(assets.SaveRegistry());
-	CHECK(log.Contains(spdlog::level::err, "too large"));
-	CHECK(Paralax::Testing::ReadFileText(directory / AssetManager::RegistryFileName) == text);
-	std::filesystem::remove(directory / AssetManager::RegistryFileName);
-}
-
 TEST_CASE("MaterialSerializer: oversized material files are refused before reading")
 {
 	const std::filesystem::path path = Paralax::Testing::CreateTestDirectory("MaterialLarge") / "Huge.pxmat";

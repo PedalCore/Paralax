@@ -85,6 +85,23 @@ TEST_CASE("SceneSerializer: files are saved atomically and loaded back")
 	CHECK(SceneSerializer::LoadFromFile(path)->GetName() == "Renamed");
 }
 
+TEST_CASE("WriteFileAtomically: contents longer than the limit are refused and the existing file is kept")
+{
+	// The mechanism every capped writer (scenes, prefabs, the asset registry) relies on, at a small limit. A registry
+	// over the real cap cannot be built portably in a test: it needs over 44 MiB of entries to load first, with paths
+	// short enough for Windows and macOS, which is minutes of work under the sanitizers.
+	const std::filesystem::path path = Paralax::Testing::CreateTestDirectory("WriteLimit") / "Document.json";
+	REQUIRE(WriteFileAtomically(path, "kept", 4));
+	Paralax::Testing::ScopedLogCapture log;
+	CHECK_FALSE(WriteFileAtomically(path, "longer", 5));
+	CHECK(log.Contains(spdlog::level::err, "too large"));
+	CHECK(Paralax::Testing::ReadFileText(path) == "kept");
+	CHECK_FALSE(std::filesystem::exists(path.string() + ".tmp"));
+	CHECK(WriteFileAtomically(path, "fits!", 5)); // Exactly the limit is written.
+	CHECK(Paralax::Testing::ReadFileText(path) == "fits!");
+	CHECK(WriteFileAtomically(path, std::string(1000, 'x'))); // No limit by default.
+}
+
 TEST_CASE("SceneSerializer: unknown components and invalid fields produce warnings, not failures")
 {
 	json document = {
