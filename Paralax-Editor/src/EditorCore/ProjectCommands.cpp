@@ -206,15 +206,15 @@ namespace Paralax::Editor {
 			if (error)
 				return CommandResult::Fail(fmt::format("Could not resolve the project directory: {}", error.message()));
 			// Relative paths are taken from the project directory, so "../Build" is beside the project.
-			std::filesystem::path requested = FromUtf8(params["output"].get<std::string>());
-			// "Build/" (as shells complete directory names) means Build: for a directory that does not exist yet,
-			// weakly_canonical would keep the separator and the checks below would see no name. A root ("/") has no
-			// name either way and stays refused.
-			if (!requested.has_filename() && requested.parent_path() != requested)
-				requested = requested.parent_path();
+			const std::filesystem::path requested = FromUtf8(params["output"].get<std::string>());
 			if (requested.empty())
 				return CommandResult::Fail("Invalid output directory");
-			const std::filesystem::path output = std::filesystem::weakly_canonical(requested.is_absolute() ? requested : projectDirectory / requested, error);
+			std::filesystem::path output = std::filesystem::weakly_canonical(requested.is_absolute() ? requested : projectDirectory / requested, error);
+			// For a directory that does not exist yet, weakly_canonical keeps a trailing separator ("Build/", as shells
+			// complete names, or "Build//" and "Build/."), leaving no name for the checks below: the directory meant is
+			// the one before it. A root has no name however it is written, and stays refused.
+			if (!error && !output.has_filename() && output.has_relative_path())
+				output = output.parent_path();
 			if (error || !output.has_filename() || output.relative_path().empty())
 				return CommandResult::Fail("Invalid output directory");
 			// The export creates one directory at most: a typo cannot scatter folders across the disk.

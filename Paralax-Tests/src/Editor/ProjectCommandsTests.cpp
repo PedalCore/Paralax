@@ -201,12 +201,24 @@ TEST_CASE("ProjectCommands: project.export accepts a new output directory writte
 	const CommandResult absolute = fixture.Context.Execute("project.export", {{"output", (fixture.Root / "Build").generic_string() + "/"}});
 	CHECK_MESSAGE(absolute.Success, absolute.Error);
 	CHECK(std::filesystem::is_directory(fixture.Root / "Build"));
-	CHECK(absolute.Result["path"] == (fixture.Root / "Build").generic_string());
+	// By identity: the result is canonical, the temporary directory need not be (macOS /var, Windows short names).
+	CHECK(std::filesystem::equivalent(std::filesystem::path(absolute.Result["path"].get<std::string>()), fixture.Root / "Build"));
 
 	// Relative to the project directory, as the command documents; the same again replaces the previous export.
 	CHECK(fixture.Context.Execute("project.export", {{"output", "../Beside/"}}).Success);
 	CHECK(std::filesystem::is_directory(fixture.Root / "Beside"));
 	CHECK(fixture.Context.Execute("project.export", {{"output", "../Beside//"}}).Success);
+
+	// Other spellings of a directory that does not exist yet.
+	for (const char* spelling : {"Doubled//", "Dotted/.", "Dotted2/./", "Climbed/Sub/.."})
+	{
+		CAPTURE(spelling);
+		const std::string name = std::string(spelling).substr(0, std::string(spelling).find('/'));
+		REQUIRE_FALSE(std::filesystem::exists(fixture.Root / name));
+		const CommandResult result = fixture.Context.Execute("project.export", {{"output", "../" + std::string(spelling)}});
+		CHECK_MESSAGE(result.Success, result.Error);
+		CHECK(std::filesystem::is_directory(fixture.Root / name));
+	}
 
 	// A root has no name however it is written.
 	CHECK_FALSE(fixture.Context.Execute("project.export", {{"output", "/"}}).Success);
