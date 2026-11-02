@@ -3,6 +3,7 @@
 #include <Paralax/Scene/ComponentRegistry.h>
 #include <Paralax/Scene/Entity.h>
 
+#include <cfloat>
 #include <set>
 
 using namespace Paralax;
@@ -94,6 +95,34 @@ TEST_CASE("ComponentRegistry: vectors, quaternions and asset handles are validat
 	CHECK(ComponentRegistry::SetField(*info.FindField("Rotation"), &transform, json::array({0, 0, 0, 2}), error));
 	CHECK(transform.Rotation == glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
 	CHECK_FALSE(ComponentRegistry::SetField(*info.FindField("Rotation"), &transform, json::array({0, 0, 0, 0}), error));
+	CHECK_FALSE(ComponentRegistry::SetField(*info.FindField("Rotation"), &transform, json::array({1e-30, 0, 0, 0}), error));
+	CHECK(transform.Rotation == glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+
+	// Components whose squares overflow a float still normalise (in float, the length became infinity and a zero
+	// quaternion was stored), and the stored unit quaternion round-trips.
+	CHECK(ComponentRegistry::SetField(*info.FindField("Rotation"), &transform, json::array({1e20, 0, 0, 0}), error));
+	CHECK(transform.Rotation == glm::quat(0.0f, 1.0f, 0.0f, 0.0f));
+	const double largest = static_cast<double>(FLT_MAX);
+	CHECK(ComponentRegistry::SetField(*info.FindField("Rotation"), &transform, json::array({largest, -largest, largest, largest}), error));
+	CHECK(transform.Rotation == glm::quat(0.5f, 0.5f, -0.5f, 0.5f));
+	const json stored = ComponentRegistry::GetField(*info.FindField("Rotation"), &transform);
+	CHECK(stored == json::array({0.5, -0.5, 0.5, 0.5}));
+	TransformComponent reloaded;
+	CHECK(ComponentRegistry::SetField(*info.FindField("Rotation"), &reloaded, stored, error));
+	CHECK(reloaded.Rotation == transform.Rotation);
+
+	// A rotation that is unit to float precision is kept bit for bit, and storing is idempotent, so saving and
+	// loading never drifts a rotation.
+	const glm::quat quarterTurn = glm::angleAxis(glm::radians(-90.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+	transform.Rotation = quarterTurn;
+	const json saved = ComponentRegistry::GetField(*info.FindField("Rotation"), &transform);
+	CHECK(ComponentRegistry::SetField(*info.FindField("Rotation"), &reloaded, saved, error));
+	CHECK(reloaded.Rotation == quarterTurn);
+	CHECK(ComponentRegistry::SetField(*info.FindField("Rotation"), &transform, json::array({1, 2, 3, 4}), error));
+	const glm::quat normalised = transform.Rotation;
+	CHECK(std::abs(glm::length(normalised) - 1.0f) < 1e-6f);
+	CHECK(ComponentRegistry::SetField(*info.FindField("Rotation"), &transform, ComponentRegistry::GetField(*info.FindField("Rotation"), &transform), error));
+	CHECK(transform.Rotation == normalised);
 
 	MeshComponent mesh;
 	const ComponentInfo& meshInfo = *ComponentRegistry::Find("Mesh");

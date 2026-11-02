@@ -210,11 +210,19 @@ namespace Paralax {
 					float v[4];
 					if (!ParseFloats(value, v))
 						return fail("a quaternion [x, y, z, w]");
-					glm::quat q(v[3], v[0], v[1], v[2]);
-					const float length = glm::length(q);
-					if (length < 1e-6f)
+					// The length is taken in double: squaring float components above ~1.8e19 overflows to infinity, which
+					// would pass the zero check and store a zero quaternion (the value this very check refuses).
+					const double x = static_cast<double>(v[0]), y = static_cast<double>(v[1]), z = static_cast<double>(v[2]), w = static_cast<double>(v[3]);
+					const double length = std::sqrt(x * x + y * y + z * z + w * w);
+					if (!std::isfinite(length) || length < 1e-6)
 						return fail("a non-zero quaternion");
-					*static_cast<glm::quat*>(pointer) = q / length;
+					// A quaternion already unit to float precision is kept bit for bit, so saved rotations round-trip
+					// exactly (dividing by a length a few ulps from 1 would nudge them on every load). Anything this
+					// stores is within the tolerance, so storing is a fixed point.
+					if (std::abs(length - 1.0) <= 4.0 * static_cast<double>(FLT_EPSILON))
+						*static_cast<glm::quat*>(pointer) = glm::quat(v[3], v[0], v[1], v[2]);
+					else
+						*static_cast<glm::quat*>(pointer) = glm::quat(static_cast<float>(w / length), static_cast<float>(x / length), static_cast<float>(y / length), static_cast<float>(z / length));
 					return true;
 				}
 
