@@ -6,19 +6,51 @@
 
 namespace Paralax {
 
-	CommandLine::CommandLine(int argc, const char* const* argv, std::vector<std::string> flags)
-		: m_Flags(std::move(flags))
+	std::vector<std::string> CopyArgv(int argc, const char* const* argv)
 	{
-		if (argc > 0 && argv && argv[0])
-			m_Program = argv[0];
+		std::vector<std::string> arguments;
+		if (argc <= 0 || !argv)
+			return arguments;
+		arguments.reserve(static_cast<size_t>(argc));
+		for (int i = 0; i < argc; i++)
+			arguments.emplace_back(argv[i] ? argv[i] : "");
+		return arguments;
+	}
 
-		for (int i = 1; i < argc; i++)
+	std::vector<std::string> SelectProcessArguments(int argc, const char* const* argv, std::optional<std::vector<std::string>> reread)
+	{
+		std::vector<std::string> original = CopyArgv(argc, argv);
+
+		// argv may already have lost characters (on Windows, those outside the code page), so a path given there can
+		// name another file: say so once, where the cause is known.
+		if (!reread)
 		{
-			if (argv[i])
-				m_Arguments.emplace_back(argv[i]);
+			PX_CORE_WARN("Could not read the Unicode command line: using argv, whose arguments may have lost characters");
+			return original;
 		}
+		if (reread->size() != original.size())
+		{
+			PX_CORE_WARN("The Unicode command line has {} arguments but argv has {}: using argv, whose arguments may have lost characters", reread->size(), original.size());
+			return original;
+		}
+		// ASCII is the same in every code page, so an ASCII argument that differs from argv's means the two were split
+		// differently (the parsers disagree on unusual quoting), and the arguments no longer correspond.
+		for (size_t i = 0; i < original.size(); i++)
+		{
+			const std::string& text = (*reread)[i];
+			const bool ascii = std::all_of(text.begin(), text.end(), [](char c) { return static_cast<unsigned char>(c) < 0x80; });
+			if (ascii && text != original[i])
+			{
+				PX_CORE_WARN("The Unicode command line splits differently from argv (argument {}): using argv, whose arguments may have lost characters", i);
+				return original;
+			}
+		}
+		return std::move(*reread);
+	}
 
-		Parse();
+	CommandLine::CommandLine(int argc, const char* const* argv, std::vector<std::string> flags)
+		: CommandLine(FromProcessArguments(CopyArgv(argc, argv), std::move(flags)))
+	{
 	}
 
 	CommandLine::CommandLine(std::vector<std::string> args, std::vector<std::string> flags)
@@ -26,6 +58,19 @@ namespace Paralax {
 		, m_Flags(std::move(flags))
 	{
 		Parse();
+	}
+
+	CommandLine CommandLine::FromProcessArguments(std::vector<std::string> arguments, std::vector<std::string> flags)
+	{
+		std::string program;
+		if (!arguments.empty())
+		{
+			program = std::move(arguments.front());
+			arguments.erase(arguments.begin());
+		}
+		CommandLine commandLine(std::move(arguments), std::move(flags));
+		commandLine.m_Program = std::move(program);
+		return commandLine;
 	}
 
 	void CommandLine::Parse()

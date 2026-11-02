@@ -28,8 +28,9 @@ target_link_libraries(Paralax
 		Jolt
 		miniaudio)
 if(WIN32)
-	# Winsock, for the loopback agent server (Network/TcpSocket).
-	target_link_libraries(Paralax PRIVATE ws2_32)
+	# Winsock, for the loopback agent server (Network/TcpSocket), and Shell32, for CommandLineToArgvW (the UTF-16
+	# command line, Platform/Windows/WindowsCommandLine).
+	target_link_libraries(Paralax PRIVATE ws2_32 shell32)
 endif()
 if(MSVC)
 	# The Lua bindings (sol2 templates) exceed the default COFF section limit (C1128). Set for the whole target so

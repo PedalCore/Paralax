@@ -7,6 +7,7 @@
 int main(int argc, char** argv)
 {
 	Paralax::Testing::InitTestLogging();
+	Paralax::Testing::GetMainArguments() = {argc, argv};
 
 	doctest::Context context;
 	context.applyCommandLine(argc, argv);

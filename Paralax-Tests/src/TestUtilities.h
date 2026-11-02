@@ -38,6 +38,20 @@ namespace Paralax::Testing {
 		Log::AddSink(consoleSink);
 	}
 
+	// The test runner's own main() arguments, set by TestMain before any test runs, for tests of how the engine reads
+	// the process arguments (GetProcessArguments).
+	struct MainArguments
+	{
+		int Count = 0;
+		const char* const* Values = nullptr;
+	};
+
+	inline MainArguments& GetMainArguments()
+	{
+		static MainArguments s_Arguments;
+		return s_Arguments;
+	}
+
 	// Returns the whole file as a string, or an empty string if it cannot be read.
 	inline std::string ReadFileText(const std::filesystem::path& path)
 	{
