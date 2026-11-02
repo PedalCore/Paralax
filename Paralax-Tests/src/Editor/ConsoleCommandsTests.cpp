@@ -6,6 +6,8 @@
 #include <EditorCore/ConsoleSink.h>
 #include <EditorCore/EditorContext.h>
 
+#include <Paralax/Core/JsonText.h>
+
 #include <string>
 #include <vector>
 
@@ -18,8 +20,8 @@ namespace {
 	// An editor context with the console commands over a sink attached to the engine log, as the editor has them.
 	struct ConsoleFixture
 	{
-		explicit ConsoleFixture(size_t capacity = 2000)
-			: Sink(std::make_shared<ConsoleSink>(capacity))
+		explicit ConsoleFixture(size_t capacity = 2000, size_t maxMessageBytes = ConsoleSink::DefaultMaxMessageBytes)
+			: Sink(std::make_shared<ConsoleSink>(capacity, maxMessageBytes))
 		{
 			RegisterConsoleCommands(Context.GetCommands(), Sink);
 			Log::AddSink(Sink);
@@ -137,6 +139,32 @@ TEST_CASE("ConsoleCommands: the console keeps its most recent messages, and cons
 	CHECK(fixture.Get({{"sinceRevision", cleared.Result["revision"]}})["complete"] == true);
 	PX_CORE_INFO("after clearing");
 	CHECK(Texts(fixture.Get()) == std::vector<std::string>{"after clearing"});
+}
+
+TEST_CASE("ConsoleCommands: each message keeps at most the console's byte limit of its text, cut between characters")
+{
+	{
+		ConsoleFixture fixture;
+		CHECK(fixture.Sink->GetMaxMessageBytes() == ConsoleSink::DefaultMaxMessageBytes);
+		const uint64_t start = fixture.Get()["revision"].get<uint64_t>();
+		// A 16 MiB message (a path from an agent, say) keeps 17 KiB and says how long it was.
+		const std::string huge(16 * 1024 * 1024, 'x');
+		PX_CORE_INFO("Cannot open '{}'", huge);
+		PX_CORE_INFO("short");
+		const std::vector<std::string> texts = Texts(fixture.Get({{"sinceRevision", start}}));
+		REQUIRE(texts.size() == 2);
+		CHECK(texts[0] == "Cannot open '" + std::string(ConsoleSink::DefaultMaxMessageBytes - 13, 'x') + "... (16777230 bytes)");
+		CHECK(texts[1] == "short");
+		CHECK(fixture.Sink->GetMessages().front().Text.size() < ConsoleSink::DefaultMaxMessageBytes + 32);
+	}
+
+	// A character the limit falls inside is left out whole.
+	ConsoleFixture fixture(10, 5);
+	const uint64_t start = fixture.Get()["revision"].get<uint64_t>();
+	PX_CORE_INFO("abcde");
+	PX_CORE_INFO("abc\xE6\x97\xA5");
+	PX_CORE_INFO("abcd\xC3\xA9");
+	CHECK(Texts(fixture.Get({{"sinceRevision", start}})) == std::vector<std::string>{"abcde", "abc... (6 bytes)", "abcd... (6 bytes)"});
 }
 
 TEST_CASE("ConsoleCommands: an agent reads why a command failed over JSON-RPC")

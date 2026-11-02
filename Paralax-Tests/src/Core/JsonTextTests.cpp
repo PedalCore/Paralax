@@ -322,3 +322,55 @@ TEST_CASE("JsonText: DescribeJsonValue walks containers iteratively and stops on
 	description = DescribeJsonValue(numbers);
 	CHECK(description == "[123456789,123456789,123456789,123456789,123456789,123456789,... (array of 100 elements)");
 }
+
+TEST_CASE("JsonText: CapMessage keeps a message that fits and cuts a longer one with its full size")
+{
+	CHECK(CapMessage("") == "");
+	CHECK(CapMessage("short message") == "short message");
+	CHECK(CapMessage("abcdef", 6) == "abcdef");
+	CHECK(CapMessage("abcdefg", 6) == "abcdef... (7 bytes)");
+	CHECK(CapMessage("ab", 0) == "... (2 bytes)");
+	CHECK(CapMessage("a", 0) == "... (1 byte)");
+	// Nothing is escaped: a message may hold any text, line breaks included.
+	CHECK(CapMessage("line\none\t\"quoted\"") == "line\none\t\"quoted\"");
+
+	// A 16 MiB message keeps MaxMessageBytes of its text.
+	const std::string huge(16 * 1024 * 1024, 'a');
+	const std::string capped = CapMessage(huge);
+	CHECK(capped == std::string(MaxMessageBytes, 'a') + "... (16777216 bytes)");
+	CHECK(capped.size() < MaxMessageBytes + 32);
+}
+
+TEST_CASE("JsonText: CapMessage cuts between UTF-8 characters and takes the size of a message collected in part")
+{
+	// "é" is two bytes, "日" three and "😀" four: a character the limit falls inside is left out whole.
+	CHECK(CapMessage("aé", 2) == "a... (3 bytes)");
+	CHECK(CapMessage("aéb", 3) == "aé... (4 bytes)");
+	CHECK(CapMessage("a日b", 2) == "a... (5 bytes)");
+	CHECK(CapMessage("a日b", 3) == "a... (5 bytes)");
+	CHECK(CapMessage("a\xF0\x9F\x98\x80"
+					 "b",
+					 4) == "a... (6 bytes)");
+	CHECK(CapMessage("\xF0\x9F\x98\x80"
+					 "b",
+					 4) == "\xF0\x9F\x98\x80... (5 bytes)");
+	for (size_t limit = 0; limit < 12; limit++)
+	{
+		CAPTURE(limit);
+		const std::string message = "日本語のテキスト";
+		const std::string capped = CapMessage(message, limit);
+		const std::string kept = capped.substr(0, capped.find("..."));
+		CHECK(kept.size() <= limit);
+		CHECK(kept.size() % 3 == 0);
+		CHECK(IsWellFormedUtf8(kept));
+	}
+	// Bytes that are not UTF-8 are kept as they are, and a run of continuation bytes longer than a character's is cut.
+	CHECK(CapMessage("\x80\x80\x80\x80\x80\x80", 4) == "\x80... (6 bytes)");
+
+	// A caller that stopped collecting gives the full size, and one byte beyond the limit so the cut is right.
+	CHECK(CapMessage("abc", 2, 1000) == "ab... (1000 bytes)");
+	CHECK(CapMessage("a\xC3", 1, 300) == "a... (300 bytes)");
+	CHECK(CapMessage("\xC3\xA9", 1, 300) == "... (300 bytes)");
+	CHECK(CapMessage("abc", 10, 2) == "abc"); // A full size smaller than the text is the text's.
+	CHECK(CapMessage("abc", 10, 11) == "abc... (11 bytes)");
+}

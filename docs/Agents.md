@@ -89,6 +89,9 @@ windowed one.
      `debug`, `info` (the default), `warning`, `error` or `critical`; the most recent `limit` messages (default 100)
      come back oldest first, and `omitted` counts older ones left out. `complete` is false when some of what was
      logged after `sinceRevision` is gone: the log keeps its latest 2000 messages, and `console.clear` empties it.
+     Each message keeps at most 17 KiB of its text, room for a script's line or error (which keeps 16 KiB, see
+     [Scripting.md](Scripting.md)) with what the editor says around it; a longer one is cut there and ends in
+     `... (N bytes)`, giving its full size.
    - `render.capture { path }` saves what the scene's primary camera sees as a PNG (a project-relative path; MCP
      returns the image), at 1280 x 720 unless `width` and `height` say otherwise (16 to 8192 each). With
      `camera: "editor"` it renders through the editor camera instead, so `editor.camera.set { position, target }`

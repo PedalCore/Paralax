@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Paralax/Core/JsonText.h>
+
 #include <spdlog/details/os.h>
 #include <spdlog/sinks/base_sink.h>
 
@@ -10,12 +12,15 @@
 #include <deque>
 #include <mutex>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Paralax::Editor {
 
-	// Keeps the most recent log messages for the editor console (the panel, and console.get for agents). Thread-safe
-	// (logging may happen on any thread).
+	// Keeps the most recent log messages for the editor console (the panel, and console.get for agents): at most
+	// `capacity` of them, each keeping at most `maxMessageBytes` of its text (see CapMessage), since messages can
+	// carry text from scripts, files and agents of any size. Thread-safe (logging may happen on any thread).
 	class ConsoleSink : public spdlog::sinks::base_sink<std::mutex>
 	{
 	public:
@@ -28,12 +33,19 @@ namespace Paralax::Editor {
 			uint64_t Revision = 0; // The sink's revision once this message was added: increases message by message.
 		};
 
-		explicit ConsoleSink(size_t capacity = 2000)
+		// A script's line or error is cut to MaxMessageBytes before it is logged, and a message may add a little around
+		// it ("Script error: "): the console keeps that much more, so such a message arrives whole, with the full size
+		// its cut part gives, rather than being cut again here.
+		static constexpr size_t DefaultMaxMessageBytes = MaxMessageBytes + 1024;
+
+		explicit ConsoleSink(size_t capacity = 2000, size_t maxMessageBytes = DefaultMaxMessageBytes)
 			: m_Capacity(capacity)
+			, m_MaxMessageBytes(maxMessageBytes)
 		{
 		}
 
 		size_t GetCapacity() const { return m_Capacity; }
+		size_t GetMaxMessageBytes() const { return m_MaxMessageBytes; }
 
 		std::vector<Message> GetMessages() const
 		{
@@ -91,9 +103,11 @@ namespace Paralax::Editor {
 			char buffer[16];
 			std::strftime(buffer, sizeof(buffer), "%H:%M:%S", &local);
 
+			std::string text = CapMessage(std::string_view(msg.payload.data(), msg.payload.size()), m_MaxMessageBytes);
+
 			std::scoped_lock lock(m_MessagesMutex);
 			m_Revision++;
-			m_Messages.push_back({msg.level, std::string(msg.logger_name.begin(), msg.logger_name.end()), std::string(msg.payload.begin(), msg.payload.end()), buffer, m_Revision});
+			m_Messages.push_back({msg.level, std::string(msg.logger_name.begin(), msg.logger_name.end()), std::move(text), buffer, m_Revision});
 			while (m_Messages.size() > m_Capacity)
 			{
 				m_LastForgottenRevision = m_Messages.front().Revision;
@@ -105,6 +119,7 @@ namespace Paralax::Editor {
 
 	private:
 		size_t m_Capacity;
+		size_t m_MaxMessageBytes;
 		mutable std::mutex m_MessagesMutex;
 		std::deque<Message> m_Messages;
 		uint64_t m_Revision = 0;
