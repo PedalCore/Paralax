@@ -28,6 +28,9 @@ Never commit `GameEngineDoc.md` or `papers-inspiration/` (private brief and thir
 ## Build & test
 
 Dependencies are fetched by CPM at configure time. Set `CPM_SOURCE_CACHE=~/.cache/CPM` so all build trees share one download.
+Compilation goes through ccache when it is installed (`PX_USE_CCACHE`, on by default), so every build tree and worktree on a machine shares one compiler cache. The shared dev VM keeps it in `~/.cache/ccache` with `base_dir` set to the home directory and `hash_dir` off, so worktrees at different paths get each other's hits.
+
+On the shared dev VM, several agents build at once: use at most 8 jobs per build or test run (the presets default to 8), and never start an ASan or TSan build while another sanitizer build is running. Remove worktrees and build trees you no longer need, and keep large outputs (captures, renders) out of the repository.
 
 ```bash
 cmake --preset debug && cmake --build build/debug && ctest --preset debug -j8

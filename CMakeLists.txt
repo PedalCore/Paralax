@@ -18,9 +18,21 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 option(PX_BUILD_TESTS "Build the Paralax unit tests" ON)
 option(PX_BUILD_EDITOR "Build the Paralax editor" ON)
 option(PX_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
+option(PX_USE_CCACHE "Compile through ccache when it is installed (all build trees share one cache)" ON)
 set(PX_SANITIZERS "" CACHE STRING "Sanitizers for Paralax targets (GCC/Clang): empty, \"address,undefined\" or \"thread\"")
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
+# Before Dependencies, so third-party targets are cached too. Worktrees share hits when ccache's base_dir covers them
+# (relative paths) and hash_dir is off (debug info then keeps the first tree's directory, which only affects
+# debuggers). A launcher given on the command line or by a preset wins.
+if(PX_USE_CCACHE AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
+	find_program(PX_CCACHE ccache)
+	if(PX_CCACHE)
+		set(CMAKE_C_COMPILER_LAUNCHER "${PX_CCACHE}")
+		set(CMAKE_CXX_COMPILER_LAUNCHER "${PX_CCACHE}")
+		message(STATUS "Paralax: compiling through ${PX_CCACHE}")
+	endif()
+endif()
 include(BuildConfigurations)
 include(CompilerOptions)
 include(Dependencies)

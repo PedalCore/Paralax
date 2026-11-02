@@ -63,23 +63,28 @@
   "buildPresets": [
     {
       "name": "debug",
-      "configurePreset": "debug"
+      "configurePreset": "debug",
+      "jobs": 8
     },
     {
       "name": "release",
-      "configurePreset": "release"
+      "configurePreset": "release",
+      "jobs": 8
     },
     {
       "name": "dist",
-      "configurePreset": "dist"
+      "configurePreset": "dist",
+      "jobs": 8
     },
     {
       "name": "asan",
-      "configurePreset": "asan"
+      "configurePreset": "asan",
+      "jobs": 8
     },
     {
       "name": "tsan",
-      "configurePreset": "tsan"
+      "configurePreset": "tsan",
+      "jobs": 8
     }
   ],
   "testPresets": [
@@ -91,7 +96,8 @@
       },
       "execution": {
         "noTestsAction": "error",
-        "timeout": 300
+        "timeout": 300,
+        "jobs": 8
       }
     },
     {
