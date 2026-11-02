@@ -26,6 +26,10 @@ namespace Paralax {
 
 	struct TagComponent
 	{
+		// The longest name or tag, in bytes. The registry enforces it, so scene files, the inspector, scripts and
+		// agents all share the one limit.
+		static constexpr size_t MaxLength = 256;
+
 		std::string Name = "Entity";
 		// Free-form label for grouping and lookup from scripts (e.g. "Enemy").
 		std::string Tag;

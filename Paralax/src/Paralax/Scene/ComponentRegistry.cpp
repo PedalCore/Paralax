@@ -47,8 +47,8 @@ namespace Paralax {
 
 			components.push_back(MakeComponent<TagComponent>("Tag", "Display name and free-form tag.",
 															 {
-																 MakeField<&TagComponent::Name>("Name"),
-																 MakeField<&TagComponent::Tag>("Tag", FieldOptions().Describe("Label for grouping and lookup, e.g. \"Enemy\".")),
+																 MakeField<&TagComponent::Name>("Name", FieldOptions().MaxLength(TagComponent::MaxLength)),
+																 MakeField<&TagComponent::Tag>("Tag", FieldOptions().MaxLength(TagComponent::MaxLength).Describe("Label for grouping and lookup, e.g. \"Enemy\".")),
 															 },
 															 false));
 

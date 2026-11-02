@@ -167,6 +167,26 @@ TEST_CASE("SceneSerializer: oversized scene files are refused before reading")
 	std::filesystem::remove(path);
 }
 
+TEST_CASE("SceneSerializer: names and tags longer than the registry allows are skipped with a warning")
+{
+	const json document = {{"Paralax", {{"Type", "Scene"}, {"Version", 1}}},
+						   {"Entities", json::array({{{"ID", "1"}, {"Parent", "0"}, {"Components", {{"Tag", {{"Name", std::string(257, 'n')}, {"Tag", std::string(257, 't')}}}}}},
+													 {{"ID", "2"}, {"Parent", "0"}, {"Components", {{"Tag", {{"Name", std::string(256, 'n')}, {"Tag", std::string(256, 't')}}}}}}})}};
+	Scene scene;
+	std::string error;
+	std::vector<std::string> warnings;
+	REQUIRE(SceneSerializer::Deserialize(scene, document, error, &warnings));
+	REQUIRE(warnings.size() == 1);
+	CHECK(warnings[0].find("Entity 1") != std::string::npos);
+	CHECK(warnings[0].find("'Name' expects at most 256 bytes") != std::string::npos);
+	CHECK(warnings[0].find("'Tag' expects at most 256 bytes") != std::string::npos);
+	// The skipped fields keep their defaults; the entity still exists and has a name.
+	CHECK(scene.GetEntityByUUID(UUID(1)).GetName() == "Entity");
+	CHECK(scene.GetEntityByUUID(UUID(1)).GetComponent<TagComponent>().Tag.empty());
+	CHECK(scene.GetEntityByUUID(UUID(2)).GetName() == std::string(256, 'n'));
+	CHECK(scene.GetEntityByUUID(UUID(2)).GetComponent<TagComponent>().Tag == std::string(256, 't'));
+}
+
 TEST_CASE("SceneSerializer: wrongly typed headers are rejected without throwing")
 {
 	for (const json& header : {json{{"Type", 5}, {"Version", 1}}, json{{"Type", "Scene"}, {"Version", "1"}}, json{{"Type", nullptr}}})

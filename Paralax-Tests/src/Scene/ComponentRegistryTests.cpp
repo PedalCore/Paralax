@@ -132,6 +132,29 @@ TEST_CASE("ComponentRegistry: numbers beyond float range are rejected")
 	CHECK_FALSE(ComponentRegistry::SetField(*ComponentRegistry::Find("Camera")->FindField("OrthographicNear"), &camera, -1e300, error));
 }
 
+TEST_CASE("ComponentRegistry: names and tags are limited to 256 bytes by the registry")
+{
+	TagComponent tag;
+	const ComponentInfo& info = *ComponentRegistry::Find("Tag");
+	const FieldInfo& name = *info.FindField("Name");
+	const FieldInfo& label = *info.FindField("Tag");
+	CHECK(name.MaxLength == 256);
+	CHECK(label.MaxLength == 256);
+	CHECK(TagComponent::MaxLength == 256);
+
+	std::string error;
+	const std::string longest(256, 'n');
+	CHECK(ComponentRegistry::SetField(name, &tag, longest, error));
+	CHECK(tag.Name == longest);
+	CHECK_FALSE(ComponentRegistry::SetField(name, &tag, longest + "n", error));
+	CHECK(error.find("at most 256 bytes") != std::string::npos);
+	CHECK(tag.Name == longest);
+	CHECK_FALSE(ComponentRegistry::SetField(label, &tag, std::string(257, 't'), error));
+	CHECK(tag.Tag.empty());
+	CHECK(ComponentRegistry::SetField(label, &tag, std::string(256, 't'), error));
+	CHECK(tag.Tag.size() == 256);
+}
+
 TEST_CASE("ComponentRegistry: engine-managed components cannot be removed through the registry")
 {
 	for (const char* name : {"Tag", "Transform", "PrefabInstance"})

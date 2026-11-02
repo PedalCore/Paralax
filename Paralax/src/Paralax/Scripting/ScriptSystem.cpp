@@ -562,20 +562,14 @@ namespace Paralax {
 			return *resolved;
 		}
 
-		// Rules beyond the field's type and range, shared by every write path so scripts cannot bypass what the
-		// editor and agents enforce (entity.rename, component.set): names cannot be empty, and names and tags are
-		// bounded. (Fields of existing components are writable, as in component.set; UserEditable only governs adding
-		// and removing components.)
+		// Rules beyond the field's type, range and length, shared by every write path so scripts cannot bypass what
+		// the editor and agents enforce (entity.rename, component.set): names cannot be empty. Their length is the
+		// registry's MaxLength, checked by SetField like any other string field. (Fields of existing components are
+		// writable, as in component.set; UserEditable only governs adding and removing components.)
 		static void CheckComponentWrite(const ComponentInfo& info, const FieldInfo& field, const json& value)
 		{
-			if (info.Name == "Tag" && value.is_string())
-			{
-				const std::string& text = value.get_ref<const std::string&>();
-				if (field.Name == "Name" && text.empty())
-					ScriptError("an entity name cannot be empty");
-				if (text.size() > MaxNameLength)
-					ScriptError(fmt::format("Tag.{} is limited to {} bytes", field.Name, MaxNameLength));
-			}
+			if (info.Name == "Tag" && field.Name == "Name" && value.is_string() && value.get_ref<const std::string&>().empty())
+				ScriptError("an entity name cannot be empty");
 		}
 
 		static void CheckName(const std::string& text, const char* what)
@@ -1105,11 +1099,15 @@ namespace Paralax {
 					std::string error;
 					if (ComponentRegistry::SetField(*field, data, value, error))
 						continue;
-					// Undo: remove the new component, or restore the existing one's fields.
+					// Undo: remove the new component, or restore the existing one's fields. The restore reports into its
+					// own string, so the error raised below is the failed field's, not the restore's.
 					if (!existed && info.Remove)
 						info.Remove(registry, entity.GetHandle());
 					else if (existed)
-						ComponentRegistry::FromJson(info, data, previous, error);
+					{
+						std::string restoreError;
+						ComponentRegistry::FromJson(info, data, previous, restoreError);
+					}
 					ScriptError(fmt::format("{}.{}: {}", name, field->Name, error));
 				}
 				return ComponentRef{self.ID, &info};

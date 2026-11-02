@@ -811,6 +811,10 @@ TEST_CASE("ScriptSystem: names, tags and entity creation are bounded")
 	};
 	fails("Scene.CreateEntity(string.rep('n', 300))", "limited to 256 bytes");
 	fails("local e = Scene.CreateEntity() e.tag = string.rep('t', 300)", "limited to 256 bytes");
+	// Component writes are bounded by the registry's MaxLength, the same rule scene files and agents meet.
+	fails("Scene.CreateEntity():GetComponent('Tag').Name = string.rep('n', 257)", "at most 256 bytes");
+	fails("Scene.CreateEntity():AddComponent('Tag', { Tag = string.rep('t', 257) })", "at most 256 bytes");
+	CHECK(fixture.Eval("local e = Scene.CreateEntity() e:GetComponent('Tag').Name = string.rep('n', 256) return #e.name") == "256");
 	fails("Scene.CreateEntity():GetComponent('Tag').Name = ''", "cannot be empty");
 	fails("Scene.CreateEntity():AddComponent('Tag', { Name = '' })", "cannot be empty");
 	fails("for i = 1, 100 do Scene.CreateEntity() end", "at most 50 entities");
