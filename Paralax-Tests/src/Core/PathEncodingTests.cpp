@@ -185,3 +185,35 @@ TEST_CASE("PathEncoding: UTF-8 and UTF-16 transcoding round-trips every code poi
 	const std::u8string reference = std::filesystem::path(all).u8string();
 	CHECK(std::string(reference.begin(), reference.end()) == utf8);
 }
+
+TEST_CASE("PathEncoding: DecodeUtf8 decodes one character and skips one maximal invalid subpart")
+{
+	const std::string_view text = "A\xC3\xA9\xE6\x97\xA5\xF0\x9F\x98\x80\xE6\x97"
+								  "B\xFF";
+	size_t index = 0;
+	CHECK(DecodeUtf8(text, index) == U'A');
+	CHECK(index == 1);
+	CHECK(DecodeUtf8(text, index) == char32_t(0xE9));
+	CHECK(index == 3);
+	CHECK(DecodeUtf8(text, index) == char32_t(0x65E5));
+	CHECK(index == 6);
+	CHECK(DecodeUtf8(text, index) == char32_t(0x1F600));
+	CHECK(index == 10);
+	// A truncated sequence is one malformed subpart, and the character after it is kept.
+	CHECK_FALSE(DecodeUtf8(text, index));
+	CHECK(index == 12);
+	CHECK(DecodeUtf8(text, index) == U'B');
+	CHECK_FALSE(DecodeUtf8(text, index));
+	CHECK(index == text.size());
+}
+
+TEST_CASE("PathEncoding: DecodeUtf8 outside the text fails the precondition, in Dist too")
+{
+	// A verify, not an assert: reading past the end would be undefined behaviour, so it is checked in every build.
+	Paralax::Testing::ScopedAssertionCapture capture;
+	size_t index = 1;
+	CHECK_THROWS_AS(DecodeUtf8("a", index), Paralax::Testing::AssertionFailedError);
+	index = 0;
+	CHECK_THROWS_AS(DecodeUtf8("", index), Paralax::Testing::AssertionFailedError);
+	CHECK(index == 0);
+}

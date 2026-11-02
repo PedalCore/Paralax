@@ -1,6 +1,8 @@
 #include "pxpch.h"
 #include "Paralax/Core/PathEncoding.h"
 
+#include "Paralax/Core/Assert.h"
+
 #include <algorithm>
 #include <optional>
 
@@ -34,63 +36,6 @@ namespace Paralax {
 				out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
 				out += static_cast<char>(0x80 | (code & 0x3F));
 			}
-		}
-
-		// Decodes the sequence starting at index (which must be inside text) and advances index past it. A malformed
-		// sequence yields nullopt, and index stops at the first byte that does not belong to it (Unicode's "maximal
-		// subpart" practice), so a valid character that follows is kept. The table is Unicode's well-formed byte
-		// sequences (Table 3-7): no overlong forms, no encoded surrogates, nothing beyond U+10FFFF.
-		std::optional<char32_t> DecodeUtf8(std::string_view text, size_t& index)
-		{
-			const auto lead = static_cast<uint8_t>(text[index]);
-			index++;
-			if (lead < 0x80)
-				return lead;
-
-			size_t continuations = 0;
-			char32_t code = 0;
-			uint8_t lower = 0x80, upper = 0xBF; // The range the next byte must fall in.
-			if (lead >= 0xC2 && lead <= 0xDF)
-			{
-				continuations = 1;
-				code = lead & 0x1Fu;
-			}
-			else if (lead >= 0xE0 && lead <= 0xEF)
-			{
-				continuations = 2;
-				code = lead & 0x0Fu;
-				if (lead == 0xE0)
-					lower = 0xA0;
-				else if (lead == 0xED)
-					upper = 0x9F;
-			}
-			else if (lead >= 0xF0 && lead <= 0xF4)
-			{
-				continuations = 3;
-				code = lead & 0x07u;
-				if (lead == 0xF0)
-					lower = 0x90;
-				else if (lead == 0xF4)
-					upper = 0x8F;
-			}
-			else
-			{
-				return std::nullopt;
-			}
-
-			for (size_t i = 0; i < continuations; i++)
-			{
-				if (index >= text.size())
-					return std::nullopt;
-				const auto byte = static_cast<uint8_t>(text[index]);
-				if (byte < lower || byte > upper)
-					return std::nullopt;
-				code = (code << 6) | (byte & 0x3Fu);
-				lower = 0x80;
-				upper = 0xBF;
-				index++;
-			}
-			return code;
 		}
 
 		template<typename Char>
@@ -175,6 +120,63 @@ namespace Paralax {
 			}
 		}
 		return out;
+	}
+
+	std::optional<char32_t> DecodeUtf8(std::string_view text, size_t& index)
+	{
+		// Verified, not asserted: past the end, the read below is out of bounds. It is one compare per character.
+		PX_CORE_VERIFY(index < text.size(), "DecodeUtf8 needs an index inside the text");
+		const auto lead = static_cast<uint8_t>(text[index]);
+		index++;
+		if (lead < 0x80)
+			return lead;
+
+		// Unicode's well-formed byte sequences (Table 3-7): no overlong forms, no encoded surrogates, nothing beyond
+		// U+10FFFF.
+		size_t continuations = 0;
+		char32_t code = 0;
+		uint8_t lower = 0x80, upper = 0xBF; // The range the next byte must fall in.
+		if (lead >= 0xC2 && lead <= 0xDF)
+		{
+			continuations = 1;
+			code = lead & 0x1Fu;
+		}
+		else if (lead >= 0xE0 && lead <= 0xEF)
+		{
+			continuations = 2;
+			code = lead & 0x0Fu;
+			if (lead == 0xE0)
+				lower = 0xA0;
+			else if (lead == 0xED)
+				upper = 0x9F;
+		}
+		else if (lead >= 0xF0 && lead <= 0xF4)
+		{
+			continuations = 3;
+			code = lead & 0x07u;
+			if (lead == 0xF0)
+				lower = 0x90;
+			else if (lead == 0xF4)
+				upper = 0x8F;
+		}
+		else
+		{
+			return std::nullopt;
+		}
+
+		for (size_t i = 0; i < continuations; i++)
+		{
+			if (index >= text.size())
+				return std::nullopt;
+			const auto byte = static_cast<uint8_t>(text[index]);
+			if (byte < lower || byte > upper)
+				return std::nullopt;
+			code = (code << 6) | (byte & 0x3Fu);
+			lower = 0x80;
+			upper = 0xBF;
+			index++;
+		}
+		return code;
 	}
 
 	bool IsWellFormedUtf8(std::string_view text)

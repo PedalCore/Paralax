@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -39,6 +41,13 @@ namespace Paralax {
 	// True if text is well-formed UTF-8: only the byte sequences Unicode allows, so no overlong forms, encoded
 	// surrogates, code points beyond U+10FFFF or truncated sequences.
 	bool IsWellFormedUtf8(std::string_view text);
+
+	// Decodes the UTF-8 sequence that starts at index and advances index past it, for walking untrusted text one
+	// character at a time. index must be inside text (verified in every build: reading past the end would be
+	// undefined). Only the sequences IsWellFormedUtf8 accepts decode. A malformed one yields nullopt, and index then
+	// stops at the first byte that does not belong to it (Unicode's "maximal subpart" practice), so a valid
+	// character that follows is kept.
+	std::optional<char32_t> DecodeUtf8(std::string_view text, size_t& index);
 
 	// The transcoding ToUtf8/FromUtf8 use where the native path encoding is UTF-16, public so every platform tests
 	// it. Malformed input (unpaired surrogates, truncated or overlong sequences, encoded surrogates, code points
