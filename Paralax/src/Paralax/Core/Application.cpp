@@ -25,6 +25,25 @@ namespace Paralax {
 			return std::chrono::duration<double>(Clock::now() - s_Start).count();
 		}
 
+		// Raises a counter for a scope. RAII so that the counter is restored when a test's assertion capture unwinds
+		// through the scope; the destructor's Shutdown() would otherwise refuse to run.
+		class ScopedIncrement
+		{
+		public:
+			explicit ScopedIncrement(uint32_t& counter)
+				: m_Counter(counter)
+			{
+				m_Counter++;
+			}
+			~ScopedIncrement() { m_Counter--; }
+
+			ScopedIncrement(const ScopedIncrement&) = delete;
+			ScopedIncrement& operator=(const ScopedIncrement&) = delete;
+
+		private:
+			uint32_t& m_Counter;
+		};
+
 	}
 
 	Application::LayerIterationScope::LayerIterationScope(Application& app)
@@ -136,18 +155,14 @@ namespace Paralax {
 
 	Application::~Application()
 	{
-		if (m_GraphicsDevice)
-			m_GraphicsDevice->WaitForIdle();
-
-		// Treat teardown as an iteration so layer changes requested from OnDetach are deferred (and then discarded)
-		// instead of mutating the stack mid-loop.
-		m_LayerIterationDepth++;
-		for (auto it = m_LayerStack.rbegin(); it != m_LayerStack.rend(); ++it)
-			(*it)->OnDetach();
+		// Does nothing if the entry point (or a derived destructor) already shut down. Called from here, only the
+		// generic teardown runs: an OnShutdown override belongs to a derived part that no longer exists.
+		Shutdown();
+		// Already empty, unless a layer callback threw out of Shutdown() (a test's assertion capture): the layers
+		// left must still go before the device whose objects they may hold.
 		m_PendingLayerOperations.clear();
 		m_LayerStack.Clear();
 		m_ImGuiLayer = nullptr;
-		m_LayerIterationDepth--;
 
 		// Layers (and their GPU objects) are gone; release the swapchain and device before the window.
 		m_Swapchain.reset();
@@ -159,6 +174,50 @@ namespace Paralax {
 			Log::RemoveSink(m_LogFileSink);
 
 		s_Instance = nullptr;
+	}
+
+	void Application::Shutdown()
+	{
+		// Re-entrant calls (from OnShutdown or a layer's OnDetach) and later calls return here.
+		if (m_ShutdownState != ShutdownState::NotStarted)
+			return;
+		// Detaching destroys every layer: the rest of the frame, an iteration over the stack, or the layer whose
+		// OnAttach is running would go on using them.
+		PX_CORE_VERIFY(m_RunDepth == 0 && m_LayerIterationDepth == 0 && m_AttachDepth == 0,
+					   "Application::Shutdown called from inside Run() or a layer callback; call Close() to stop the main loop instead");
+		m_ShutdownState = ShutdownState::InProgress;
+		m_Running = false;
+
+		if (m_GraphicsDevice)
+			m_GraphicsDevice->WaitForIdle();
+
+		OnShutdown();
+
+		// Treat teardown as an iteration so layer changes requested from OnDetach are deferred (and then discarded)
+		// instead of mutating the stack mid-loop.
+		{
+			ScopedIncrement iteration(m_LayerIterationDepth);
+			for (auto it = m_LayerStack.rbegin(); it != m_LayerStack.rend(); ++it)
+				(*it)->OnDetach();
+			m_PendingLayerOperations.clear();
+			m_LayerStack.Clear();
+			m_ImGuiLayer = nullptr;
+		}
+
+		// Checked last so that errors raised while the layers released their GPU objects count too.
+		if (m_GraphicsDevice)
+		{
+			m_GraphicsDevice->WaitForIdle();
+			const uint32_t validationErrors = m_GraphicsDevice->GetValidationErrorCount();
+			if (validationErrors > 0)
+			{
+				PX_CORE_ERROR("{} graphics validation error(s) were reported", validationErrors);
+				if (m_Specification.Graphics.FailOnValidationErrors)
+					SetExitCode(3);
+			}
+		}
+
+		m_ShutdownState = ShutdownState::Complete;
 	}
 
 	Application& Application::Get()
@@ -215,6 +274,12 @@ namespace Paralax {
 				PX_CORE_ERROR("Cannot push a null layer");
 				return nullptr;
 			}
+			// It would never be detached: Shutdown() has already detached every layer.
+			if (m_ShutdownState == ShutdownState::Complete)
+			{
+				PX_CORE_ERROR("Cannot push layer '{}': the application has shut down", owned->GetName());
+				return nullptr;
+			}
 			target = owned.get();
 		}
 
@@ -232,11 +297,14 @@ namespace Paralax {
 		switch (operation.Type)
 		{
 			case LayerOperationType::PushLayer:
-				m_LayerStack.PushLayer(std::move(operation.Owned))->OnAttach();
-				break;
 			case LayerOperationType::PushOverlay:
-				m_LayerStack.PushOverlay(std::move(operation.Owned))->OnAttach();
+			{
+				const bool isLayer = operation.Type == LayerOperationType::PushLayer;
+				Layer* layer = isLayer ? m_LayerStack.PushLayer(std::move(operation.Owned)) : m_LayerStack.PushOverlay(std::move(operation.Owned));
+				ScopedIncrement attaching(m_AttachDepth);
+				layer->OnAttach();
 				break;
+			}
 			case LayerOperationType::PopLayer:
 			case LayerOperationType::PopOverlay:
 			{
@@ -268,13 +336,19 @@ namespace Paralax {
 
 	void Application::ApplyPendingLayerOperations()
 	{
-		// OnAttach/OnDetach may queue further operations; apply until none remain.
-		while (!m_PendingLayerOperations.empty())
+		// OnAttach/OnDetach may queue further operations; apply until none remain. A popped layer's OnDetach may shut
+		// the application down (outside Run()), which detaches every layer: the operations still queued are then
+		// discarded, like changes requested during Shutdown().
+		while (!m_PendingLayerOperations.empty() && m_ShutdownState == ShutdownState::NotStarted)
 		{
 			std::vector<LayerOperation> operations;
 			operations.swap(m_PendingLayerOperations);
 			for (LayerOperation& operation : operations)
+			{
+				if (m_ShutdownState != ShutdownState::NotStarted)
+					break;
 				ApplyLayerOperation(std::move(operation));
+			}
 		}
 	}
 
@@ -334,7 +408,13 @@ namespace Paralax {
 			PX_CORE_ERROR("Application::Run called on an application that failed to initialise");
 			return;
 		}
+		if (m_ShutdownState != ShutdownState::NotStarted)
+		{
+			PX_CORE_ERROR("Application::Run called on an application that has shut down");
+			return;
+		}
 
+		ScopedIncrement running(m_RunDepth);
 		m_LastFrameTime = GetTimeSeconds();
 
 		while (m_Running)
@@ -411,18 +491,6 @@ namespace Paralax {
 		}
 
 		PX_CORE_INFO("Main loop finished after {} frames ({} rendered)", m_FrameCount, m_RenderedFrameCount);
-
-		if (m_GraphicsDevice)
-		{
-			m_GraphicsDevice->WaitForIdle();
-			const uint32_t validationErrors = m_GraphicsDevice->GetValidationErrorCount();
-			if (validationErrors > 0)
-			{
-				PX_CORE_ERROR("{} graphics validation error(s) were reported", validationErrors);
-				if (m_Specification.Graphics.FailOnValidationErrors)
-					m_ExitCode = 3;
-			}
-		}
 	}
 
 	bool Application::OnWindowClose([[maybe_unused]] WindowCloseEvent& e)

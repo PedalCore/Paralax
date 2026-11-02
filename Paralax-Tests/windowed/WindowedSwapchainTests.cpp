@@ -86,8 +86,6 @@ TEST_CASE("Windowed swapchain: survives repeated resizes and vsync changes witho
 	CHECK(layer->Resizes >= 40);
 	// A frame may be skipped while the swapchain is recreated, but nearly all must render.
 	CHECK(layer->Rendered >= 290);
-	CHECK(app.GetGraphicsDevice().GetValidationErrorCount() == 0);
-	CHECK(app.GetExitCode() == 0);
 
 	uint32_t width = 0, height = 0;
 	app.GetWindow().GetFramebufferSize(width, height);
@@ -96,4 +94,9 @@ TEST_CASE("Windowed swapchain: survives repeated resizes and vsync changes witho
 
 	REQUIRE_FALSE(layer->LastFrame.IsEmpty());
 	CHECK(layer->LastFrame.GetPixel(layer->LastFrame.GetWidth() / 2, layer->LastFrame.GetHeight() / 2) == glm::u8vec4(0, 255, 0, 255));
+
+	// Shutdown checks validation once the layers (which it destroys) have released their GPU objects.
+	app.Shutdown();
+	CHECK(app.GetGraphicsDevice().GetValidationErrorCount() == 0);
+	CHECK(app.GetExitCode() == 0);
 }

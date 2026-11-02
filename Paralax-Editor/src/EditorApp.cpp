@@ -12,6 +12,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <utility>
 
 namespace Paralax {
 
@@ -131,7 +132,8 @@ namespace Paralax {
 
 	}
 
-	class EditorApp : public Application
+	// Final: OnShutdown's contract (an override calls Shutdown() from its own destructor) would not hold for a subclass.
+	class EditorApp final : public Application
 	{
 	public:
 		EditorApp(const ApplicationSpecification& specification, Ref<Project> project, Scope<Editor::AgentServer> agentServer, std::shared_ptr<AgentServerWake> agentWake)
@@ -201,13 +203,21 @@ namespace Paralax {
 
 		~EditorApp() override
 		{
-			// These layers reference m_Context, which is destroyed before ~Application would detach them: detach
-			// them here while it is still alive.
-			if (m_AgentServerLayer)
-				PopOverlay(m_AgentServerLayer);
-			if (m_EditorLayer)
-				PopLayer(m_EditorLayer);
+			// The editor's layers reference m_Context, which is destroyed before ~Application runs: shut down (and so
+			// detach them, see OnShutdown) while it is still alive. Does nothing if the entry point already did.
+			Shutdown();
 			Log::RemoveSink(m_ConsoleSink);
+		}
+
+	protected:
+		void OnShutdown() override
+		{
+			// The agent server goes first, so no request arrives while the editor tears down. The editor UI detaches
+			// next, before the generic teardown detaches the ImGui overlay it draws with.
+			if (Layer* server = std::exchange(m_AgentServerLayer, nullptr))
+				PopOverlay(server);
+			if (Layer* editor = std::exchange(m_EditorLayer, nullptr))
+				PopLayer(editor);
 		}
 
 	private:

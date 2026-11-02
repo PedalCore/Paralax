@@ -6,6 +6,7 @@
 #include <Paralax/Core/Input.h>
 #include <Paralax/Events/KeyEvent.h>
 
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <string>
@@ -63,6 +64,81 @@ namespace {
 	private:
 		std::vector<std::string>& m_Log;
 		bool m_HandleEvents;
+	};
+
+	// Records attach, detach and destruction, and optionally requests an exit code while running or detaching.
+	class LifecycleLayer : public Layer
+	{
+	public:
+		LifecycleLayer(std::string name, std::vector<std::string>& log, std::vector<int> detachExitCodes = {}, int updateExitCode = 0)
+			: Layer(std::move(name))
+			, m_Log(log)
+			, m_DetachExitCodes(std::move(detachExitCodes))
+			, m_UpdateExitCode(updateExitCode)
+		{
+		}
+		~LifecycleLayer() override { m_Log.push_back(GetName() + ":destroy"); }
+
+		void OnAttach() override { m_Log.push_back(GetName() + ":attach"); }
+		void OnDetach() override
+		{
+			m_Log.push_back(GetName() + ":detach");
+			for (int code : m_DetachExitCodes)
+				Application::Get().SetExitCode(code);
+		}
+		void OnUpdate(Timestep) override
+		{
+			if (m_UpdateExitCode != 0)
+				Application::Get().SetExitCode(m_UpdateExitCode);
+		}
+
+	private:
+		std::vector<std::string>& m_Log;
+		std::vector<int> m_DetachExitCodes;
+		int m_UpdateExitCode;
+	};
+
+	// An application that, like the editor, detaches one layer itself before the generic teardown.
+	class ShutdownHookApplication : public Application
+	{
+	public:
+		ShutdownHookApplication(const ApplicationSpecification& specification, std::vector<std::string>& log)
+			: Application(specification)
+			, m_Log(log)
+		{
+		}
+		// As documented for OnShutdown overrides: the base destructor can no longer reach the override.
+		~ShutdownHookApplication() override { Shutdown(); }
+
+		Layer* DetachFirst = nullptr;
+		bool ReenterFromHook = false;
+		int ShutdownCalls = 0;
+
+	protected:
+		void OnShutdown() override
+		{
+			ShutdownCalls++;
+			m_Log.push_back("OnShutdown");
+			if (Layer* layer = std::exchange(DetachFirst, nullptr))
+				PopLayer(layer);
+			if (ReenterFromHook)
+				Shutdown();
+		}
+
+	private:
+		std::vector<std::string>& m_Log;
+	};
+
+	// Shuts the application down from its own OnDetach.
+	class ShutdownOnDetachLayer : public LifecycleLayer
+	{
+	public:
+		using LifecycleLayer::LifecycleLayer;
+		void OnDetach() override
+		{
+			LifecycleLayer::OnDetach();
+			Application::Get().Shutdown();
+		}
 	};
 
 }
@@ -465,6 +541,249 @@ TEST_CASE("Application: layer changes requested from OnDetach during destruction
 
 	// Every layer detaches exactly once, in reverse order; late pushes are never attached.
 	CHECK(log == std::vector<std::string>{"Last:detach", "Greedy:detach", "First:detach"});
+}
+
+TEST_CASE("Application: an exit code a layer sets in OnDetach is the code Shutdown reports")
+{
+	std::vector<std::string> log;
+	Application app(TestSpecification(3));
+	app.PushLayer<LifecycleLayer>("Game", log, std::vector<int>{4});
+	app.Run();
+	// Running did not fail; the layer reports its failure only as it detaches (as the runtime does for scripts).
+	CHECK(app.GetExitCode() == 0);
+
+	app.Shutdown();
+	CHECK(app.GetExitCode() == 4);
+	CHECK(log == std::vector<std::string>{"Game:attach", "Game:detach", "Game:destroy"});
+}
+
+TEST_CASE("Application: the first non-zero exit code wins, whether requested while running or while detaching")
+{
+	std::vector<std::string> log;
+
+	SUBCASE("among layers detaching, the first to detach wins and a later zero clears nothing")
+	{
+		Application app(TestSpecification(2));
+		app.PushLayer<LifecycleLayer>("Bottom", log, std::vector<int>{7});
+		app.PushOverlay<LifecycleLayer>("Top", log, std::vector<int>{0, 4, 0});
+		app.Run();
+		app.Shutdown();
+		CHECK(app.GetExitCode() == 4);
+	}
+
+	SUBCASE("a code requested while running is kept over one requested while detaching")
+	{
+		Application app(TestSpecification(2));
+		app.PushLayer<LifecycleLayer>("Failing", log, std::vector<int>{}, 5);
+		app.PushLayer<LifecycleLayer>("Detaching", log, std::vector<int>{4});
+		app.Run();
+		CHECK(app.GetExitCode() == 5);
+		app.Shutdown();
+		CHECK(app.GetExitCode() == 5);
+	}
+}
+
+TEST_CASE("Application: Shutdown is idempotent, and the destructor neither detaches nor destroys layers again")
+{
+	std::vector<std::string> log;
+	{
+		Application app(TestSpecification(1));
+		app.PushLayer<LifecycleLayer>("Game", log, std::vector<int>{4});
+		app.PushOverlay<LifecycleLayer>("Overlay", log);
+		log.clear();
+		CHECK(app.IsRunning());
+
+		app.Shutdown();
+		const std::vector<std::string> expected{"Overlay:detach", "Game:detach", "Overlay:destroy", "Game:destroy"};
+		CHECK(log == expected);
+		CHECK(app.GetExitCode() == 4);
+		CHECK_FALSE(app.IsRunning());
+
+		app.Shutdown();
+		CHECK(log == expected);
+		CHECK(app.GetExitCode() == 4);
+		log.push_back("destructor");
+	}
+	CHECK(log == std::vector<std::string>{"Overlay:detach", "Game:detach", "Overlay:destroy", "Game:destroy", "destructor"});
+	CHECK_FALSE(Application::Exists());
+}
+
+TEST_CASE("Application: Shutdown runs OnShutdown once, then detaches every remaining layer exactly once, overlays first, top-down")
+{
+	std::vector<std::string> log;
+	int shutdownCalls = 0;
+	{
+		ShutdownHookApplication app(TestSpecification(1), log);
+		Layer* bottom = app.PushLayer<LifecycleLayer>("Bottom", log);
+		app.PushLayer<LifecycleLayer>("Middle", log);
+		app.PushOverlay<LifecycleLayer>("Overlay1", log);
+		app.PushLayer<LifecycleLayer>("Top", log);
+		app.PushOverlay<LifecycleLayer>("Overlay2", log);
+		// The hook detaches the bottom layer before anything else, as the editor detaches its UI before the ImGui overlay.
+		app.DetachFirst = bottom;
+		app.Run();
+		log.clear();
+
+		app.Shutdown();
+		// Stack order is Bottom, Middle, Top, Overlay1, Overlay2. A layer the hook pops is destroyed at once; the rest
+		// all detach before any is destroyed, both in reverse stack order.
+		CHECK(log == std::vector<std::string>{"OnShutdown", "Bottom:detach", "Bottom:destroy",
+											  "Overlay2:detach", "Overlay1:detach", "Top:detach", "Middle:detach",
+											  "Overlay2:destroy", "Overlay1:destroy", "Top:destroy", "Middle:destroy"});
+		app.Shutdown();
+		shutdownCalls = app.ShutdownCalls;
+		log.push_back("destructor");
+	}
+	CHECK(shutdownCalls == 1);
+	CHECK(log.back() == "destructor");
+	CHECK(std::count(log.begin(), log.end(), "OnShutdown") == 1);
+}
+
+TEST_CASE("Application: a derived application whose destructor calls Shutdown runs its OnShutdown override when destroyed")
+{
+	std::vector<std::string> log;
+	{
+		ShutdownHookApplication app(TestSpecification(1), log);
+		app.DetachFirst = app.PushLayer<LifecycleLayer>("Bottom", log);
+		app.PushLayer<LifecycleLayer>("Top", log);
+		log.clear();
+	}
+	CHECK(log == std::vector<std::string>{"OnShutdown", "Bottom:detach", "Bottom:destroy", "Top:detach", "Top:destroy"});
+}
+
+TEST_CASE("Application: calls to Shutdown while it runs, from OnShutdown or a detaching layer, do nothing")
+{
+	std::vector<std::string> log;
+	ScopedAssertionCapture capture;
+	int shutdownCalls = 0;
+	{
+		ShutdownHookApplication app(TestSpecification(1), log);
+		app.ReenterFromHook = true;
+		app.PushLayer<LifecycleLayer>("Bottom", log);
+		app.PushLayer<ShutdownOnDetachLayer>("Reentrant", log, std::vector<int>{4});
+		app.PushOverlay<LifecycleLayer>("Overlay", log);
+		log.clear();
+
+		CHECK_NOTHROW(app.Shutdown());
+		CHECK(app.GetExitCode() == 4);
+		shutdownCalls = app.ShutdownCalls;
+	}
+	CHECK(shutdownCalls == 1);
+	CHECK(log == std::vector<std::string>{"OnShutdown", "Overlay:detach", "Reentrant:detach", "Bottom:detach",
+										  "Overlay:destroy", "Reentrant:destroy", "Bottom:destroy"});
+}
+
+TEST_CASE("Application: Shutdown from inside Run or a layer callback is a verified precondition")
+{
+	class ShutdownInCallbackLayer : public Layer
+	{
+	public:
+		explicit ShutdownInCallbackLayer(bool inAttach)
+			: m_InAttach(inAttach)
+		{
+		}
+		void OnAttach() override
+		{
+			if (m_InAttach)
+				Application::Get().Shutdown();
+		}
+		void OnUpdate(Timestep) override { Application::Get().Shutdown(); }
+		void OnEvent(Event&) override { Application::Get().Shutdown(); }
+
+	private:
+		bool m_InAttach;
+	};
+
+	std::vector<std::string> log;
+	{
+		Application app(TestSpecification(3));
+		app.PushLayer<LifecycleLayer>("Game", log);
+		{
+			ScopedAssertionCapture capture;
+			SUBCASE("from OnUpdate")
+			{
+				app.PushLayer<ShutdownInCallbackLayer>(false);
+				CHECK_THROWS_AS(app.Run(), AssertionFailedError);
+			}
+			SUBCASE("from a function queued for the main thread")
+			{
+				app.SubmitToMainThread([&app] { app.Shutdown(); });
+				CHECK_THROWS_AS(app.Run(), AssertionFailedError);
+			}
+			SUBCASE("from OnEvent, outside Run")
+			{
+				app.PushLayer<ShutdownInCallbackLayer>(false);
+				KeyPressedEvent event(Key::A);
+				CHECK_THROWS_AS(app.OnEvent(event), AssertionFailedError);
+			}
+			SUBCASE("from OnAttach")
+			{
+				CHECK_THROWS_AS(app.PushLayer<ShutdownInCallbackLayer>(true), AssertionFailedError);
+			}
+		}
+		// Refused before anything was torn down: the layers are intact, and the destructor still shuts down.
+		CHECK(app.IsRunning());
+		CHECK(log == std::vector<std::string>{"Game:attach"});
+	}
+	CHECK(log == std::vector<std::string>{"Game:attach", "Game:detach", "Game:destroy"});
+}
+
+TEST_CASE("Application: after Shutdown, Run returns at once and pushing a layer is refused with an error")
+{
+	Paralax::Testing::ScopedLogCapture capture;
+	std::vector<std::string> log;
+	Application app(TestSpecification(5));
+	app.Shutdown();
+
+	app.Run();
+	CHECK(app.GetFrameCount() == 0);
+	CHECK(capture.Contains(spdlog::level::err, "has shut down"));
+
+	CHECK(app.PushLayer<LifecycleLayer>("Late", log) == nullptr);
+	CHECK(app.PushOverlay<LifecycleLayer>("LateOverlay", log) == nullptr);
+	CHECK(capture.Contains(spdlog::level::err, "Cannot push layer 'Late'"));
+	// Never attached, so never detached: the refused layers are only destroyed.
+	CHECK(log == std::vector<std::string>{"Late:destroy", "LateOverlay:destroy"});
+}
+
+TEST_CASE("Application: a layer that shuts the application down from OnDetach discards the layer changes still queued")
+{
+	class PopAndPushLayer : public Layer
+	{
+	public:
+		PopAndPushLayer(Layer*& victim, std::vector<std::string>& log)
+			: m_Victim(victim)
+			, m_Log(log)
+		{
+		}
+		void OnEvent(Event&) override
+		{
+			// Both deferred to the end of the event pass, where the victim's OnDetach shuts down first.
+			Application::Get().PopLayer(std::exchange(m_Victim, nullptr));
+			Application::Get().PushLayer<LifecycleLayer>("Late", m_Log);
+		}
+
+	private:
+		Layer*& m_Victim;
+		std::vector<std::string>& m_Log;
+	};
+
+	std::vector<std::string> log;
+	Application app(TestSpecification(10));
+	Layer* victim = nullptr;
+	app.PushLayer<PopAndPushLayer>(victim, log);
+	victim = app.PushLayer<ShutdownOnDetachLayer>("Victim", log, std::vector<int>{4});
+	app.PushLayer<LifecycleLayer>("Other", log);
+	log.clear();
+
+	// Outside Run, as tests and agents inject events.
+	KeyPressedEvent event(Key::A);
+	app.OnEvent(event);
+
+	// "Late" is destroyed without ever being attached.
+	CHECK_FALSE(app.IsRunning());
+	CHECK(app.GetExitCode() == 4);
+	CHECK(log == std::vector<std::string>{"Victim:detach", "Other:detach", "Other:destroy", "Victim:destroy", "Late:destroy"});
 }
 
 TEST_CASE("Application: PopLayer outside iteration detaches immediately and unknown layers are ignored with a warning")

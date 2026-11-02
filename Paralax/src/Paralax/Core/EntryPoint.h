@@ -18,6 +18,8 @@ int main(int argc, char** argv)
 		if (app && app->IsInitialized())
 		{
 			app->Run();
+			// Layers can still fail the run while they detach (e.g. a runtime's script errors), so shut down first.
+			app->Shutdown();
 			exitCode = app->GetExitCode();
 		}
 		else
