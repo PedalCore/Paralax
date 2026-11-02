@@ -206,7 +206,12 @@ namespace Paralax::Editor {
 			if (error)
 				return CommandResult::Fail(fmt::format("Could not resolve the project directory: {}", error.message()));
 			// Relative paths are taken from the project directory, so "../Build" is beside the project.
-			const std::filesystem::path requested = FromUtf8(params["output"].get<std::string>());
+			std::filesystem::path requested = FromUtf8(params["output"].get<std::string>());
+			// "Build/" (as shells complete directory names) means Build: for a directory that does not exist yet,
+			// weakly_canonical would keep the separator and the checks below would see no name. A root ("/") has no
+			// name either way and stays refused.
+			if (!requested.has_filename() && requested.parent_path() != requested)
+				requested = requested.parent_path();
 			if (requested.empty())
 				return CommandResult::Fail("Invalid output directory");
 			const std::filesystem::path output = std::filesystem::weakly_canonical(requested.is_absolute() ? requested : projectDirectory / requested, error);

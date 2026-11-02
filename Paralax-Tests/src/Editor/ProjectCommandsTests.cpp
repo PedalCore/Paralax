@@ -194,6 +194,25 @@ TEST_CASE("ProjectCommands: project.export refuses destinations it could damage"
 	CHECK(fixture.Export(fixture.Root / "Empty").Success);
 }
 
+TEST_CASE("ProjectCommands: project.export accepts a new output directory written with a trailing separator")
+{
+	ExportFixture fixture("ProjectExportTrailingSlash");
+	REQUIRE_FALSE(std::filesystem::exists(fixture.Root / "Build"));
+	const CommandResult absolute = fixture.Context.Execute("project.export", {{"output", (fixture.Root / "Build").generic_string() + "/"}});
+	CHECK_MESSAGE(absolute.Success, absolute.Error);
+	CHECK(std::filesystem::is_directory(fixture.Root / "Build"));
+	CHECK(absolute.Result["path"] == (fixture.Root / "Build").generic_string());
+
+	// Relative to the project directory, as the command documents; the same again replaces the previous export.
+	CHECK(fixture.Context.Execute("project.export", {{"output", "../Beside/"}}).Success);
+	CHECK(std::filesystem::is_directory(fixture.Root / "Beside"));
+	CHECK(fixture.Context.Execute("project.export", {{"output", "../Beside//"}}).Success);
+
+	// A root has no name however it is written.
+	CHECK_FALSE(fixture.Context.Execute("project.export", {{"output", "/"}}).Success);
+	CHECK_FALSE(fixture.Context.Execute("project.export", {{"output", "//"}}).Success);
+}
+
 TEST_CASE("ProjectCommands: project.export names the executable safely")
 {
 	// A project named like one of the export's folders (or a reserved Windows name) gets a distinct executable.
