@@ -18,6 +18,19 @@ namespace {
 		return glm::all(glm::epsilonEqual(a, b, epsilon));
 	}
 
+	bool AllFinite(const glm::mat4& m)
+	{
+		for (int column = 0; column < 4; column++)
+		{
+			for (int row = 0; row < 4; row++)
+			{
+				if (!std::isfinite(m[column][row]))
+					return false;
+			}
+		}
+		return true;
+	}
+
 	bool SameRotation(const glm::quat& a, const glm::quat& b)
 	{
 		return std::abs(glm::dot(a, b)) > 1.0f - 1e-5f;
@@ -91,20 +104,9 @@ TEST_CASE("SceneCamera: orthographic projection maps the view volume and handles
 	CHECK(std::isfinite(fallback[0][0]));
 }
 
-TEST_CASE("SceneCamera: clip planes that cannot form a projection fall back to the defaults, warned once")
+TEST_CASE("SceneCamera: clip planes that cannot form a projection fall back to the defaults")
 {
 	Paralax::Testing::ScopedLogCapture log;
-	auto allFinite = [](const glm::mat4& m) {
-		for (int column = 0; column < 4; column++)
-		{
-			for (int row = 0; row < 4; row++)
-			{
-				if (!std::isfinite(m[column][row]))
-					return false;
-			}
-		}
-		return true;
-	};
 	const SceneCamera defaults;
 
 	// Each plane is within its reflected range; together they divide by zero.
@@ -115,7 +117,7 @@ TEST_CASE("SceneCamera: clip planes that cannot form a projection fall back to t
 	CHECK(camera.GetEffectiveNear() == defaults.PerspectiveNear);
 	CHECK(camera.GetEffectiveFar() == defaults.PerspectiveFar);
 	CHECK(camera.GetProjection(1.5f) == defaults.GetProjection(1.5f));
-	CHECK(allFinite(camera.GetProjection(1.5f)));
+	CHECK(AllFinite(camera.GetProjection(1.5f)));
 	CHECK(log.Contains(spdlog::level::warn, "cannot form a projection"));
 
 	camera.PerspectiveFar = 11.0f;
@@ -128,7 +130,7 @@ TEST_CASE("SceneCamera: clip planes that cannot form a projection fall back to t
 		CAPTURE(nearPlane);
 		camera.PerspectiveNear = nearPlane;
 		CHECK_FALSE(camera.HasValidClipPlanes());
-		CHECK(allFinite(camera.GetProjection(1.5f)));
+		CHECK(AllFinite(camera.GetProjection(1.5f)));
 	}
 
 	// Orthographic planes may be negative; only the order and finiteness matter.
@@ -145,5 +147,56 @@ TEST_CASE("SceneCamera: clip planes that cannot form a projection fall back to t
 	CHECK(orthographic.GetProjection(2.0f) == orthographicDefaults.GetProjection(2.0f));
 	orthographic.OrthographicFar = std::numeric_limits<float>::infinity();
 	CHECK_FALSE(orthographic.HasValidClipPlanes());
-	CHECK(allFinite(orthographic.GetProjection(2.0f)));
+	CHECK(AllFinite(orthographic.GetProjection(2.0f)));
+
+	// An aspect ratio that is not a positive finite number is treated as 1, for either projection.
+	for (float aspectRatio : {std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN(), -2.0f, 0.0f})
+	{
+		CAPTURE(aspectRatio);
+		CHECK(orthographicDefaults.GetProjection(aspectRatio) == orthographicDefaults.GetProjection(1.0f));
+		CHECK(defaults.GetProjection(aspectRatio) == defaults.GetProjection(1.0f));
+	}
+}
+
+TEST_CASE("SceneCamera: invalid clip planes are warned about once per camera, and again only after they change")
+{
+	Paralax::Testing::ScopedLogCapture log;
+	auto warnings = [&] { return log.Count(spdlog::level::warn, "cannot form a projection"); };
+
+	SceneCamera camera;
+	camera.PerspectiveNear = 10.0f;
+	camera.PerspectiveFar = 10.0f;
+	for (int frame = 0; frame < 5; frame++)
+		(void)camera.GetProjection(1.5f);
+	CHECK(warnings() == 1);
+	// Another camera with the same mistake reports it too.
+	SceneCamera other;
+	other.PerspectiveNear = 10.0f;
+	other.PerspectiveFar = 10.0f;
+	(void)other.GetProjection(1.5f);
+	(void)other.GetProjection(1.5f);
+	CHECK(warnings() == 2);
+
+	// A different invalid setting is reported, once.
+	camera.PerspectiveFar = 5.0f;
+	(void)camera.GetProjection(1.5f);
+	(void)camera.GetProjection(1.5f);
+	CHECK(warnings() == 3);
+	// Valid planes re-arm the warning: the same mistake made again is reported again.
+	camera.PerspectiveFar = 11.0f;
+	(void)camera.GetProjection(1.5f);
+	CHECK(warnings() == 3);
+	camera.PerspectiveFar = 5.0f;
+	(void)camera.GetProjection(1.5f);
+	CHECK(warnings() == 4);
+	// NaN planes are one setting, not a new one every frame; switching projection is a change.
+	camera.PerspectiveNear = std::numeric_limits<float>::quiet_NaN();
+	(void)camera.GetProjection(1.5f);
+	(void)camera.GetProjection(1.5f);
+	CHECK(warnings() == 5);
+	camera.Projection = SceneCamera::ProjectionType::Orthographic;
+	camera.OrthographicFar = camera.OrthographicNear;
+	(void)camera.GetProjection(1.5f);
+	(void)camera.GetProjection(1.5f);
+	CHECK(warnings() == 6);
 }

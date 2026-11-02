@@ -11,12 +11,15 @@ namespace Paralax {
 
 		const SceneCamera s_Defaults{};
 
-		// Cameras are projected every frame, so an authoring mistake is reported once rather than flooding the log.
-		bool s_ReportedInvalidClipPlanes = false;
-
 		bool ClipPlanesValid(float nearPlane, float farPlane, bool perspective)
 		{
 			return std::isfinite(nearPlane) && std::isfinite(farPlane) && farPlane > nearPlane && (!perspective || nearPlane > 0.0f);
+		}
+
+		// NaN planes are one setting, not a new one on every comparison.
+		bool SamePlane(float a, float b)
+		{
+			return a == b || (std::isnan(a) && std::isnan(b));
 		}
 
 	}
@@ -40,16 +43,22 @@ namespace Paralax {
 
 	glm::mat4 SceneCamera::GetProjection(float aspectRatio) const
 	{
-		if (!(aspectRatio > 0.0f))
+		// An infinite ratio would make the orthographic extents infinite (and the projection NaN).
+		if (!(aspectRatio > 0.0f) || !std::isfinite(aspectRatio))
 			aspectRatio = 1.0f;
 
-		if (!HasValidClipPlanes() && !s_ReportedInvalidClipPlanes)
+		if (HasValidClipPlanes())
+			m_ReportedClipPlanes.reset();
+		else
 		{
-			s_ReportedInvalidClipPlanes = true;
 			const bool perspective = Projection == ProjectionType::Perspective;
-			PX_CORE_WARN("Camera: {} clip planes near {} and far {} cannot form a projection (both must be finite{} and far must exceed near); using the defaults. Reported once.",
-						 perspective ? "perspective" : "orthographic", perspective ? PerspectiveNear : OrthographicNear, perspective ? PerspectiveFar : OrthographicFar,
-						 perspective ? ", near positive" : "");
+			const ReportedClipPlanes planes{Projection, perspective ? PerspectiveNear : OrthographicNear, perspective ? PerspectiveFar : OrthographicFar};
+			if (!m_ReportedClipPlanes || m_ReportedClipPlanes->Projection != planes.Projection || !SamePlane(m_ReportedClipPlanes->Near, planes.Near) || !SamePlane(m_ReportedClipPlanes->Far, planes.Far))
+			{
+				m_ReportedClipPlanes = planes;
+				PX_CORE_WARN("Camera: {} clip planes near {} and far {} cannot form a projection (both must be finite{} and far must exceed near); using the defaults until they change",
+							 perspective ? "perspective" : "orthographic", planes.Near, planes.Far, perspective ? ", near positive" : "");
+			}
 		}
 		const float nearPlane = GetEffectiveNear();
 		const float farPlane = GetEffectiveFar();

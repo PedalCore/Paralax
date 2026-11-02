@@ -328,14 +328,18 @@ namespace Paralax::Testing {
 			return m_Sink->Entries;
 		}
 
-		bool Contains(spdlog::level::level_enum level, const std::string& substring) const
+		bool Contains(spdlog::level::level_enum level, const std::string& substring) const { return Count(level, substring) > 0; }
+
+		// How many messages at this level contain the substring.
+		size_t Count(spdlog::level::level_enum level, const std::string& substring) const
 		{
+			size_t count = 0;
 			for (const Entry& entry : GetEntries())
 			{
 				if (entry.Level == level && entry.Message.find(substring) != std::string::npos)
-					return true;
+					count++;
 			}
-			return false;
+			return count;
 		}
 
 	private:
