@@ -342,8 +342,10 @@ TEST_CASE("Fuzz: mutated glTF files never crash the importer")
 	json withScene = plain;
 	Paralax::Testing::AddCamerasAndLights(withScene); // Nodes, cameras, lights and animations for the scene import.
 	Paralax::Testing::AddAnimations(withScene);
-	// Parallax extras (the albedo image stands in for a height map), so the extras reader is fuzzed too.
+	// Parallax and shadow extras (the albedo image stands in for a height map), so the extras reader is fuzzed too.
 	withScene["materials"][0]["extras"] = {{"pom", true}, {"height_map", "albedo.png"}, {"height_depth_m", 0.02}, {"texture_repeat_m", 1.2}};
+	withScene["nodes"][1]["extras"] = {{"cast_shadow", false}};
+	withScene["nodes"][3]["extras"] = {{"cast_shadow", "off"}}; // Not a boolean: the ignored-value warning.
 	const std::vector<uint8_t> glb = Paralax::Testing::MakeTriangleGlb(directory);
 	Mutator mutator(0x6177F);
 	for (int iteration = 0; iteration < Iterations(800); iteration++)

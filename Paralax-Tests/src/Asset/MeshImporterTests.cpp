@@ -393,6 +393,79 @@ TEST_CASE("MeshImporter: extras of any type are accepted")
 	}
 }
 
+TEST_CASE("MeshImporter: a node's extras.cast_shadow says whether its mesh casts shadows")
+{
+	// As Blender's exporter writes an object's custom property: bulb meshes around point lights must not shadow them.
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfCastShadow");
+	json document = Paralax::Testing::MakeTriangleDocument(directory);
+	document["nodes"] = {{{"name", "Bulb"}, {"mesh", 0}, {"extras", {{"cast_shadow", false}}}},
+						 {{"name", "Wall"}, {"mesh", 0}, {"extras", {{"cast_shadow", true}}}},
+						 {{"name", "Floor"}, {"mesh", 0}, {"extras", {{"note", "no cast_shadow here"}}}}};
+	document["scenes"][0]["nodes"] = {0, 1, 2};
+	MeshImportResult result;
+	std::string error;
+	REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), result, error), error);
+	CHECK(result.Warnings.empty());
+	REQUIRE(result.Nodes.size() == 3);
+	CHECK(result.Nodes[0].CastShadows == std::optional<bool>(false));
+	CHECK(result.Nodes[1].CastShadows == std::optional<bool>(true));
+	CHECK_FALSE(result.Nodes[2].CastShadows.has_value()); // Not specified.
+
+	// Material extras are still read beside them (one callback serves both).
+	document["materials"][0]["extras"] = {{"pom", true}, {"height_map", "albedo.png"}, {"height_depth_m", 0.02}, {"texture_repeat_m", 1.0}};
+	REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), result, error), error);
+	CHECK(result.Materials[0]->HeightTexture.IsValid());
+	CHECK(result.Nodes[0].CastShadows == std::optional<bool>(false));
+}
+
+TEST_CASE("MeshImporter: an extras.cast_shadow that is not a boolean is ignored with one warning")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfCastShadowHostile");
+	json document = Paralax::Testing::MakeTriangleDocument(directory);
+	document["nodes"] = json::array();
+	document["nodes"].push_back({{"mesh", 0}, {"extras", {{"cast_shadow", false}}}}); // Valid, beside the rest.
+	for (const json& value : {json(0), json("false"), json(nullptr), json::object(), json::array()})
+		document["nodes"].push_back({{"mesh", 0}, {"extras", {{"cast_shadow", value}}}});
+	document["nodes"].push_back({{"mesh", 0}, {"extras", "cast_shadow"}});            // Extras that are not an object.
+	document["nodes"].push_back({{"mesh", 0}, {"extras", {{"cast_shadow", "off"}}}}); // Not in the scene: not counted.
+	document["scenes"][0]["nodes"] = {0, 1, 2, 3, 4, 5, 6};
+
+	Paralax::Testing::ScopedLogCapture capture;
+	MeshImportResult result;
+	std::string error;
+	REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), result, error), error);
+	REQUIRE(result.Nodes.size() == 7);
+	CHECK(result.Nodes[0].CastShadows == std::optional<bool>(false));
+	for (size_t i = 1; i < result.Nodes.size(); i++)
+	{
+		CAPTURE(i);
+		CHECK_FALSE(result.Nodes[i].CastShadows.has_value());
+	}
+	const auto mentions = [](const std::string& warning) { return warning.find("cast_shadow") != std::string::npos; };
+	REQUIRE(std::count_if(result.Warnings.begin(), result.Warnings.end(), mentions) == 1);
+	const std::string& warning = *std::find_if(result.Warnings.begin(), result.Warnings.end(), mentions);
+	CHECK(warning.find("5 node(s)") != std::string::npos);
+	CHECK(warning.find("node 1;") != std::string::npos); // The first of them.
+}
+
+TEST_CASE("MeshImporter: node extras survive the retry without malformed lights")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfCastShadowBadLights");
+	json document = Paralax::Testing::MakeTriangleDocument(directory);
+	Paralax::Testing::AddCamerasAndLights(document);
+	document["extensions"]["KHR_lights_punctual"]["lights"][1] = {{"type", "laser"}, {"intensity", 1.0}};
+	document["nodes"][0]["extras"] = {{"cast_shadow", false}};
+	Paralax::Testing::ScopedLogCapture capture;
+	MeshImportResult result;
+	std::string error;
+	REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), result, error), error);
+	CHECK(std::any_of(result.Warnings.begin(), result.Warnings.end(), [](const std::string& w) { return w.find("lights") != std::string::npos; }));
+	CHECK_FALSE(std::any_of(result.Nodes.begin(), result.Nodes.end(), [](const ImportedNode& node) { return node.Light.has_value(); }));
+	REQUIRE(result.Nodes.size() == 7);
+	CHECK(result.Nodes[0].CastShadows == std::optional<bool>(false));
+	CHECK_FALSE(result.Nodes[1].CastShadows.has_value());
+}
+
 TEST_CASE("MeshImporter: animations become clips, each meant for the deepest node above what it animates")
 {
 	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfAnimations");

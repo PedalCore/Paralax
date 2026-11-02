@@ -60,11 +60,14 @@ windowed one.
    malformed light data is skipped). It is refused during play mode. Parallax occlusion
    mapping, which glTF cannot express, comes from material extras as a Blender export script can write them
    (`"pom": true`, `"height_map": "stone_height.png"`, `"height_depth_m"`, `"texture_repeat_m"`; the height map is
-   found beside the model or in its `textures` folder, and 16-bit maps keep their precision). Light strengths come
-   through as in Blender with its default "Standard" lighting mode (sun strength 3 becomes Intensity 3; a 1000 W
-   point light about 80), though the renderer's lighting is not physically calibrated, so check them with
-   `render.capture`. Re-exporting to the same file updates the meshes in place (they are matched by mesh name, so
-   reordering objects is fine); regenerate the prefab, to a new path, when objects are added or removed.
+   found beside the model or in its `textures` folder, and 16-bit maps keep their precision). An object's
+   `cast_shadow` custom property (node `extras.cast_shadow`, `true` or `false`; export with Include > Custom
+   Properties ticked) sets its entity's `Mesh` `CastShadows` when the prefab is made, so a bulb mesh around a point
+   light can stop shadowing it. Light strengths come through as in Blender with its default "Standard" lighting mode
+   (sun strength 3 becomes Intensity 3; a 1000 W point light about 80), though the renderer's lighting is not
+   physically calibrated, so check them with `render.capture`. Re-exporting to the same file updates the meshes in
+   place (they are matched by mesh name, so reordering objects is fine); regenerate the prefab, to a new path, when
+   objects are added or removed or their `cast_shadow` changes.
 2. **Script.** `script.create { path, source }` writes a Lua script, and `script.update` and `script.get` change and
    read it. Attach a script with a `Script` component. A script returns a table with `OnCreate`, `OnUpdate`,
    `OnFixedUpdate` (physics control, at the physics rate), `OnDestroy` and collision callbacks; see

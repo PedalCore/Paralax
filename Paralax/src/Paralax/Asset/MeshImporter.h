@@ -55,6 +55,9 @@ namespace Paralax {
 		AssetHandle Mesh = 0; // The node's mesh (one of MeshImportResult::NodeMeshes), or 0.
 		std::optional<ImportedCamera> Camera;
 		std::optional<ImportedLight> Light;
+		// Whether the node's mesh casts shadows, from the node's extras.cast_shadow (a Blender custom property: its
+		// glTF exporter writes object custom properties into node extras). Unset when absent or not a boolean.
+		std::optional<bool> CastShadows;
 	};
 
 	// An animation of the file, and the node meant to play it: the deepest node at or above every node it animates
@@ -123,6 +126,9 @@ namespace Paralax {
 		// its "textures" folder, then beside the material's base color image, never outside the model's folder),
 		// "height_depth_m" and "texture_repeat_m"; HeightScale becomes depth / repeat (UV units). A 16-bit height map
 		// keeps its precision.
+		//
+		// A node's extras may hold "cast_shadow" (ImportedNode::CastShadows), as Blender writes an object's custom
+		// property; a value that is not a boolean is ignored, with one warning per import counting the nodes.
 		//
 		// Per-node meshes are keyed by mesh name (by index when unnamed or repeated), so re-exports that renumber
 		// meshes keep each entity's mesh. They are built whenever the file is loaded, which roughly doubles its

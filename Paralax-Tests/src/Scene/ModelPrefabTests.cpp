@@ -135,6 +135,40 @@ TEST_CASE("ModelPrefab: each animation plays on the entity it is meant for, one 
 	CHECK_FALSE(Child(scene, root, "Node0").HasComponent<AnimationComponent>());
 }
 
+TEST_CASE("ModelPrefab: a node's cast_shadow extra sets its Mesh component's CastShadows")
+{
+	// As Blender writes an object's custom property: the bay's bulb proxies must not shadow the lights inside them.
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("ModelPrefabCastShadow");
+	nlohmann::json document = Paralax::Testing::MakeTriangleDocument(directory);
+	document["nodes"] = {{{"name", "Bulb"}, {"mesh", 0}, {"extras", {{"cast_shadow", false}}}},
+						 {{"name", "Wall"}, {"mesh", 0}, {"extras", {{"cast_shadow", true}}}},
+						 {{"name", "Floor"}, {"mesh", 0}}};
+	document["scenes"][0]["nodes"] = {0, 1, 2};
+	MeshImportResult model;
+	std::string error;
+	REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), model, error), error);
+	Ref<PrefabAsset> prefab = BuildModelPrefab(model, "Bay", error);
+	REQUIRE_MESSAGE(prefab, error);
+
+	const auto castShadows = [](const PrefabAsset& asset) {
+		Scene scene;
+		Entity root = asset.Instantiate(scene);
+		std::vector<bool> values;
+		for (const char* name : {"Bulb", "Wall", "Floor"})
+			values.push_back(Child(scene, root, name).GetComponent<MeshComponent>().CastShadows);
+		return values;
+	};
+	CHECK(castShadows(*prefab) == std::vector<bool>{false, true, true}); // Unspecified: the default.
+
+	// The setting survives the prefab's file format.
+	const std::filesystem::path file = directory / "Bay.pxprefab";
+	REQUIRE(prefab->SaveToFile(file));
+	Ref<PrefabAsset> reloaded = PrefabAsset::LoadFromFile(file);
+	REQUIRE(reloaded);
+	CHECK(reloaded->ToJson() == prefab->ToJson());
+	CHECK(castShadows(*reloaded) == std::vector<bool>{false, true, true});
+}
+
 TEST_CASE("ModelPrefab: a model without nodes is refused, and an empty root name is replaced")
 {
 	MeshImportResult model;
@@ -142,7 +176,7 @@ TEST_CASE("ModelPrefab: a model without nodes is refused, and an empty root name
 	CHECK_FALSE(BuildModelPrefab(model, "Empty", error));
 	CHECK(error.find("no nodes") != std::string::npos);
 
-	model.Nodes.push_back(ImportedNode{"Only", 7, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(1.0f), 0, std::nullopt, std::nullopt});
+	model.Nodes.push_back(ImportedNode{"Only", 7, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(1.0f), 0, std::nullopt, std::nullopt, std::nullopt});
 	Ref<PrefabAsset> prefab = BuildModelPrefab(model, "", error); // A parent index that is not earlier: under the root.
 	REQUIRE_MESSAGE(prefab, error);
 	CHECK(prefab->GetRootName() == "Model");

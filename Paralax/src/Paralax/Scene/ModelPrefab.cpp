@@ -35,7 +35,13 @@ namespace Paralax {
 			transform.Scale = node.Scale;
 
 			if (node.Mesh.IsValid())
-				entity.AddComponent<MeshComponent>().Mesh = node.Mesh;
+			{
+				auto& mesh = entity.AddComponent<MeshComponent>();
+				mesh.Mesh = node.Mesh;
+				// Unspecified: the component's default (on).
+				if (node.CastShadows)
+					mesh.CastShadows = *node.CastShadows;
+			}
 
 			if (node.Camera)
 			{

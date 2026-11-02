@@ -169,33 +169,75 @@ namespace Paralax {
 			double RepeatMeters = 0.0;
 		};
 
-		// fastgltf extras callback: records the parallax settings of each material (userPointer: std::vector<MaterialExtras>).
-		void ReadMaterialExtras(simdjson::dom::object* extras, std::size_t objectIndex, fastgltf::Category objectType, void* userPointer)
+		// Settings Blender's exporter puts in a node's extras (an object's custom properties): "cast_shadow" turns the
+		// node's mesh shadows on or off.
+		struct NodeExtras
 		{
-			constexpr size_t MaxMaterials = size_t(1) << 20;
-			if (!extras || !userPointer || objectType != fastgltf::Category::Materials || objectIndex >= MaxMaterials)
-				return;
-			auto& all = *static_cast<std::vector<MaterialExtras>*>(userPointer);
-			if (all.size() <= objectIndex)
-				all.resize(objectIndex + 1);
-			MaterialExtras& material = all[objectIndex];
+			std::optional<bool> CastShadows;
+			bool InvalidCastShadows = false; // Present, but not a boolean.
+		};
+
+		// Everything the extras callback records, by object index; Parse clears it before every attempt.
+		struct DocumentExtras
+		{
+			std::vector<MaterialExtras> Materials;
+			std::vector<NodeExtras> Nodes;
+		};
+
+		void ReadMaterialExtras(const simdjson::dom::object& extras, MaterialExtras& material)
+		{
 			bool pom = false;
 			std::string_view mode;
 			std::string_view heightMap;
 			double depth = 0.0;
 			double repeat = 0.0;
 			// Any field of the wrong type is simply absent.
-			if (extras->at_key("pom").get_bool().get(pom) != simdjson::SUCCESS)
+			if (extras.at_key("pom").get_bool().get(pom) != simdjson::SUCCESS)
 				pom = false;
-			if (extras->at_key("parallax_mode").get_string().get(mode) != simdjson::SUCCESS)
+			if (extras.at_key("parallax_mode").get_string().get(mode) != simdjson::SUCCESS)
 				mode = {};
-			if (extras->at_key("height_map").get_string().get(heightMap) == simdjson::SUCCESS && heightMap.size() <= 1024)
+			if (extras.at_key("height_map").get_string().get(heightMap) == simdjson::SUCCESS && heightMap.size() <= 1024)
 				material.HeightMap = std::string(heightMap);
-			if (extras->at_key("height_depth_m").get_double().get(depth) == simdjson::SUCCESS)
+			if (extras.at_key("height_depth_m").get_double().get(depth) == simdjson::SUCCESS)
 				material.DepthMeters = depth;
-			if (extras->at_key("texture_repeat_m").get_double().get(repeat) == simdjson::SUCCESS)
+			if (extras.at_key("texture_repeat_m").get_double().get(repeat) == simdjson::SUCCESS)
 				material.RepeatMeters = repeat;
 			material.Parallax = pom || mode == "POM";
+		}
+
+		void ReadNodeExtras(const simdjson::dom::object& extras, NodeExtras& node)
+		{
+			simdjson::dom::element value;
+			if (extras.at_key("cast_shadow").get(value) != simdjson::SUCCESS)
+				return; // Not specified.
+			bool castShadow = true;
+			if (value.get_bool().get(castShadow) == simdjson::SUCCESS)
+				node.CastShadows = castShadow;
+			else
+				node.InvalidCastShadows = true;
+		}
+
+		// fastgltf extras callback, the parser's only one: records material and node extras (userPointer:
+		// DocumentExtras). Indices are bounded, so a hostile file cannot make either list grow without limit.
+		void ReadExtras(simdjson::dom::object* extras, std::size_t objectIndex, fastgltf::Category objectType, void* userPointer)
+		{
+			constexpr size_t MaxMaterials = size_t(1) << 20;
+			constexpr size_t MaxNodes = size_t(1) << 20;
+			if (!extras || !userPointer)
+				return;
+			auto& all = *static_cast<DocumentExtras*>(userPointer);
+			if (objectType == fastgltf::Category::Materials && objectIndex < MaxMaterials)
+			{
+				if (all.Materials.size() <= objectIndex)
+					all.Materials.resize(objectIndex + 1);
+				ReadMaterialExtras(*extras, all.Materials[objectIndex]);
+			}
+			else if (objectType == fastgltf::Category::Nodes && objectIndex < MaxNodes)
+			{
+				if (all.Nodes.size() <= objectIndex)
+					all.Nodes.resize(objectIndex + 1);
+				ReadNodeExtras(*extras, all.Nodes[objectIndex]);
+			}
 		}
 
 		struct ParseOutcome
@@ -206,21 +248,23 @@ namespace Paralax {
 			bool Threw = false;
 		};
 
-		// Parses (from the start of data) and validates a document, reading material extras into materialExtras, then
-		// reads its external buffers (ReadExternalBuffers). fastgltf can throw (std::bad_alloc for absurd sizes in a
-		// hostile file); that is caught here, at the boundary, and reported as a parse failure. outAsset is set only on
-		// success: no error, and no BufferProblem.
+		// Parses (from the start of data) and validates a document, reading material and node extras into outExtras
+		// (cleared first, so a retry never keeps what a failed attempt read), then reads its external buffers
+		// (ReadExternalBuffers). fastgltf can throw (std::bad_alloc for absurd sizes in a hostile file); that is caught
+		// here, at the boundary, and reported as a parse failure. outAsset is set only on success: no error, and no
+		// BufferProblem.
 		ParseOutcome Parse(fastgltf::GltfDataGetter& data, const std::filesystem::path& directory, fastgltf::Extensions extensions, fastgltf::Options options,
-						   std::vector<MaterialExtras>& materialExtras, std::optional<fastgltf::Asset>& outAsset)
+						   DocumentExtras& outExtras, std::optional<fastgltf::Asset>& outAsset)
 		{
 			ParseOutcome outcome;
 			outAsset.reset();
-			materialExtras.clear();
+			outExtras.Materials.clear();
+			outExtras.Nodes.clear();
 			try
 			{
 				fastgltf::Parser parser(extensions);
-				parser.setExtrasParseCallback(&ReadMaterialExtras);
-				parser.setUserPointer(&materialExtras);
+				parser.setExtrasParseCallback(&ReadExtras);
+				parser.setUserPointer(&outExtras);
 				data.reset();
 				auto loaded = parser.loadGltf(data, directory, options);
 				outcome.Parse = loaded.error();
@@ -693,14 +737,14 @@ namespace Paralax {
 		// External buffers are read by Parse (see ReadExternalBuffers), not by fastgltf, which would not confine them.
 		const auto options = fastgltf::Options::GenerateMeshIndices;
 		const auto extensions = fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_texture_transform;
-		std::vector<MaterialExtras> materialExtras;
+		DocumentExtras documentExtras;
 		std::optional<fastgltf::Asset> parsed;
-		ParseOutcome outcome = Parse(data.get(), path.parent_path(), extensions | fastgltf::Extensions::KHR_lights_punctual, options, materialExtras, parsed);
+		ParseOutcome outcome = Parse(data.get(), path.parent_path(), extensions | fastgltf::Extensions::KHR_lights_punctual, options, documentExtras, parsed);
 		if (outcome.Parse != fastgltf::Error::None || outcome.Validation != fastgltf::Error::None)
 		{
 			// fastgltf rejects a whole file over malformed light data (an unknown type, a zero range...), which the
-			// meshes do not need: try once more without lights.
-			const ParseOutcome retry = Parse(data.get(), path.parent_path(), extensions, options, materialExtras, parsed);
+			// meshes do not need: try once more without lights (the extras are read again).
+			const ParseOutcome retry = Parse(data.get(), path.parent_path(), extensions, options, documentExtras, parsed);
 			if (retry.Parse == fastgltf::Error::None && retry.Validation == fastgltf::Error::None)
 			{
 				outcome = retry;
@@ -766,7 +810,7 @@ namespace Paralax {
 		};
 		std::unordered_map<std::string, HeightTexture> heightTextures;
 		auto ApplyParallax = [&](size_t materialIndex, const fastgltf::Material& source, MaterialAsset& material) {
-			const MaterialExtras& extras = materialExtras[materialIndex];
+			const MaterialExtras& extras = documentExtras.Materials[materialIndex];
 			const double scale = extras.RepeatMeters > 0.0 ? extras.DepthMeters / extras.RepeatMeters : 0.0;
 			if (extras.HeightMap.empty() || !std::isfinite(scale) || scale <= 0.0)
 			{
@@ -862,7 +906,7 @@ namespace Paralax {
 																			  : AlphaMode::Opaque;
 			material->AlphaCutoff = source.alphaCutoff;
 			material->DoubleSided = source.doubleSided;
-			if (i < materialExtras.size() && materialExtras[i].Parallax)
+			if (i < documentExtras.Materials.size() && documentExtras.Materials[i].Parallax)
 				ApplyParallax(i, source, *material);
 			outResult.Materials.push_back(material);
 		}
@@ -1118,6 +1162,8 @@ namespace Paralax {
 
 			ImportedNode record = MakeNode(asset, node, pending.Index, outResult.Warnings);
 			record.Parent = pending.ParentRecord;
+			if (pending.Index < documentExtras.Nodes.size())
+				record.CastShadows = documentExtras.Nodes[pending.Index].CastShadows;
 			if (node.meshIndex.has_value() && *node.meshIndex < asset.meshes.size())
 			{
 				if (Ref<MeshAsset> built = buildMesh(*node.meshIndex))
@@ -1138,6 +1184,19 @@ namespace Paralax {
 
 		if (!outError.empty())
 			return false;
+		// Imported nodes whose extras.cast_shadow is not a boolean get one warning together: a file can hold many.
+		size_t ignoredCastShadows = 0;
+		size_t firstIgnoredCastShadow = 0;
+		for (size_t i = 0; i < documentExtras.Nodes.size() && i < visited.size(); i++)
+		{
+			if (!visited[i] || !documentExtras.Nodes[i].InvalidCastShadows)
+				continue;
+			if (ignoredCastShadows == 0)
+				firstIgnoredCastShadow = i;
+			ignoredCastShadows++;
+		}
+		if (ignoredCastShadows > 0)
+			outResult.Warnings.push_back(fmt::format("extras.cast_shadow is not true or false on {} node(s), the first being node {}; ignored", ignoredCastShadows, firstIgnoredCastShadow));
 		ImportAnimations(asset, meshHandle, recordOf, outResult);
 		if (mesh->Submeshes.empty())
 		{
