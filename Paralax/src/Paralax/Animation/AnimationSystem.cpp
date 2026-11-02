@@ -210,7 +210,9 @@ namespace Paralax {
 				}
 			});
 			// A removed component takes its state with it: added again (even paused, at the time last applied), it is
-			// posed afresh like a new one, and a problem with it is reported again.
+			// posed afresh like a new one, and a problem with it is reported again. Removal is seen here, by an update
+			// that finds the entity without the component (as AudioSystem sees removed sources): removed and added
+			// back before the next update, it is the same component to the system.
 			std::erase_if(Bindings, [&](const auto& entry) { return !hosts.contains(entry.first); });
 			std::erase_if(ReportedClip, [&](uint64_t host) { return !hosts.contains(host); });
 			std::erase_if(ReportedTargets, [&](uint64_t host) { return !hosts.contains(host); });

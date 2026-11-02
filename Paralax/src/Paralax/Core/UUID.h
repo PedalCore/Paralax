@@ -22,7 +22,7 @@ namespace Paralax {
 		constexpr operator uint64_t() const { return m_UUID; }
 
 		// The seed used without an OS entropy source: the clocks, a stack address, the thread and a counter, mixed.
-		// Weaker than the OS source, but different on every call. Public so tests can check it.
+		// Weaker than the OS source, but different on every call. Thread-safe. Public so tests can check it.
 		static uint64_t FallbackSeed();
 
 	private:

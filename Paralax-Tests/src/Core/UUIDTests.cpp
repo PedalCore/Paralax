@@ -51,9 +51,10 @@ TEST_CASE("UUID: the fallback seed differs between calls and threads and seeds a
 	for (uint64_t seed : fromThreads)
 		CHECK(seeds.insert(seed).second);
 
-	std::mt19937_64 engine(UUID::FallbackSeed());
-	std::uniform_int_distribution<uint64_t> distribution(1, UINT64_MAX);
-	CHECK(UUID(distribution(engine)).IsValid());
+	// Generators seeded one after the other (two threads starting together) produce different identifiers.
+	std::mt19937_64 first(UUID::FallbackSeed());
+	std::mt19937_64 second(UUID::FallbackSeed());
+	CHECK(first() != second());
 }
 
 TEST_CASE("UUID: generation is thread-safe and unique across threads")

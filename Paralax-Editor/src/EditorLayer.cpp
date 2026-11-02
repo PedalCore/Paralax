@@ -382,7 +382,7 @@ namespace Paralax::Editor {
 		// A refused shortcut (during play, or with nothing to undo) says so in the console rather than doing nothing.
 		auto run = [this](const char* command) {
 			if (const CommandResult result = m_Context.Execute(command); !result.Success)
-				PX_CORE_WARN("{}: {}", command, result.Error);
+				PX_WARN("{}: {}", command, result.Error);
 		};
 		if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Z, false))
 			run(io.KeyShift ? "edit.redo" : "edit.undo");

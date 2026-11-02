@@ -861,10 +861,10 @@ TEST_CASE("PhysicsSystem: contact events beyond the limit are dropped with a war
 	CHECK(CountLogs(log, "contact events are waiting") == 1);
 }
 
-// Only where Jolt's own asserts are compiled out (it enables them without NDEBUG, i.e. in Debug): Jolt asserts that an
-// update reported no error, and its default assert handler breaks into the debugger, so in Debug this condition stops
-// the process before the engine can warn. Release and Dist (CI runs both) take this path.
-#if !defined(PX_DEBUG)
+// Only where Jolt's own asserts are compiled out, which Jolt does exactly when NDEBUG is defined (Release and Dist; CI
+// runs both): with them, Jolt asserts that an update reported no error, and its default assert handler breaks into
+// the debugger, so in Debug this condition stops the process before the engine can warn.
+#if defined(NDEBUG)
 TEST_CASE("PhysicsSystem: running out of contact capacity is reported once per run")
 {
 	PhysicsFixture fixture;
