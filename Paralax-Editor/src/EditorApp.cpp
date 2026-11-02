@@ -154,7 +154,7 @@ namespace Paralax {
 					m_Context.OpenScene(metadata->FilePath);
 			}
 			if (m_Context.GetEditorScene().GetEntityCount() == 0)
-				Editor::EditorLayer::CreateDemoScene(m_Context);
+				Editor::CreateDemoScene(m_Context);
 
 			// A windowed editor plays sound; headless ones (agents, CI) mix silently and deterministically.
 			if (!specification.Window.Headless)

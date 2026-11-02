@@ -32,9 +32,6 @@ namespace Paralax::Editor {
 		void OnImGuiRender() override;
 		void OnEvent(Event& event) override;
 
-		// Fills the open scene with a small lit demo (used when the editor starts without a scene).
-		static void CreateDemoScene(EditorContext& context);
-
 	private:
 		void EnsureViewportTarget(uint32_t width, uint32_t height);
 		CameraView GetViewportCamera(float aspect);

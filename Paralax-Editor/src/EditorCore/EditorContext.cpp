@@ -39,9 +39,7 @@ namespace Paralax::Editor {
 		m_ScenePath.clear();
 		m_SceneDirty = false;
 		m_Selection.clear();
-		m_UndoStack.clear();
-		m_UndoBytes = 0;
-		m_RedoStack.clear();
+		ClearUndoHistory();
 		return true;
 	}
 
@@ -124,9 +122,7 @@ namespace Paralax::Editor {
 		m_ScenePath = resolved;
 		m_SceneDirty = false;
 		m_Selection.clear();
-		m_UndoStack.clear();
-		m_UndoBytes = 0;
-		m_RedoStack.clear();
+		ClearUndoHistory();
 		return true;
 	}
 
@@ -348,6 +344,26 @@ namespace Paralax::Editor {
 		m_UndoBytes += entry.Scene.size();
 		m_UndoStack.push_back(std::move(entry));
 		TrimUndoHistory();
+	}
+
+	void EditorContext::ClearUndoHistory()
+	{
+		m_UndoStack.clear();
+		m_UndoBytes = 0;
+		m_RedoStack.clear();
+	}
+
+	bool EditorContext::ResetHistory()
+	{
+		CommitInteractiveEdit();
+		if (IsChangeOpen())
+		{
+			PX_CORE_ERROR("Cannot reset the undo history while a change is in progress");
+			return false;
+		}
+		ClearUndoHistory();
+		m_SceneDirty = false;
+		return true;
 	}
 
 	void EditorContext::TrimUndoHistory()

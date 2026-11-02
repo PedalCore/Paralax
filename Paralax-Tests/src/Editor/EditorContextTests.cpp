@@ -51,6 +51,52 @@ TEST_CASE("EditorContext: a failed command that changed nothing keeps the same S
 	CHECK(&context.GetActiveScene() == before);
 }
 
+TEST_CASE("EditorContext: the demo scene is the starting point, clean and with nothing to undo")
+{
+	EditorContext context;
+	CreateDemoScene(context);
+	CHECK(context.GetEditorScene().GetEntityCount() == 6);
+	CHECK(context.GetEditorScene().GetPrimaryCameraEntity().has_value());
+	const json info = context.Execute("scene.info").Result;
+	CHECK(info["dirty"] == false);
+	CHECK(info["canUndo"] == false);
+	CHECK(info["canRedo"] == false);
+	CHECK(context.GetSelection().empty());
+	CHECK_FALSE(context.Execute("edit.undo").Success);
+
+	// The first edit is undoable, back to the demo and no further.
+	const std::string id = CreateEntity(context, {{"name", "Extra"}});
+	CHECK(context.IsSceneDirty());
+	CHECK(context.Execute("edit.undo").Success);
+	CHECK(context.GetEditorScene().GetEntityCount() == 6);
+	CHECK_FALSE(context.CanUndo());
+}
+
+TEST_CASE("EditorContext: ResetHistory forgets undo and redo and marks the scene clean, but not during a change")
+{
+	EditorContext context;
+	CreateEntity(context, {{"name", "A"}});
+	CreateEntity(context, {{"name", "B"}});
+	REQUIRE(context.Execute("edit.undo").Success);
+	REQUIRE(context.CanUndo());
+	REQUIRE(context.CanRedo());
+
+	context.BeginUndoableChange("open");
+	{
+		Paralax::Testing::ScopedLogCapture capture;
+		CHECK_FALSE(context.ResetHistory());
+		CHECK(capture.Contains(spdlog::level::err, "in progress"));
+	}
+	context.EndUndoableChange(false);
+	CHECK(context.CanUndo());
+
+	CHECK(context.ResetHistory());
+	CHECK_FALSE(context.CanUndo());
+	CHECK_FALSE(context.CanRedo());
+	CHECK_FALSE(context.IsSceneDirty());
+	CHECK(context.GetEditorScene().GetEntityCount() == 1); // The scene itself is untouched.
+}
+
 TEST_CASE("EditorContext: a failed command that changed the scene is rolled back")
 {
 	EditorContext context;

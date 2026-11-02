@@ -20,6 +20,9 @@ def check(condition: bool, message: str) -> None:
 
 
 def exercise_rpc(editor: AgentClient, output: Path) -> None:
+    # The demo scene an editor starts with is not an edit: nothing to save, nothing to undo.
+    info = editor.call("scene.info")
+    check(info["entities"] > 0 and not info["dirty"] and not info["canUndo"], f"the editor did not start clean: {info}")
     commands = {c["name"] for c in editor.call("help")["commands"]}
     check({"entity.create", "component.set", "render.capture", "editor.quit", "console.get", "console.clear"} <= commands,
           f"missing commands: {commands}")
@@ -110,7 +113,9 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
 
 def exercise_project(editor: AgentClient, project: Path) -> None:
     """The game-building loop an agent follows: script, prefab, play, inspect, save, capture."""
-    editor.call("scene.new", name="Game")  # A new project opens with the demo scene.
+    info = editor.call("scene.info")  # A new project opens with the demo scene, unedited.
+    check(info["entities"] > 0 and not info["dirty"] and not info["canUndo"], f"the project did not open clean: {info}")
+    editor.call("scene.new", name="Game")
     mover = editor.call("script.create", path="Scripts/Mover.lua", source="""
         local Mover = { speed = 2 }
         function Mover:OnUpdate(dt)

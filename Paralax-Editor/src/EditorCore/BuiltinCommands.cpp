@@ -85,6 +85,28 @@ namespace Paralax::Editor {
 
 	}
 
+	void CreateDemoScene(EditorContext& context)
+	{
+		// Through the same commands an agent would use, so the demo is a scene like any other.
+		auto mesh = [](uint64_t handle) { return json{{"Mesh", std::to_string(handle)}}; };
+		const json entities[] = {
+			{{"name", "Sun"}, {"components", {{"DirectionalLight", {{"Intensity", 2.8}}}, {"Transform", {{"Rotation", {-0.40, 0.30, 0.14, 0.85}}}}}}},
+			{{"name", "Ground"}, {"components", {{"Mesh", {{"Mesh", std::to_string(AssetManager::BuiltinPlane)}, {"Materials", {std::to_string(AssetManager::BuiltinGroundMaterial)}}}}}}},
+			{{"name", "Sphere"}, {"components", {{"Mesh", mesh(AssetManager::BuiltinSphere)}, {"Transform", {{"Translation", {-1.2, 0.5, 0}}}}}}},
+			{{"name", "Cube"}, {"components", {{"Mesh", mesh(AssetManager::BuiltinCube)}, {"Transform", {{"Translation", {1.2, 0.5, 0.3}}}}}}},
+			{{"name", "Capsule"}, {"components", {{"Mesh", mesh(AssetManager::BuiltinCapsule)}, {"Transform", {{"Translation", {0, 1, -1.5}}}}}}},
+			{{"name", "Camera"}, {"components", {{"Camera", json::object()}, {"Transform", {{"Translation", {0, 2.2, 6}}, {"Rotation", {-0.17, 0, 0, 0.985}}}}}}},
+		};
+		for (const json& entity : entities)
+		{
+			if (const CommandResult result = context.Execute("entity.create", entity); !result.Success)
+				PX_CORE_ERROR("Demo scene: cannot create '{}': {}", entity["name"].get<std::string>(), result.Error);
+		}
+		context.ClearSelection();
+		// Nobody has edited anything yet: the editor starts clean, with nothing to undo.
+		context.ResetHistory();
+	}
+
 	void RegisterBuiltinCommands(CommandRegistry& registry)
 	{
 		// --- Discovery -------------------------------------------------------------------------------

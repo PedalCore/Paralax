@@ -141,6 +141,9 @@ namespace Paralax::Editor {
 		std::string GetRedoDescription() const { return m_RedoStack.empty() ? std::string() : m_RedoStack.back().Description; }
 		bool Undo();
 		bool Redo();
+		// Makes the scene as it is now the starting point, as opening a scene does: forgets the undo and redo history
+		// and marks the scene clean (it is not saved). Returns false while a change is open.
+		bool ResetHistory();
 		// The history keeps at most this many steps, and drops the oldest beyond the byte budget (always keeping one).
 		static constexpr size_t MaxUndoSteps = 200;
 		static constexpr size_t MaxUndoBytes = 256ull * 1024 * 1024;
@@ -173,6 +176,7 @@ namespace Paralax::Editor {
 		void RestoreScene(const std::string& snapshot);
 		void PushUndo(UndoEntry entry);
 		void TrimUndoHistory();
+		void ClearUndoHistory();
 		void PruneSelection();
 		void DeliverQueuedInput();
 
@@ -205,6 +209,9 @@ namespace Paralax::Editor {
 
 	// Registers the built-in editor commands (scene, entity, component, asset, selection, undo, play, render).
 	void RegisterBuiltinCommands(CommandRegistry& registry);
+	// Fills the open scene with a small lit demo (the editor shows it when it starts without a scene). The demo is the
+	// starting point, not an edit: afterwards the scene is clean and there is nothing to undo.
+	void CreateDemoScene(EditorContext& context);
 	// Registers the script and prefab commands (script.create/eval/errors, prefab.create/instantiate).
 	void RegisterScriptingCommands(CommandRegistry& registry);
 	// Registers the project commands (project.info, project.set_start_scene, project.export).
