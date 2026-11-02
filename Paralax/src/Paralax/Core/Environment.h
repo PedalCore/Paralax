@@ -24,8 +24,9 @@ namespace Paralax {
 	// environment block) and no NUL. Pure; safe to call from any thread.
 	bool IsValidEnvironmentVariableName(std::string_view name);
 
-	// The variable's value, or std::nullopt if it is not set or the name is not valid. On Windows each unpaired
-	// surrogate in the value becomes U+FFFD.
+	// The variable's value, or std::nullopt if it is not set, the name is not valid, or on Windows the name is 32,767
+	// UTF-16 units or longer (the C runtime's limit, so no such variable can be set). On Windows each unpaired surrogate
+	// in the value becomes U+FFFD.
 	std::optional<std::string> GetProcessEnvironmentVariable(std::string_view name);
 
 	// Sets the variable to value, or with std::nullopt removes it (removing an unset variable succeeds). Returns false,

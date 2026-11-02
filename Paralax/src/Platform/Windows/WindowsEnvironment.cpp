@@ -13,6 +13,10 @@ namespace Paralax {
 
 	namespace {
 
+		// The C runtime treats a name or value of _MAX_ENV UTF-16 units or more as an invalid parameter, whose default
+		// handler ends the process, when reading as well as writing: such names and values never reach it.
+		constexpr size_t EnvironmentLimit = _MAX_ENV;
+
 		// wchar_t is a UTF-16 unit on Windows: converted with the engine's tested transcoding.
 		std::wstring ToWide(std::string_view text)
 		{
@@ -38,6 +42,8 @@ namespace Paralax {
 		// The C runtime's wide copy, which SetProcessEnvironmentVariable keeps current. Its narrow copy (what getenv
 		// reads) is in the ANSI code page, without the characters the code page lacks.
 		const std::wstring wideName = ToWide(name);
+		if (wideName.size() >= EnvironmentLimit)
+			return std::nullopt;
 		if (const wchar_t* value = _wgetenv(wideName.c_str()))
 			return FromWide(value);
 		return std::nullopt;
@@ -53,10 +59,7 @@ namespace Paralax {
 		// child processes inherit. An empty value is how it removes a variable.
 		const std::wstring wideName = ToWide(name);
 		const std::wstring wideValue = value ? ToWide(*value) : std::wstring();
-		// The C runtime treats a name or value of _MAX_ENV units or more as an invalid parameter, whose default handler
-		// ends the process: refuse it here instead.
-		constexpr size_t Limit = _MAX_ENV;
-		if (wideName.size() >= Limit || wideValue.size() >= Limit)
+		if (wideName.size() >= EnvironmentLimit || wideValue.size() >= EnvironmentLimit)
 			return false;
 		return _wputenv_s(wideName.c_str(), wideValue.c_str()) == 0;
 	}

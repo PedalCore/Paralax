@@ -69,14 +69,18 @@ TEST_CASE("Environment: malformed UTF-8 is kept as bytes on POSIX and set with U
 	constexpr const char* Name = "PARALAX_TEST_ENVIRONMENT_MALFORMED";
 	// A lone continuation byte between ASCII characters: one maximal invalid subsequence.
 	REQUIRE(SetProcessEnvironmentVariable(Name, "a\x80z"));
-	CHECK(GetProcessEnvironmentVariable(Name) == (NativePathsAreBytes ? "a\x80z" : "a\xEF\xBF\xBDz"));
+	if constexpr (NativePathsAreBytes)
+		CHECK(GetProcessEnvironmentVariable(Name) == "a\x80z");
+	else
+		CHECK(GetProcessEnvironmentVariable(Name) == "a\xEF\xBF\xBDz");
 	REQUIRE(SetProcessEnvironmentVariable(Name, std::nullopt));
 }
 
 TEST_CASE("Environment: values beyond the Windows C runtime's limit are refused there, never fatal")
 {
 	// The Windows C runtime takes names and values shorter than 32,767 UTF-16 units and ends the process for any other
-	// (an invalid parameter), so those must be refused before they reach it. POSIX has no such limit.
+	// (an invalid parameter), reading as well as writing, so those must be refused before they reach it. POSIX has no
+	// such limit.
 	constexpr const char* Name = "PARALAX_TEST_ENVIRONMENT_LONG";
 	const std::string longValue(4096, 'v');
 	REQUIRE(SetProcessEnvironmentVariable(Name, longValue));
@@ -85,10 +89,15 @@ TEST_CASE("Environment: values beyond the Windows C runtime's limit are refused 
 	// Refused on Windows, leaving the previous value.
 	const std::string tooLong(32767, 'v');
 	CHECK(SetProcessEnvironmentVariable(Name, tooLong) == NativePathsAreBytes);
-	CHECK(GetProcessEnvironmentVariable(Name) == (NativePathsAreBytes ? tooLong : longValue));
+	if constexpr (NativePathsAreBytes)
+		CHECK(GetProcessEnvironmentVariable(Name) == tooLong);
+	else
+		CHECK(GetProcessEnvironmentVariable(Name) == longValue);
 	const std::string tooLongName(32767, 'N');
 	CHECK(SetProcessEnvironmentVariable(tooLongName, "value") == NativePathsAreBytes);
 	CHECK(SetProcessEnvironmentVariable(tooLongName, std::nullopt) == NativePathsAreBytes);
+	// Unset everywhere now: on Windows the name never reached the C runtime, which would end the process for it.
+	CHECK_FALSE(GetProcessEnvironmentVariable(tooLongName));
 	REQUIRE(SetProcessEnvironmentVariable(Name, std::nullopt));
 }
 
@@ -97,7 +106,7 @@ TEST_CASE("Environment: an empty value is kept on POSIX and removes the variable
 	constexpr const char* Name = "PARALAX_TEST_ENVIRONMENT_EMPTY";
 	REQUIRE(SetProcessEnvironmentVariable(Name, "not empty"));
 	REQUIRE(SetProcessEnvironmentVariable(Name, ""));
-	if (NativePathsAreBytes)
+	if constexpr (NativePathsAreBytes)
 		CHECK(GetProcessEnvironmentVariable(Name) == "");
 	else
 		CHECK_FALSE(GetProcessEnvironmentVariable(Name));
