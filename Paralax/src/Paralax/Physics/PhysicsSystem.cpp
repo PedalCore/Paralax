@@ -400,6 +400,9 @@ namespace Paralax {
 		std::vector<ContactPair> Touching;                // Pairs in contact after the last step, sorted.
 		std::vector<ContactEvent> PendingEvents;
 		bool DroppedEvents = false;
+		// Whether Jolt's capacity error has been reported this run: the condition (more contacts than the caches
+		// hold) tends to persist, and steps run many times a second.
+		bool WarnedCapacity = false;
 		// Forces added since the last update, and force x time not yet delivered by a step (by entity; ordered maps
 		// so they are applied in a deterministic order).
 		std::map<uint64_t, glm::vec3> PendingForces;
@@ -456,6 +459,7 @@ namespace Paralax {
 			Accumulator = 0.0f;
 			Steps = 0;
 			BodiesCreated = 0;
+			WarnedCapacity = false;
 			Sync(scene);
 			Physics->OptimizeBroadPhase();
 		}
@@ -473,6 +477,7 @@ namespace Paralax {
 			Touching.clear();
 			PendingEvents.clear();
 			DroppedEvents = false;
+			WarnedCapacity = false;
 			PendingForces.clear();
 			PendingMomentum.clear();
 			StepForces.clear();
@@ -897,8 +902,12 @@ namespace Paralax {
 				PendingMomentum.clear();
 
 				const JPH::EPhysicsUpdateError error = Physics->Update(step, 1, TempAllocator.get(), JobSystem.get());
-				if (error != JPH::EPhysicsUpdateError::None)
-					PX_CORE_WARN("Physics: the simulation ran out of capacity (error {}); increase the limits", static_cast<int>(error));
+				if (error != JPH::EPhysicsUpdateError::None && !WarnedCapacity)
+				{
+					// Once per run (see WarnedCapacity): Jolt drops the contacts beyond its caches and carries on.
+					WarnedCapacity = true;
+					PX_CORE_WARN("Physics: the simulation ran out of capacity (error {}); some contacts are ignored until the scene has fewer", static_cast<int>(error));
+				}
 				Steps++;
 				UpdateContacts(Contacts.Take());
 				for (const JPH::BodyID& body : movedThisStep)

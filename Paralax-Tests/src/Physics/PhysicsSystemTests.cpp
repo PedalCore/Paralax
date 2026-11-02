@@ -861,6 +861,40 @@ TEST_CASE("PhysicsSystem: contact events beyond the limit are dropped with a war
 	CHECK(CountLogs(log, "contact events are waiting") == 1);
 }
 
+// Only where Jolt's own asserts are compiled out (it enables them without NDEBUG, i.e. in Debug): Jolt asserts that an
+// update reported no error, and its default assert handler breaks into the debugger, so in Debug this condition stops
+// the process before the engine can warn. Release and Dist (CI runs both) take this path.
+#if !defined(PX_DEBUG)
+TEST_CASE("PhysicsSystem: running out of contact capacity is reported once per run")
+{
+	PhysicsFixture fixture;
+	// Spheres of radius 0.5 on a 0.1 grid inside a 0.5 cube: every pair overlaps (the cube's diagonal is 0.87), so
+	// 200 of them make 19900 contacts, more than Jolt's contact constraint cache holds.
+	std::vector<Entity> spheres;
+	for (int i = 0; i < 200; i++)
+		spheres.push_back(fixture.Body("Sphere" + std::to_string(i), glm::vec3(0.0f), ColliderShape::Sphere));
+	auto pile = [&] {
+		for (size_t i = 0; i < spheres.size(); i++)
+			spheres[i].GetComponent<TransformComponent>().Translation = 0.1f * glm::vec3(static_cast<float>(i % 6), static_cast<float>((i / 6) % 6), static_cast<float>(i / 36));
+	};
+	Paralax::Testing::ScopedLogCapture log;
+
+	pile();
+	fixture.World.OnRuntimeStart();
+	fixture.Run(5 * Step);
+	CHECK(CountLogs(log, "ran out of capacity") == 1);
+	for (Entity sphere : spheres)
+		CHECK(IsFinite(PositionOf(sphere)));
+
+	// A new run reports it again.
+	fixture.World.OnRuntimeStop();
+	pile();
+	fixture.World.OnRuntimeStart();
+	fixture.Run(5 * Step);
+	CHECK(CountLogs(log, "ran out of capacity") == 2);
+}
+#endif
+
 TEST_CASE("PhysicsSystem: colliders on children without a Rigidbody become parts of the body above them")
 {
 	PhysicsFixture fixture;
