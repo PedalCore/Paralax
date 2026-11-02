@@ -59,11 +59,13 @@ namespace Paralax {
 	// string paths (what FromUtf8 takes), so a path given on the command line reaches the engine whatever characters
 	// it holds. Pass main's argc and argv; the result is a copy the caller owns.
 	//
-	// On Windows that encoding is UTF-8, and argv holds the arguments in the ANSI code page, which loses characters it
-	// cannot represent, so they are read again from the process's UTF-16 command line and converted (an unpaired
-	// surrogate becomes U+FFFD, as ToUtf8 does). If that fails, or does not match argv (see SelectProcessArguments),
-	// argv is used as given and a warning is logged. On POSIX argv is returned unchanged: its bytes are the file
-	// names, whatever their encoding, and FromUtf8 passes them through.
+	// On Windows that encoding is UTF-8, and argv is unusable: the C runtime splits it from the ANSI command line,
+	// which Windows derives from the UTF-16 one with best-fit mapping. Characters the code page lacks become '?' or
+	// look-alikes, and some look-alikes are quotes or backslashes (U+FF02 becomes '"'), so a crafted file name could
+	// split into other arguments, options included. The UTF-16 command line is split instead, by
+	// SplitWindowsCommandLine. Only if Windows cannot provide it is argv used, converted from the code page (so the
+	// characters it can represent survive), with a warning logged. On POSIX argv is returned unchanged: its bytes are
+	// the file names, whatever their encoding, and FromUtf8 passes them through.
 	//
 	// Never throws (other than std::bad_alloc). Main thread only, called once at startup by the entry point, after
 	// Log::Init so the warning can be reported.
@@ -73,12 +75,21 @@ namespace Paralax {
 	// empty list if argv is null or argc is not positive. Pure; safe to call from any thread.
 	std::vector<std::string> CopyArgv(int argc, const char* const* argv);
 
-	// The rule GetProcessArguments follows where it reads the arguments again from the operating system (Windows),
-	// public so every platform tests it. Returns reread if it holds as many arguments as CopyArgv(argc, argv) and
-	// each ASCII one equals argv's (ASCII is the same in every code page, so a difference means the two were split
-	// differently, as the C runtime and CommandLineToArgvW can split unusual quoting). Otherwise (nullopt when they
-	// could not be read, a different count or a different split) logs one warning and returns CopyArgv(argc, argv).
-	// Safe to call from any thread once logging is initialised.
-	std::vector<std::string> SelectProcessArguments(int argc, const char* const* argv, std::optional<std::vector<std::string>> reread);
+	// Splits a Windows command line (as GetCommandLineW gives it) into its arguments, the program path first, each as
+	// UTF-8 (an unpaired surrogate becomes U+FFFD). It follows the Universal C Runtime's parse_command_line, which
+	// builds argv for every MSVC program since Visual Studio 2015, so the arguments are the ones the C runtime would
+	// give a program whose code page could represent them, and the ones the tools that start programs quote for
+	// (CMake, Python, cmd). CommandLineToArgvW is not used: it differs from the C runtime on "" inside quotes.
+	//   - Program path: '"' toggles quoting and is dropped; everything else, '\' included, is literal. It ends at a
+	//     space or tab outside quotes. (A leading space therefore gives an empty program path.)
+	//   - Other arguments are separated by runs of spaces and tabs (only those) outside quotes.
+	//   - 2n backslashes then '"': n backslashes, and the quote toggles quoting.
+	//   - 2n+1 backslashes then '"': n backslashes and a literal '"'.
+	//   - Backslashes not followed by '"' are literal.
+	//   - Inside quotes, "" is a literal '"' and quoting continues (the rule since Visual Studio 2008).
+	//   - The line ends at its end or at a NUL. Trailing spaces add no argument; "" (or a lone '"') is an empty one.
+	// An empty command line gives one empty program path. Pure; safe to call from any thread. Public so every platform
+	// tests it; only Windows uses it.
+	std::vector<std::string> SplitWindowsCommandLine(std::u16string_view commandLine);
 
 }
