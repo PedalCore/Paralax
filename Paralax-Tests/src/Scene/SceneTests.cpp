@@ -406,6 +406,25 @@ TEST_CASE("Scene: duplicating a child keeps it under the same parent, after the 
 	CHECK(parent.GetComponent<RelationshipComponent>().Children == std::vector<UUID>{b.GetUUID(), a.GetUUID(), copy.GetUUID()});
 }
 
+TEST_CASE("Scene: reparenting an entity with a very large scale keeps it, finite, so the scene still saves it")
+{
+	// The scale field allows any finite value; measured in float, 2e19 came back as infinity (saved as null).
+	Scene scene;
+	Entity parent = scene.CreateEntity("Parent");
+	Entity child = scene.CreateEntity("Wide");
+	child.GetTransform().Scale = {2e19f, 1.0f, 1.0f};
+	REQUIRE(scene.SetParent(child, parent, true));
+	REQUIRE(scene.SetParent(child, std::nullopt, true));
+	const glm::vec3 scale = child.GetTransform().Scale;
+	CHECK(std::isfinite(scale.x));
+	CHECK(scale.x == doctest::Approx(2e19).epsilon(1e-6));
+	Scene loaded;
+	std::string error;
+	std::vector<std::string> warnings;
+	REQUIRE(SceneSerializer::Deserialize(loaded, SceneSerializer::Serialize(scene), error, &warnings));
+	CHECK(warnings.empty());
+}
+
 TEST_CASE("Scene: reparenting under a degenerate (zero-scale) parent never writes NaN")
 {
 	Paralax::Testing::ScopedLogCapture logs;

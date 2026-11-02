@@ -7,6 +7,7 @@
 
 #include <glm/gtc/epsilon.hpp>
 
+#include <cfloat>
 #include <limits>
 
 using namespace Paralax;
@@ -61,6 +62,31 @@ TEST_CASE("Math: decompose rejects degenerate matrices and preserves reflections
 
 	REQUIRE(Math::DecomposeTransform(Math::ComposeTransform(glm::vec3(0.0f), r, glm::vec3(-2.0f, 1.0f, 1.0f)), t, r, s));
 	CHECK(NearVec(s, glm::vec3(-2.0f, 1.0f, 1.0f)));
+}
+
+TEST_CASE("Math: decompose keeps large finite scales finite and refuses ones no float can hold")
+{
+	// Squaring 2e19 overflows a float, so measured in float the scale came out infinite.
+	const glm::quat turn = glm::angleAxis(glm::radians(30.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+	glm::vec3 t(9.0f), s(9.0f);
+	glm::quat r(1.0f, 0.0f, 0.0f, 0.0f);
+	REQUIRE(Math::DecomposeTransform(Math::ComposeTransform(glm::vec3(1.0f, 2.0f, 3.0f), turn, glm::vec3(2e19f, 1.0f, 1.0f)), t, r, s));
+	CHECK(std::isfinite(s.x));
+	CHECK(s.x == doctest::Approx(2e19).epsilon(1e-6));
+	CHECK(NearVec(glm::vec3(s.y, s.z, 0.0f), glm::vec3(1.0f, 1.0f, 0.0f)));
+	CHECK(SameRotation(r, turn));
+	CHECK(t == glm::vec3(1.0f, 2.0f, 3.0f));
+	// A reflection with large columns is still seen (the determinant overflowed too).
+	REQUIRE(Math::DecomposeTransform(Math::ComposeTransform(glm::vec3(0.0f), turn, glm::vec3(-1e20f, 1e20f, 1e20f)), t, r, s));
+	CHECK(s.x == doctest::Approx(-1e20).epsilon(1e-6));
+	CHECK(s.y == doctest::Approx(1e20).epsilon(1e-6));
+
+	// Every entry finite, but a column longer than the largest float: degenerate, and the outputs are unchanged.
+	glm::mat4 huge(1.0f);
+	huge[0] = glm::vec4(FLT_MAX, FLT_MAX, 0.0f, 0.0f);
+	t = glm::vec3(9.0f);
+	CHECK_FALSE(Math::DecomposeTransform(huge, t, r, s));
+	CHECK(t == glm::vec3(9.0f));
 }
 
 TEST_CASE("Math: Euler/quaternion conversion round-trips")
