@@ -86,6 +86,11 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
         pass
     editor.call("play.start")
     editor.call("play.step", frames=5)
+    try:
+        editor.call("edit.undo")
+        raise AssertionError("undo must be refused while playing")
+    except AgentError as error:
+        check("play.stop" in error.message, f"unexpected undo error while playing: {error.message}")
     check(editor.call("script.eval", code="Scene.GetEntityCount()")["result"] == "4", "script.eval did not see the running scene")
     check(editor.call("script.errors")["errors"] == [], "unexpected script errors")
     editor.call("play.stop")

@@ -277,7 +277,11 @@ namespace Paralax::Editor {
 						   }});
 
 		// --- Undo ------------------------------------------------------------------------------------
-		registry.Register({"edit.undo", "Undoes the last scene change.", {}, false, [](EditorContext& context, const json&) {
+		// The history belongs to the editor scene, which is not being edited while a game runs on its copy: a precise
+		// error keeps an agent from concluding the history is gone (scene.info still reports canUndo).
+		registry.Register({"edit.undo", "Undoes the last scene change (not while playing).", {}, false, [](EditorContext& context, const json&) {
+							   if (context.IsPlaying())
+								   return CommandResult::Fail("Stop play mode first (play.stop)");
 							   const std::string description = context.GetUndoDescription();
 							   context.CommitInteractiveEdit();
 							   if (context.IsChangeOpen())
@@ -287,7 +291,9 @@ namespace Paralax::Editor {
 							   return CommandResult::Ok({{"undone", description}});
 						   }});
 
-		registry.Register({"edit.redo", "Redoes the last undone scene change.", {}, false, [](EditorContext& context, const json&) {
+		registry.Register({"edit.redo", "Redoes the last undone scene change (not while playing).", {}, false, [](EditorContext& context, const json&) {
+							   if (context.IsPlaying())
+								   return CommandResult::Fail("Stop play mode first (play.stop)");
 							   const std::string description = context.GetRedoDescription();
 							   context.CommitInteractiveEdit();
 							   if (context.IsChangeOpen())

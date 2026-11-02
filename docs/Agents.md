@@ -85,7 +85,8 @@ windowed one.
    - `audio.status` and `input.state` show what is playing and what is held.
 5. **Iterate.** `play.stop` returns to the edited scene unchanged. Change scripts with `script.update` (while
    playing, the change waits for the next `play.start`). Change components with `component.set`. Undo with
-   `edit.undo`.
+   `edit.undo` and redo with `edit.redo`; both refuse while playing ("Stop play mode first"), since the history
+   belongs to the edited scene, not the running copy.
 6. **Ship.** `project.export { output }` writes a standalone game folder: the runtime, its resources and the project.
    Run that folder's executable with `--headless --frames N --fail-on-script-error` to check it on its own.
 

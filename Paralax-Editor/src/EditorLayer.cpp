@@ -392,10 +392,15 @@ namespace Paralax::Editor {
 			return;
 		const bool ctrl = io.KeyCtrl || io.KeySuper;
 
+		// A refused shortcut (during play, or with nothing to undo) says so in the console rather than doing nothing.
+		auto run = [this](const char* command) {
+			if (const CommandResult result = m_Context.Execute(command); !result.Success)
+				PX_CORE_WARN("{}: {}", command, result.Error);
+		};
 		if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Z, false))
-			m_Context.Execute(io.KeyShift ? "edit.redo" : "edit.undo");
+			run(io.KeyShift ? "edit.redo" : "edit.undo");
 		if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Y, false))
-			m_Context.Execute("edit.redo");
+			run("edit.redo");
 		if (ctrl && ImGui::IsKeyPressed(ImGuiKey_S, false))
 		{
 			const CommandResult result = m_Context.Execute("scene.save");
@@ -502,11 +507,13 @@ namespace Paralax::Editor {
 			}
 			if (ImGui::BeginMenu("Edit"))
 			{
+				// The history is unavailable while a game runs on the scene's copy (edit.undo refuses too).
+				const bool editing = !m_Context.IsPlaying();
 				const std::string undo = m_Context.CanUndo() ? "Undo " + m_Context.GetUndoDescription() : "Undo";
 				const std::string redo = m_Context.CanRedo() ? "Redo " + m_Context.GetRedoDescription() : "Redo";
-				if (ImGui::MenuItem(undo.c_str(), "Ctrl+Z", false, m_Context.CanUndo()))
+				if (ImGui::MenuItem(undo.c_str(), "Ctrl+Z", false, editing && m_Context.CanUndo()))
 					m_Context.Execute("edit.undo");
-				if (ImGui::MenuItem(redo.c_str(), "Ctrl+Y", false, m_Context.CanRedo()))
+				if (ImGui::MenuItem(redo.c_str(), "Ctrl+Y", false, editing && m_Context.CanRedo()))
 					m_Context.Execute("edit.redo");
 				ImGui::EndMenu();
 			}

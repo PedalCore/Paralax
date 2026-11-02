@@ -286,6 +286,30 @@ TEST_CASE("BuiltinCommands: edits while playing leave the editor scene and undo 
 	CHECK(context.GetUndoDescription() == undo);
 }
 
+TEST_CASE("BuiltinCommands: undo and redo while playing say to stop play mode, and keep the history")
+{
+	EditorContext context;
+	const std::string id = CreateEntity(context, {{"name", "Box"}});
+	CHECK(context.Execute("edit.undo").Success);
+	CHECK(context.Execute("edit.redo").Success);
+	REQUIRE(context.Execute("play.start").Success);
+
+	for (const char* command : {"edit.undo", "edit.redo"})
+	{
+		const CommandResult result = context.Execute(command);
+		CHECK_FALSE(result.Success);
+		CHECK(result.Error == "Stop play mode first (play.stop)");
+	}
+	CHECK(context.Execute("scene.info").Result["canUndo"] == true);
+	CHECK(context.CanUndo());
+
+	REQUIRE(context.Execute("play.stop").Success);
+	CHECK(context.Execute("edit.undo").Result["undone"] == "entity.create");
+	CHECK(context.Execute("scene.info").Result["entities"] == 0);
+	CHECK(context.Execute("edit.redo").Success);
+	CHECK(context.Execute("entity.get", {{"id", id}}).Success);
+}
+
 TEST_CASE("BuiltinCommands: component.set cannot give an entity an empty name")
 {
 	EditorContext context;
