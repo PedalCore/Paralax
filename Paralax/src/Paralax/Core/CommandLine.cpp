@@ -1,6 +1,8 @@
 #include "pxpch.h"
 #include "Paralax/Core/CommandLine.h"
 
+#include "Paralax/Core/PathEncoding.h"
+
 #include <algorithm>
 #include <charconv>
 
@@ -17,35 +19,76 @@ namespace Paralax {
 		return arguments;
 	}
 
-	std::vector<std::string> SelectProcessArguments(int argc, const char* const* argv, std::optional<std::vector<std::string>> reread)
+	std::vector<std::string> SplitWindowsCommandLine(std::u16string_view commandLine)
 	{
-		std::vector<std::string> original = CopyArgv(argc, argv);
+		// The structure follows the C runtime's parse_command_line, so the two can be compared rule by rule. The line
+		// ends at a NUL as well as at its end, as the C runtime reads a NUL-terminated string.
+		auto at = [commandLine](size_t index) { return index < commandLine.size() ? commandLine[index] : u'\0'; };
+		auto isBlank = [](char16_t c) { return c == u' ' || c == u'\t'; };
 
-		// argv may already have lost characters (on Windows, those outside the code page), so a path given there can
-		// name another file: say so once, where the cause is known.
-		if (!reread)
+		std::vector<std::string> arguments;
+		std::u16string argument;
+		size_t position = 0;
+
+		// The program path is a file name, which cannot hold a quote, so quotes only group and backslashes are literal.
+		bool inQuotes = false;
+		for (char16_t c = at(position); c != u'\0' && (inQuotes || !isBlank(c)); c = at(++position))
 		{
-			PX_CORE_WARN("Could not read the Unicode command line: using argv, whose arguments may have lost characters");
-			return original;
+			if (c == u'"')
+				inQuotes = !inQuotes;
+			else
+				argument += c;
 		}
-		if (reread->size() != original.size())
+		arguments.push_back(Utf16ToUtf8(argument));
+
+		inQuotes = false;
+		for (;;)
 		{
-			PX_CORE_WARN("The Unicode command line has {} arguments but argv has {}: using argv, whose arguments may have lost characters", reread->size(), original.size());
-			return original;
-		}
-		// ASCII is the same in every code page, so an ASCII argument that differs from argv's means the two were split
-		// differently (the parsers disagree on unusual quoting), and the arguments no longer correspond.
-		for (size_t i = 0; i < original.size(); i++)
-		{
-			const std::string& text = (*reread)[i];
-			const bool ascii = std::all_of(text.begin(), text.end(), [](char c) { return static_cast<unsigned char>(c) < 0x80; });
-			if (ascii && text != original[i])
+			while (isBlank(at(position)))
+				position++;
+			if (at(position) == u'\0')
+				break;
+
+			// An argument ends only at a blank outside quotes or at the end of the line, so quoting is off again at the
+			// start of the next one.
+			argument.clear();
+			for (;;)
 			{
-				PX_CORE_WARN("The Unicode command line splits differently from argv (argument {}): using argv, whose arguments may have lost characters", i);
-				return original;
+				bool copy = true;
+				size_t backslashes = 0;
+				while (at(position) == u'\\')
+				{
+					position++;
+					backslashes++;
+				}
+				if (at(position) == u'"')
+				{
+					if (backslashes % 2 == 0)
+					{
+						if (inQuotes && at(position + 1) == u'"')
+						{
+							position++; // "" inside quotes: the second is a literal quote, and quoting continues.
+						}
+						else
+						{
+							copy = false;
+							inQuotes = !inQuotes;
+						}
+					}
+					backslashes /= 2;
+				}
+				argument.append(backslashes, u'\\');
+
+				const char16_t c = at(position);
+				if (c == u'\0' || (!inQuotes && isBlank(c)))
+					break;
+				if (copy)
+					argument += c;
+				position++;
 			}
+			arguments.push_back(Utf16ToUtf8(argument));
 		}
-		return std::move(*reread);
+		return arguments;
 	}
 
 	CommandLine::CommandLine(int argc, const char* const* argv, std::vector<std::string> flags)

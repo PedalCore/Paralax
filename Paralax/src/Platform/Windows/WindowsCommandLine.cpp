@@ -1,80 +1,64 @@
 #include "pxpch.h"
 #include "Paralax/Core/CommandLine.h"
 
+#include "Paralax/Core/PathEncoding.h"
+
 #if defined(PX_PLATFORM_WINDOWS)
 
 	#include <Windows.h>
-	// CommandLineToArgvW. WIN32_LEAN_AND_MEAN (set for every target) keeps Windows.h from including it, and it needs
-	// Windows.h first.
-	#include <shellapi.h>
 
 	#include <climits>
-	#include <cwchar>
-	#include <memory>
+	#include <cstring>
+	#include <string_view>
 
 namespace Paralax {
 
 	namespace {
 
-		// CommandLineToArgvW allocates the array, and its strings, as one LocalAlloc block.
-		struct LocalFreeDeleter
+		// wchar_t is a UTF-16 unit on Windows: copied into the type the engine's tested conversions take.
+		std::u16string ToUtf16(std::wstring_view text)
 		{
-			void operator()(LPWSTR* arguments) const { LocalFree(arguments); }
-		};
-
-		// One argument as UTF-8, or nullopt if Windows cannot convert it. Without WC_ERR_INVALID_CHARS an unpaired
-		// surrogate (which Windows allows in file names) becomes U+FFFD, as ToUtf8 does for paths, rather than losing
-		// every other argument to the code page.
-		std::optional<std::string> WideArgumentToUtf8(const wchar_t* argument)
-		{
-			const size_t length = std::wcslen(argument);
-			if (length == 0)
-				return std::string();
-			if (length > static_cast<size_t>(INT_MAX))
-				return std::nullopt;
-
-			const int wideLength = static_cast<int>(length);
-			const int size = WideCharToMultiByte(CP_UTF8, 0, argument, wideLength, nullptr, 0, nullptr, nullptr);
-			if (size <= 0)
-				return std::nullopt;
-			std::string text(static_cast<size_t>(size), '\0');
-			if (WideCharToMultiByte(CP_UTF8, 0, argument, wideLength, text.data(), size, nullptr, nullptr) != size)
-				return std::nullopt;
-			return text;
+			std::u16string units(text.size(), u'\0');
+			std::transform(text.begin(), text.end(), units.begin(), [](wchar_t unit) { return static_cast<char16_t>(unit); });
+			return units;
 		}
 
-		// The arguments split from the process's UTF-16 command line, or nullopt if Windows cannot split or convert
-		// them. CommandLineToArgvW splits as the C runtime splits argv except for unusual quoting (consecutive quotes
-		// inside a quoted argument); SelectProcessArguments uses argv where the two splits visibly differ.
-		std::optional<std::vector<std::string>> ReadUnicodeArguments()
+		// One argv argument from the ANSI code page to UTF-8, keeping the characters the code page can represent (the
+		// others are already lost). If Windows cannot convert it, its bytes are kept: FromUtf8 turns what is not UTF-8
+		// into U+FFFD and never throws.
+		std::string AnsiToUtf8(const char* argument)
 		{
-			int count = 0;
-			const std::unique_ptr<LPWSTR, LocalFreeDeleter> wide(CommandLineToArgvW(GetCommandLineW(), &count));
-			if (!wide || count < 0)
-				return std::nullopt;
+			const size_t length = std::strlen(argument);
+			if (length == 0 || length > static_cast<size_t>(INT_MAX))
+				return std::string(argument, length);
 
-			std::vector<std::string> arguments;
-			arguments.reserve(static_cast<size_t>(count));
-			for (int i = 0; i < count; i++)
-			{
-				const wchar_t* argument = wide.get()[i];
-				if (!argument)
-					return std::nullopt;
-				std::optional<std::string> converted = WideArgumentToUtf8(argument);
-				if (!converted)
-					return std::nullopt;
-				arguments.push_back(std::move(*converted));
-			}
-			return arguments;
+			const int narrowLength = static_cast<int>(length);
+			const int size = MultiByteToWideChar(CP_ACP, 0, argument, narrowLength, nullptr, 0);
+			if (size <= 0)
+				return std::string(argument, length);
+			std::wstring wide(static_cast<size_t>(size), L'\0');
+			if (MultiByteToWideChar(CP_ACP, 0, argument, narrowLength, wide.data(), size) != size)
+				return std::string(argument, length);
+			return Utf16ToUtf8(ToUtf16(wide));
 		}
 
 	}
 
 	std::vector<std::string> GetProcessArguments(int argc, const char* const* argv)
 	{
-		// argv is in the ANSI code page, which replaces the characters it cannot represent (often with '?'), so it is
-		// only the fallback.
-		return SelectProcessArguments(argc, argv, ReadUnicodeArguments());
+		// argv is never preferred: it is the C runtime's split of the ANSI command line, which best-fit mapping can
+		// give different quotes and backslashes (see CommandLine.h), so it may not even split the same way.
+		if (const wchar_t* commandLine = GetCommandLineW())
+			return SplitWindowsCommandLine(ToUtf16(commandLine));
+
+		PX_CORE_WARN("Could not read the Unicode command line: using argv in the system code page, which may have lost characters");
+		std::vector<std::string> arguments;
+		if (argc <= 0 || !argv)
+			return arguments;
+		arguments.reserve(static_cast<size_t>(argc));
+		for (int i = 0; i < argc; i++)
+			arguments.push_back(argv[i] ? AnsiToUtf8(argv[i]) : std::string());
+		return arguments;
 	}
 
 }

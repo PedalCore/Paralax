@@ -212,69 +212,88 @@ TEST_CASE("CopyArgv: copies argc entries, null ones as empty strings")
 	CHECK(args.GetOption("frames") == "3");
 }
 
-TEST_CASE("SelectProcessArguments: uses the arguments read again when there are argc of them")
+TEST_CASE("SplitWindowsCommandLine: splits as the C runtime splits argv")
 {
-	const std::string name(ProjectName);
-	// What argv holds on Windows for a name the code page cannot represent.
-	const char* argv[] = {"Paralax-Editor.exe", "--project", "Projekt-\xE9-\?\?-\?"};
-	std::vector<std::string> reread = {"Paralax-Editor.exe", "--project", name};
-
-	Testing::ScopedLogCapture capture;
-	CHECK(SelectProcessArguments(3, argv, reread) == reread);
-	CHECK_FALSE(LoggedArgumentWarning(capture));
-
-	// No arguments at all is consistent too.
-	CHECK(SelectProcessArguments(0, nullptr, std::vector<std::string>{}).empty());
-	CHECK_FALSE(LoggedArgumentWarning(capture));
-}
-
-TEST_CASE("SelectProcessArguments: falls back to argv with one warning when the arguments could not be read")
-{
-	const char* argv[] = {"Paralax-Editor.exe", "--headless"};
-
-	Testing::ScopedLogCapture capture;
-	CHECK(SelectProcessArguments(2, argv, std::nullopt) == std::vector<std::string>{"Paralax-Editor.exe", "--headless"});
-	const std::vector<Testing::ScopedLogCapture::Entry> entries = capture.GetEntries();
-	CHECK(std::count_if(entries.begin(), entries.end(), [](const auto& entry) { return entry.Level == spdlog::level::warn; }) == 1);
-	CHECK(LoggedArgumentWarning(capture));
-}
-
-TEST_CASE("SelectProcessArguments: falls back to argv with one warning when the count differs from argc")
-{
-	const char* argv[] = {"Paralax-Editor.exe", "--project", "a b"};
-
-	for (const std::vector<std::string>& reread : {std::vector<std::string>{"Paralax-Editor.exe", "--project", "a", "b"}, std::vector<std::string>{"Paralax-Editor.exe", "--project"}, std::vector<std::string>{}})
+	struct Case
 	{
-		CAPTURE(reread.size());
-		Testing::ScopedLogCapture capture;
-		CHECK(SelectProcessArguments(3, argv, reread) == std::vector<std::string>{"Paralax-Editor.exe", "--project", "a b"});
-		const std::vector<Testing::ScopedLogCapture::Entry> entries = capture.GetEntries();
-		CHECK(std::count_if(entries.begin(), entries.end(), [](const auto& entry) { return entry.Level == spdlog::level::warn; }) == 1);
-		CHECK(LoggedArgumentWarning(capture));
+		const char* Rule;
+		std::u16string_view Line;
+		std::vector<std::string> Expected;
+	};
+	const Case cases[] = {
+		{"a program path alone", u"prog", {"prog"}},
+		{"an empty line is an empty program path", u"", {""}},
+		{"a leading blank ends an empty program path", u"  prog a", {"", "prog", "a"}},
+		{"spaces and tabs separate arguments", u"prog a  b\tc", {"prog", "a", "b", "c"}},
+		{"trailing blanks add no argument", u"prog a \t ", {"prog", "a"}},
+		{"only spaces and tabs separate", u"prog a\nb\rc", {"prog", "a\nb\rc"}},
+		{"a quoted program path keeps its spaces", uR"("C:\Program Files\Game\Game.exe" --headless)", {R"(C:\Program Files\Game\Game.exe)", "--headless"}},
+		{"backslashes before a quote are literal in the program path", uR"("C:\Games\" --headless)", {R"(C:\Games\)", "--headless"}},
+		{"quotes anywhere in the program path group", uR"(C:\My" "Games\Game.exe a)", {R"(C:\My Games\Game.exe)", "a"}},
+		{"a quoted argument keeps its blanks", u"prog \"a b\" \"c\td\"", {"prog", "a b", "c\td"}},
+		{"quotes inside an argument group", uR"(prog a"b c"d)", {"prog", "ab cd"}},
+		{"\"\" is an empty argument", uR"(prog "" "")", {"prog", "", ""}},
+		{"a lone quote is an empty argument", uR"(prog a ")", {"prog", "a", ""}},
+		{"an unterminated quote runs to the end", uR"(prog "a b)", {"prog", "a b"}},
+		{"backslashes not before a quote are literal", uR"(prog C:\a\\b\\\c d\)", {"prog", R"(C:\a\\b\\\c)", R"(d\)"}},
+		{"2n backslashes and a quote give n backslashes and toggle quoting", uR"(prog "a\\" b \\\\"c d")", {"prog", R"(a\)", "b", R"(\\c d)"}},
+		{"2n+1 backslashes and a quote give n backslashes and a literal quote", uR"(prog \"a b\" \\\"c)", {"prog", R"("a)", R"(b")", R"(\"c)"}},
+		{"inside quotes \"\" is a literal quote and quoting continues", uR"(prog "a""b c" d)", {"prog", R"(a"b c)", "d"}},
+		// CommandLineToArgvW ends the quoting at "" instead, which gives as many arguments, split elsewhere.
+		{"the C runtime's split where CommandLineToArgvW differs", uR"(prog a "b""c d" e)", {"prog", "a", R"(b"c d)", "e"}},
+		{"backslashes before \"\" inside quotes", uR"(prog "a\\""b")", {"prog", R"(a\"b)"}},
+		{"outside quotes \"\" is an empty group", uR"(prog a""b)", {"prog", "ab"}},
+		{"three quotes open quoting with a literal quote", uR"(prog """ x)", {"prog", R"(" x)"}},
+		{"four quotes are one literal quote", uR"(prog """" x)", {"prog", R"(")", "x"}},
+		{"a test filter as CTest quotes it", uR"(prog "--test-case=Thing: a\, b")", {"prog", R"(--test-case=Thing: a\, b)"}},
+		{"a NUL ends the line", std::u16string_view(u"prog a\0b c", 10), {"prog", "a"}},
+	};
+	for (const Case& testCase : cases)
+	{
+		CAPTURE(testCase.Rule);
+		CHECK(SplitWindowsCommandLine(testCase.Line) == testCase.Expected);
 	}
 }
 
-TEST_CASE("SelectProcessArguments: falls back to argv with one warning when an ASCII argument differs from argv")
+TEST_CASE("SplitWindowsCommandLine: best-fit look-alikes of quotes and backslashes stay what they are")
 {
-	// The same count, split differently (as the C runtime and CommandLineToArgvW can split a quoted "" differently).
-	// ASCII is the same in every code page, so a difference there can only be a different split.
-	const char* argv[] = {"Paralax-Editor.exe", "a", "b\"c d", "e"};
-	const std::vector<std::string> reread = {"Paralax-Editor.exe", "a", "b\"c", "d e"};
-
-	Testing::ScopedLogCapture capture;
-	CHECK(SelectProcessArguments(4, argv, reread) == std::vector<std::string>{"Paralax-Editor.exe", "a", "b\"c d", "e"});
-	const std::vector<Testing::ScopedLogCapture::Entry> entries = capture.GetEntries();
-	CHECK(std::count_if(entries.begin(), entries.end(), [](const auto& entry) { return entry.Level == spdlog::level::warn; }) == 1);
-	CHECK(LoggedArgumentWarning(capture));
-
-	// A null argv entry (an empty argument) differs from a non-empty ASCII one too.
-	const char* withNull[] = {"Paralax-Editor.exe", nullptr};
-	CHECK(SelectProcessArguments(2, withNull, std::vector<std::string>{"Paralax-Editor.exe", "x"}) == std::vector<std::string>{"Paralax-Editor.exe", ""});
+	// Windows maps these to '"' and '\' when it makes the ANSI command line argv is split from (best fit), which
+	// would split a file name holding them into other arguments. In the UTF-16 line they are ordinary characters.
+	// U+FF38 and U+FF39 are fullwidth X and Y, U+FF02 a fullwidth quote, U+FF3C a fullwidth backslash and U+00A5 the
+	// yen sign (a backslash in the Japanese code page).
+	CHECK(SplitWindowsCommandLine(u"prog --project \"D:/My Games/\uFF38\uFF02 \uFF39\" --headless") ==
+		  std::vector<std::string>{"prog", "--project", "D:/My Games/\xEF\xBC\xB8\xEF\xBC\x82 \xEF\xBC\xB9", "--headless"});
+	CHECK(SplitWindowsCommandLine(u"prog \uFF02--export x\uFF02") == std::vector<std::string>{"prog", "\xEF\xBC\x82--export", "x\xEF\xBC\x82"});
+	CHECK(SplitWindowsCommandLine(u"prog \uFF3C\"a b\"") == std::vector<std::string>{"prog", "\xEF\xBC\xBC"
+																							 "a b"});
+	CHECK(SplitWindowsCommandLine(u"prog \u00A5\"a b\"") == std::vector<std::string>{"prog", "\xC2\xA5"
+																							 "a b"});
 }
 
-TEST_CASE("GetProcessArguments: gives this process's argc arguments, the program first")
+TEST_CASE("SplitWindowsCommandLine: converts each argument to UTF-8")
 {
-	// main's own arguments: on Windows this reads and converts the test runner's real UTF-16 command line.
+	const std::string name(ProjectName);
+	CHECK(SplitWindowsCommandLine(u"\"C:/Spiele/Projekt-\u00E9-\u65E5\u672C-\u03A9/Game.exe\" --project \"Projekt-\u00E9-\u65E5\u672C-\u03A9\"") ==
+		  std::vector<std::string>{"C:/Spiele/" + name + "/Game.exe", "--project", name});
+
+	// A surrogate pair is one character; an unpaired surrogate (allowed in Windows file names) becomes U+FFFD, as
+	// ToUtf8 does, and never takes the quote after it.
+	CHECK(SplitWindowsCommandLine(u"prog \U0001F600") == std::vector<std::string>{"prog", "\xF0\x9F\x98\x80"});
+	std::u16string unpaired = u"prog a";
+	unpaired += static_cast<char16_t>(0xD800);
+	unpaired += u"b \"";
+	unpaired += static_cast<char16_t>(0xDC00);
+	unpaired += u"\" c";
+	CHECK(SplitWindowsCommandLine(unpaired) == std::vector<std::string>{"prog", "a\xEF\xBF\xBD"
+																				"b",
+																		"\xEF\xBF\xBD", "c"});
+}
+
+TEST_CASE("GetProcessArguments: gives this process's arguments as the C runtime split them, the program first")
+{
+	// main's own arguments. On Windows this splits the test runner's real UTF-16 command line, which checks
+	// SplitWindowsCommandLine against the C runtime itself: argv is its split of the same line (CTest quotes the test
+	// filter), so the two must agree wherever the code page cannot have changed a character, in ASCII arguments.
 	const Testing::MainArguments& mainArguments = Testing::GetMainArguments();
 	REQUIRE(mainArguments.Count > 0);
 
@@ -283,6 +302,13 @@ TEST_CASE("GetProcessArguments: gives this process's argc arguments, the program
 	CHECK_FALSE(LoggedArgumentWarning(capture));
 	REQUIRE(arguments.size() == static_cast<size_t>(mainArguments.Count));
 	CHECK(FromUtf8(arguments.front()).stem() == "Paralax-Tests");
+	for (size_t i = 0; i < arguments.size(); i++)
+	{
+		CAPTURE(i);
+		const std::string& argument = arguments[i];
+		if (std::all_of(argument.begin(), argument.end(), [](char c) { return static_cast<unsigned char>(c) < 0x80; }))
+			CHECK(argument == mainArguments.Values[i]);
+	}
 	// Converted from UTF-16 they are always well formed; POSIX bytes are passed on as they are.
 	if constexpr (!NativePathsAreBytes)
 	{
