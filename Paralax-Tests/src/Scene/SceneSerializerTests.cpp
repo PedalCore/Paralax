@@ -152,6 +152,21 @@ TEST_CASE("SceneSerializer: LoadFromFile reports missing files and malformed JSO
 	CHECK(capture.Contains(spdlog::level::err, "nests too deeply"));
 }
 
+TEST_CASE("SceneSerializer: oversized scene files are refused before reading")
+{
+	const std::filesystem::path path = Paralax::Testing::CreateTestDirectory("SceneLarge") / "Huge.pxscene";
+	Paralax::Testing::CreateSparseFile(path, MaxTextFileBytes + 1);
+	Paralax::Testing::ScopedLogCapture log;
+	CHECK(SceneSerializer::LoadFromFile(path) == nullptr);
+	CHECK(log.Contains(spdlog::level::err, "too large"));
+
+	// Exactly the limit is still read (and then rejected as JSON, not for its size).
+	Paralax::Testing::CreateSparseFile(path, MaxTextFileBytes);
+	CHECK(SceneSerializer::LoadFromFile(path) == nullptr);
+	CHECK(log.Contains(spdlog::level::err, "not valid JSON"));
+	std::filesystem::remove(path);
+}
+
 TEST_CASE("SceneSerializer: wrongly typed headers are rejected without throwing")
 {
 	for (const json& header : {json{{"Type", 5}, {"Version", 1}}, json{{"Type", "Scene"}, {"Version", "1"}}, json{{"Type", nullptr}}})

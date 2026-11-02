@@ -73,9 +73,10 @@ namespace Paralax {
 	Ref<MaterialAsset> MaterialSerializer::LoadFromFile(const std::filesystem::path& path)
 	{
 		std::string text;
-		if (!ReadTextFile(path, text))
+		std::string error;
+		if (!ReadTextFile(path, text, error))
 		{
-			PX_CORE_ERROR("Cannot open material '{}'", ToUtf8(path));
+			PX_CORE_ERROR("Cannot read material '{}': {}", ToUtf8(path), error);
 			return nullptr;
 		}
 		if (JsonExceedsDepth(text, MaxJsonDepth))
@@ -91,7 +92,6 @@ namespace Paralax {
 		}
 
 		auto material = CreateRef<MaterialAsset>();
-		std::string error;
 		if (!Deserialize(*material, document, error))
 		{
 			PX_CORE_ERROR("Cannot load material '{}': {}", ToUtf8(path), error);

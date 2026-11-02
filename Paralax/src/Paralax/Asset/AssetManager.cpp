@@ -611,9 +611,10 @@ namespace Paralax {
 			return true;
 
 		std::string text;
-		if (!ReadTextFile(path, text))
+		std::string readError;
+		if (!ReadTextFile(path, text, readError))
 		{
-			PX_CORE_ERROR("Cannot read asset registry '{}'", ToUtf8(path));
+			PX_CORE_ERROR("Cannot read asset registry '{}': {}", ToUtf8(path), readError);
 			return false;
 		}
 		if (JsonExceedsDepth(text, MaxJsonDepth))

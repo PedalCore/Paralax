@@ -11,7 +11,6 @@
 #include <charconv>
 #include <unordered_map>
 #include <fstream>
-#include <sstream>
 
 namespace Paralax {
 
@@ -79,14 +78,38 @@ namespace Paralax {
 		return true;
 	}
 
-	bool ReadTextFile(const std::filesystem::path& path, std::string& outContents)
+	bool ReadTextFile(const std::filesystem::path& path, std::string& outContents, std::string& outError, size_t maxBytes)
 	{
+		std::error_code error;
+		const uintmax_t size = std::filesystem::file_size(path, error);
+		if (error)
+		{
+			outError = error.message();
+			return false;
+		}
+		if (size > maxBytes)
+		{
+			outError = fmt::format("the file is too large ({} bytes; the limit is {})", size, maxBytes);
+			return false;
+		}
+
 		std::ifstream file(path, std::ios::binary);
 		if (!file)
+		{
+			outError = "the file cannot be opened";
 			return false;
-		std::ostringstream stream;
-		stream << file.rdbuf();
-		outContents = stream.str();
+		}
+		// Read at most the measured size, so a file that grows meanwhile can never exceed the cap; one that shrinks
+		// reads short, like any file changed under a reader.
+		std::string contents(static_cast<size_t>(size), '\0');
+		file.read(contents.data(), static_cast<std::streamsize>(contents.size()));
+		contents.resize(static_cast<size_t>(file.gcount()));
+		if (file.bad())
+		{
+			outError = "the file cannot be read";
+			return false;
+		}
+		outContents = std::move(contents);
 		return true;
 	}
 
@@ -272,9 +295,10 @@ namespace Paralax {
 	Ref<Scene> SceneSerializer::LoadFromFile(const std::filesystem::path& path)
 	{
 		std::string text;
-		if (!ReadTextFile(path, text))
+		std::string error;
+		if (!ReadTextFile(path, text, error))
 		{
-			PX_CORE_ERROR("Cannot open scene '{}'", ToUtf8(path));
+			PX_CORE_ERROR("Cannot read scene '{}': {}", ToUtf8(path), error);
 			return nullptr;
 		}
 		if (JsonExceedsDepth(text, MaxJsonDepth))
@@ -291,7 +315,6 @@ namespace Paralax {
 		}
 
 		auto scene = CreateRef<Scene>(ToUtf8(path.stem()));
-		std::string error;
 		std::vector<std::string> warnings;
 		if (!Deserialize(*scene, document, error, &warnings))
 		{

@@ -94,9 +94,10 @@ namespace Paralax {
 		}
 
 		std::string text;
-		if (!ReadTextFile(file, text))
+		std::string readError;
+		if (!ReadTextFile(file, text, readError))
 		{
-			PX_CORE_ERROR("Cannot read project '{}'", ToUtf8(file));
+			PX_CORE_ERROR("Cannot read project '{}': {}", ToUtf8(file), readError);
 			return nullptr;
 		}
 		if (JsonExceedsDepth(text, MaxJsonDepth))

@@ -178,6 +178,18 @@ namespace Paralax::Testing {
 		return directory;
 	}
 
+	// Creates a file of exactly `bytes` bytes by writing its last byte only, so a file beyond a loader's size limit
+	// costs (on file systems with sparse files) neither time nor disk space to make.
+	inline void CreateSparseFile(const std::filesystem::path& path, uintmax_t bytes)
+	{
+		std::ofstream file(path, std::ios::binary | std::ios::trunc);
+		if (bytes > 0)
+		{
+			file.seekp(static_cast<std::streamoff>(bytes - 1));
+			file.put(' ');
+		}
+	}
+
 	// A JSON value nested `depth` levels deep, alternating arrays and objects around a number. Hostile input for
 	// every loader: nlohmann parses it iteratively, but copying, dumping or walking the parsed value would overflow
 	// the stack, so loaders must refuse it on the text before parsing.

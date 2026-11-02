@@ -8,17 +8,11 @@ namespace Paralax {
 
 	Ref<ScriptAsset> ScriptAsset::LoadFromFile(const std::filesystem::path& path)
 	{
-		std::error_code error;
-		const uintmax_t size = std::filesystem::file_size(path, error);
-		if (error || size > MaxSourceBytes)
-		{
-			PX_CORE_ERROR("Cannot load script '{}': {}", ToUtf8(path), error ? error.message() : "the file is too large");
-			return nullptr;
-		}
 		auto script = CreateRef<ScriptAsset>();
-		if (!ReadTextFile(path, script->Source))
+		std::string error;
+		if (!ReadTextFile(path, script->Source, error, MaxSourceBytes))
 		{
-			PX_CORE_ERROR("Cannot open script '{}'", ToUtf8(path));
+			PX_CORE_ERROR("Cannot load script '{}': {}", ToUtf8(path), error);
 			return nullptr;
 		}
 		script->Name = ToUtf8(path.filename());

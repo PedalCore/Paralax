@@ -42,17 +42,11 @@ namespace Paralax {
 
 	Ref<PrefabAsset> PrefabAsset::LoadFromFile(const std::filesystem::path& path)
 	{
-		std::error_code error;
-		const uintmax_t size = std::filesystem::file_size(path, error);
-		if (error || size > MaxFileBytes)
-		{
-			PX_CORE_ERROR("Cannot load prefab '{}': {}", ToUtf8(path), error ? error.message() : "the file is too large");
-			return nullptr;
-		}
 		std::string text;
-		if (!ReadTextFile(path, text))
+		std::string error;
+		if (!ReadTextFile(path, text, error, MaxFileBytes))
 		{
-			PX_CORE_ERROR("Cannot open prefab '{}'", ToUtf8(path));
+			PX_CORE_ERROR("Cannot load prefab '{}': {}", ToUtf8(path), error);
 			return nullptr;
 		}
 		if (JsonExceedsDepth(text, MaxJsonDepth))

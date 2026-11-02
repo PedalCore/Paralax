@@ -4,6 +4,7 @@
 
 #include <Paralax/Core/PathEncoding.h>
 #include <Paralax/Project/Project.h>
+#include <Paralax/Scene/SceneSerializer.h>
 
 #include <nlohmann/json.hpp>
 
@@ -108,6 +109,17 @@ TEST_CASE("Project: Load rejects hostile and malformed project files")
 	WriteText(root / "Two" / "B.pxproj", ValidProject("B"));
 	CHECK_FALSE(Project::Load(root / "Two"));
 	CHECK(Project::Load(root / "Two" / "A.pxproj"));
+}
+
+TEST_CASE("Project: oversized project files are refused before reading")
+{
+	const std::filesystem::path root = Paralax::Testing::CreateTestDirectory("ProjectLarge");
+	Paralax::Testing::CreateSparseFile(root / "Huge.pxproj", MaxTextFileBytes + 1);
+	Paralax::Testing::ScopedLogCapture log;
+	CHECK_FALSE(Project::Load(root / "Huge.pxproj"));
+	CHECK_FALSE(Project::Load(root)); // Found as the directory's one project file, and refused the same way.
+	CHECK(log.Contains(spdlog::level::err, "too large"));
+	std::filesystem::remove(root / "Huge.pxproj");
 }
 
 TEST_CASE("Project: Load ignores invalid optional fields")

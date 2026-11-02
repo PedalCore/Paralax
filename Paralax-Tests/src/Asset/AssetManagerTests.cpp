@@ -359,6 +359,27 @@ TEST_CASE("AssetManager: malformed and out-of-project registry entries are skipp
 	CHECK(capture.Contains(spdlog::level::err, "nests too deeply"));
 }
 
+TEST_CASE("AssetManager: an oversized registry is refused before reading, and registers nothing")
+{
+	const std::filesystem::path directory = MakeProject("AssetRegistryLarge");
+	Paralax::Testing::CreateSparseFile(directory / AssetManager::RegistryFileName, MaxTextFileBytes + 1);
+	Paralax::Testing::ScopedLogCapture log;
+	AssetManager assets(directory);
+	CHECK(log.Contains(spdlog::level::err, "too large"));
+	CHECK_FALSE(assets.IsRegistered(AssetHandle(5003)));
+	std::filesystem::remove(directory / AssetManager::RegistryFileName);
+}
+
+TEST_CASE("MaterialSerializer: oversized material files are refused before reading")
+{
+	const std::filesystem::path path = Paralax::Testing::CreateTestDirectory("MaterialLarge") / "Huge.pxmat";
+	Paralax::Testing::CreateSparseFile(path, MaxTextFileBytes + 1);
+	Paralax::Testing::ScopedLogCapture log;
+	CHECK_FALSE(MaterialSerializer::LoadFromFile(path));
+	CHECK(log.Contains(spdlog::level::err, "too large"));
+	std::filesystem::remove(path);
+}
+
 TEST_CASE("AssetManager: relative lookups are normalised")
 {
 	const std::filesystem::path directory = MakeProject("AssetNormalise");

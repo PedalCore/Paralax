@@ -4,6 +4,7 @@
 #include "Paralax/Core/Base.h"
 #include "Paralax/Scene/Entity.h"
 #include "Paralax/Scene/Scene.h"
+#include "Paralax/Scene/SceneSerializer.h"
 
 #include <nlohmann/json.hpp>
 
@@ -22,7 +23,8 @@ namespace Paralax {
 	class PrefabAsset : public Asset
 	{
 	public:
-		static constexpr size_t MaxFileBytes = 64ull * 1024 * 1024;
+		// The cap shared by every text document; also what the editor checks before it writes a prefab.
+		static constexpr size_t MaxFileBytes = MaxTextFileBytes;
 
 		AssetType GetType() const override { return AssetType::Prefab; }
 
