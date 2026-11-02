@@ -1,6 +1,8 @@
 #include "pxpch.h"
 #include "Paralax/Core/UUID.h"
 
+#include "Paralax/Core/UUIDEngine.h"
+
 #include <atomic>
 #include <chrono>
 #include <exception>
@@ -23,35 +25,42 @@ namespace Paralax {
 			return value;
 		}
 
-		std::mt19937_64 CreateEngine()
-		{
-			// std::random_device throws when the OS source is unavailable (getrandom and /dev/urandom denied by a
-			// seccomp profile, say): an identifier generator is not the place to stop the process, so the weaker
-			// seed is used and the condition is logged once.
-			try
-			{
-				std::random_device device;
-				std::seed_seq seed{device(), device(), device(), device(), device(), device(), device(), device()};
-				return std::mt19937_64(seed);
-			}
-			catch (const std::exception& e)
-			{
-				static std::atomic<bool> s_Reported = false;
-				if (!s_Reported.exchange(true))
-					PX_CORE_WARN("UUID: no OS entropy source ({}); identifiers are seeded from the clock instead", e.what());
-				return std::mt19937_64(UUID::FallbackSeed());
-			}
-		}
-
 		uint64_t GenerateUUID()
 		{
-			// One engine per thread.
-			thread_local std::mt19937_64 engine = CreateEngine();
+			// One engine per thread, seeded from the OS entropy source. The device is created inside the entropy call,
+			// so a constructor that throws takes the same fallback as a read that does.
+			thread_local std::mt19937_64 engine = [] {
+				Scope<std::random_device> device;
+				return CreateUUIDEngine([&device]() -> uint32_t {
+					if (!device)
+						device = CreateScope<std::random_device>();
+					return (*device)();
+				});
+			}();
 			thread_local std::uniform_int_distribution<uint64_t> distribution(1, UINT64_MAX);
 
 			return distribution(engine);
 		}
 
+	}
+
+	std::mt19937_64 CreateUUIDEngine(const std::function<uint32_t()>& entropy)
+	{
+		// std::random_device throws when the OS source is unavailable (getrandom and /dev/urandom denied by a seccomp
+		// profile, say): an identifier generator is not the place to stop the process, so the weaker seed is used and
+		// the condition is logged once.
+		try
+		{
+			std::seed_seq seed{entropy(), entropy(), entropy(), entropy(), entropy(), entropy(), entropy(), entropy()};
+			return std::mt19937_64(seed);
+		}
+		catch (const std::exception& e)
+		{
+			static std::atomic<bool> s_Reported = false;
+			if (!s_Reported.exchange(true))
+				PX_CORE_WARN("UUID: no OS entropy source ({}); identifiers are seeded from the clock instead", e.what());
+			return std::mt19937_64(UUID::FallbackSeed());
+		}
 	}
 
 	UUID::UUID()

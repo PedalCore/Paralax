@@ -1,13 +1,35 @@
 #include <doctest/doctest.h>
 
+#include "TestUtilities.h"
+
 #include <Paralax/Core/UUID.h>
+#include <Paralax/Core/UUIDEngine.h>
 
 #include <random>
+#include <stdexcept>
 #include <thread>
 #include <unordered_set>
 #include <vector>
 
 using namespace Paralax;
+
+TEST_CASE("UUID: without an OS entropy source the generator seeds itself, warning once")
+{
+	Paralax::Testing::ScopedLogCapture log;
+	// What std::random_device does where getrandom and /dev/urandom are denied.
+	const auto failing = []() -> uint32_t { throw std::runtime_error("entropy source denied"); };
+	std::mt19937_64 first = CreateUUIDEngine(failing);
+	std::mt19937_64 second = CreateUUIDEngine(failing);
+	CHECK(first() != second()); // Each from its own fallback seed.
+	size_t warnings = 0;
+	for (const auto& entry : log.GetEntries())
+		warnings += entry.Level == spdlog::level::warn && entry.Message.find("entropy source denied") != std::string::npos ? 1 : 0;
+	CHECK(warnings == 1);
+
+	// A working source is what seeds the generator.
+	const auto constant = []() -> uint32_t { return 42; };
+	CHECK(CreateUUIDEngine(constant)() == CreateUUIDEngine(constant)());
+}
 
 TEST_CASE("UUID: generated values are valid and unique")
 {
