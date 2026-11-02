@@ -168,23 +168,30 @@ endif()
 # opens and exports projects at such paths, and the runtime plays the project and the export from them. The work
 # directory is outside TestOutput, which CI uploads, because it holds an exported game.
 if(TARGET Paralax-Editor)
+	# The script kills a program after PX_NON_ASCII_PROCESS_TIMEOUT seconds and prints its output. CTest's limit must
+	# outlast every program a test runs (three for the editor, two for the runtime, plus a margin for copying the
+	# project), or CTest kills the script first and the output is lost.
+	set(PX_NON_ASCII_PROCESS_TIMEOUT 240)
+	math(EXPR PX_NON_ASCII_EDITOR_TIMEOUT "3 * ${PX_NON_ASCII_PROCESS_TIMEOUT} + 120")
+	math(EXPR PX_NON_ASCII_RUNTIME_TIMEOUT "2 * ${PX_NON_ASCII_PROCESS_TIMEOUT} + 120")
 	set(PX_NON_ASCII_TEST_ARGUMENTS
 		"-DEDITOR=$<TARGET_FILE:Paralax-Editor>"
 		"-DRUNTIME=$<TARGET_FILE:Paralax-Runtime>"
 		"-DEXECUTABLE_SUFFIX=$<TARGET_FILE_SUFFIX:Paralax-Runtime>"
 		"-DFEATURE_TEST=${CMAKE_CURRENT_SOURCE_DIR}/FeatureTest"
-		"-DWORK=${CMAKE_CURRENT_BINARY_DIR}/NonAsciiCommandLine")
+		"-DWORK=${CMAKE_CURRENT_BINARY_DIR}/NonAsciiCommandLine"
+		"-DPROCESS_TIMEOUT=${PX_NON_ASCII_PROCESS_TIMEOUT}")
 	add_test(NAME "Command line: the editor creates, opens and exports projects at non-ASCII paths"
 		COMMAND "${CMAKE_COMMAND}" ${PX_NON_ASCII_TEST_ARGUMENTS} -DMODE=editor -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/NonAsciiCommandLineTest.cmake")
 	add_test(NAME "Command line: the runtime plays a project and its export from non-ASCII paths"
 		COMMAND "${CMAKE_COMMAND}" ${PX_NON_ASCII_TEST_ARGUMENTS} -DMODE=runtime -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/NonAsciiCommandLineTest.cmake")
 	set_tests_properties("Command line: the editor creates, opens and exports projects at non-ASCII paths" PROPERTIES
-		TIMEOUT 600
+		TIMEOUT ${PX_NON_ASCII_EDITOR_TIMEOUT}
 		LABELS "smoke;gpu"
 		FIXTURES_SETUP NonAsciiCommandLine
 		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp")
 	set_tests_properties("Command line: the runtime plays a project and its export from non-ASCII paths" PROPERTIES
-		TIMEOUT 600
+		TIMEOUT ${PX_NON_ASCII_RUNTIME_TIMEOUT}
 		LABELS "smoke;gpu"
 		FIXTURES_REQUIRED NonAsciiCommandLine
 		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp")
