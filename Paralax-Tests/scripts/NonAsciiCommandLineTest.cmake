@@ -6,7 +6,8 @@
 #   -DMODE=runtime   plays the copy and its export (both left by the editor mode) with the runtime, then removes WORK
 #
 # Other parameters: EDITOR and RUNTIME (the executables), EXECUTABLE_SUFFIX (".exe" on Windows), FEATURE_TEST (the
-# feature test project) and WORK (a scratch directory, replaced by the editor mode).
+# feature test project), WORK (a scratch directory, replaced by the editor mode) and PROCESS_TIMEOUT (seconds each
+# program may run, 240 by default).
 #
 # The characters (Latin-1 é, Japanese 日本, Greek Ω) share no ANSI code page, so on Windows argv could never hold
 # them all: the programs only find these files if they read the Unicode command line. CMake runs the programs through
@@ -28,12 +29,17 @@ set(EXPORTED_GAME "${EXPORT_DIR}/FeatureTest${EXECUTABLE_SUFFIX}")
 set(NEW_PROJECT_DIR "${WORK}/Neu-é-日本-Ω/Spiel")
 set(AGENT_INFO "${WORK}/Agent-é-日本-Ω.json")
 set(PLAY_ARGUMENTS --headless --frames 60 --fixed-timestep 0.0166667 --validation --fail-on-script-error)
+if(NOT DEFINED PROCESS_TIMEOUT)
+	set(PROCESS_TIMEOUT 240)
+endif()
 
 # Runs a program in WORK and fails the test unless it exits with 0. Its output (stdout and stderr) is left in
-# PX_OUTPUT.
+# PX_OUTPUT. A program still running after PROCESS_TIMEOUT is killed, so a hang fails with what it printed rather
+# than leaving the program behind when CTest's own timeout kills this script.
 function(px_run description)
 	execute_process(COMMAND ${ARGN}
 		WORKING_DIRECTORY "${WORK}"
+		TIMEOUT ${PROCESS_TIMEOUT}
 		RESULT_VARIABLE result
 		OUTPUT_VARIABLE output
 		ERROR_VARIABLE output
