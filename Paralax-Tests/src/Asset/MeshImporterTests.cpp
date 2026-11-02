@@ -5,6 +5,7 @@
 
 #include <Paralax/Asset/AssetManager.h>
 #include <Paralax/Asset/MeshImporter.h>
+#include <Paralax/Core/JsonText.h>
 #include <Paralax/Core/PathEncoding.h>
 #include <Paralax/Renderer/Image.h>
 #include <Paralax/Scene/ComponentRegistry.h>
@@ -1128,4 +1129,62 @@ TEST_CASE("MeshImporter: derived sub-asset handles never fall in the reserved bu
 	for (uint64_t parent = 0; parent < 2000; parent++)
 		for (uint64_t index = 0; index < 4; index++)
 			REQUIRE(static_cast<uint64_t>(DeriveSubAssetHandle(UUID(parent), SubAssetKind::Material, index)) >= AssetManager::FirstUserHandle);
+}
+
+TEST_CASE("MeshImporter: warnings name the file's meshes, materials and paths briefly, however long they are")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfLongNames");
+	const std::string huge(16 * 1024 * 1024, 'n');
+	const std::string hugeSize = fmt::format("...' ({} bytes)", huge.size());
+	// Each import gets one 16 MiB name or path, where a warning would echo it.
+	auto import = [&](const std::function<void(json&)>& edit) {
+		json document = Paralax::Testing::MakeTriangleDocument(directory);
+		edit(document);
+		Paralax::Testing::ScopedLogCapture log;
+		MeshImportResult result;
+		std::string error;
+		REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), result, error), error);
+		for (const std::string& warning : result.Warnings)
+			CHECK(warning.size() < 300);
+		for (const Paralax::Testing::ScopedLogCapture::Entry& entry : log.GetEntries())
+			CHECK(entry.Message.size() < 300);
+		return result.Warnings;
+	};
+	auto mentions = [](const std::vector<std::string>& warnings, const std::string& text) {
+		return std::any_of(warnings.begin(), warnings.end(), [&](const std::string& warning) { return warning.find(text) != std::string::npos; });
+	};
+
+	// A mesh with a primitive that is not a triangle list, beside one that is.
+	const std::vector<std::string> mesh = import([&](json& document) {
+		document["meshes"][0]["name"] = huge;
+		json points = document["meshes"][0]["primitives"][0];
+		points["mode"] = 0;
+		document["meshes"][0]["primitives"].push_back(points);
+	});
+	CHECK(mentions(mesh, "mesh 'nnn"));
+	CHECK(mentions(mesh, hugeSize + " primitive 1: only triangle lists are supported"));
+
+	// A material asking for parallax without its parameters.
+	CHECK(mentions(import([&](json& document) {
+					   document["materials"][0]["name"] = huge;
+					   document["materials"][0]["extras"] = {{"pom", true}};
+				   }),
+				   hugeSize + ": parallax needs height_map"));
+	// Height map names longer than 1024 bytes are ignored; one that long is named briefly too.
+	const std::string longHeightMap(1024, 'h');
+	const std::vector<std::string> heightMap = import([&](json& document) { document["materials"][0]["extras"] = {{"pom", true}, {"height_map", longHeightMap}, {"height_depth_m", 0.02}, {"texture_repeat_m", 1.0}}; });
+	CHECK(mentions(heightMap, "'hhh"));
+	CHECK(mentions(heightMap, "...' (1024 bytes)"));
+
+	// An image whose file is missing, named too long to quote whole, and one named too long for any file system.
+	const std::string missing = std::string(200, 'm') + ".png";
+	CHECK(mentions(import([&](json& document) { document["images"][0]["uri"] = missing; }), fmt::format("file '{}...' (204 bytes) not found", std::string(MaxPreviewBytes, 'm'))));
+	CHECK(mentions(import([&](json& document) { document["images"][0]["uri"] = huge + ".png"; }), fmt::format("...' ({} bytes)", huge.size() + 4)));
+
+	// A name with a line break and a terminal escape cannot break or restyle a log line.
+	CHECK(mentions(import([&](json& document) {
+					   document["materials"][0]["name"] = "Two\nLines\x1B[31m";
+					   document["materials"][0]["extras"] = {{"pom", true}};
+				   }),
+				   "material 'Two\\nLines\\u001b[31m': parallax needs"));
 }

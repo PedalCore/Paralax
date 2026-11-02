@@ -1,6 +1,7 @@
 #include "EditorCore/EditorContext.h"
 
 #include <Paralax/Core/Input.h>
+#include <Paralax/Core/JsonText.h>
 #include <Paralax/Core/PathEncoding.h>
 #include <Paralax/Events/ApplicationEvent.h>
 #include <Paralax/Scene/Entity.h>
@@ -60,7 +61,7 @@ namespace Paralax::Editor {
 		std::optional<std::filesystem::path> registryPath = assets.ToRegistryPath(path, &nameError);
 		if (!registryPath)
 		{
-			outError = nameError.empty() ? fmt::format("'{}' is outside the project's asset directory", ToUtf8(path)) : nameError;
+			outError = nameError.empty() ? fmt::format("{} is outside the project's asset directory", QuoteText(ToUtf8(path))) : nameError;
 			return std::nullopt;
 		}
 		return assets.ToAbsolutePath(*registryPath);
@@ -93,7 +94,7 @@ namespace Paralax::Editor {
 		const std::filesystem::path relative = resolved.lexically_relative(base);
 		if (relative.empty() || *relative.begin() == "..")
 		{
-			outError = fmt::format("'{}' is outside the project directory", ToUtf8(path));
+			outError = fmt::format("{} is outside the project directory", QuoteText(ToUtf8(path)));
 			return std::nullopt;
 		}
 		return resolved;

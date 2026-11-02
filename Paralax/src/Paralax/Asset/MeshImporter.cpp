@@ -3,6 +3,7 @@
 
 #include "Paralax/Animation/AnimationClip.h"
 #include "Paralax/Asset/AssetManager.h"
+#include "Paralax/Core/JsonText.h"
 #include "Paralax/Core/PathEncoding.h"
 #include "Paralax/Math/Math.h"
 
@@ -86,30 +87,30 @@ namespace Paralax {
 			const std::filesystem::path relative = target.lexically_relative(base);
 			if (error || relative.empty() || *relative.begin() == ".." || relativePath.is_absolute())
 			{
-				outProblem = fmt::format("path '{}' leaves the model's directory", ToUtf8(relativePath));
+				outProblem = fmt::format("path {} leaves the model's directory", QuoteText(ToUtf8(relativePath)));
 				return {};
 			}
 			std::ifstream file(target, std::ios::binary);
 			if (!file)
 			{
-				outProblem = fmt::format("file '{}' not found", ToUtf8(relativePath));
+				outProblem = fmt::format("file {} not found", QuoteText(ToUtf8(relativePath)));
 				return {};
 			}
 			const uintmax_t size = std::filesystem::file_size(target, error);
 			if (error)
 			{
-				outProblem = fmt::format("file '{}' cannot be read: {}", ToUtf8(relativePath), error.message());
+				outProblem = fmt::format("file {} cannot be read: {}", QuoteText(ToUtf8(relativePath)), error.message());
 				return {};
 			}
 			if (size > maxBytes)
 			{
-				outProblem = fmt::format("file '{}' is too large ({} bytes; at most {} can be read)", ToUtf8(relativePath), size, maxBytes);
+				outProblem = fmt::format("file {} is too large ({} bytes; at most {} can be read)", QuoteText(ToUtf8(relativePath)), size, maxBytes);
 				return {};
 			}
 			std::vector<Byte> bytes(static_cast<size_t>(size));
 			if (size > 0 && !file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size)))
 			{
-				outProblem = fmt::format("file '{}' cannot be read", ToUtf8(relativePath));
+				outProblem = fmt::format("file {} cannot be read", QuoteText(ToUtf8(relativePath)));
 				return {};
 			}
 			return bytes;
@@ -497,7 +498,7 @@ namespace Paralax {
 			}
 			if (!usable || !IsFinite(record.Translation) || !IsFinite(record.Scale))
 			{
-				warnings.push_back(fmt::format("node '{}' has an unusable transform; imported at its parent's origin", record.Name));
+				warnings.push_back(fmt::format("node {} has an unusable transform; imported at its parent's origin", QuoteText(record.Name)));
 				record.Translation = glm::vec3(0.0f);
 				record.Rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 				record.Scale = glm::vec3(1.0f);
@@ -659,12 +660,12 @@ namespace Paralax {
 					}
 					else
 					{
-						outResult.Warnings.push_back(fmt::format("animation '{}' channel {} is skipped: {}", clip->Name, c, problem));
+						outResult.Warnings.push_back(fmt::format("animation {} channel {} is skipped: {}", QuoteText(clip->Name), c, problem));
 					}
 				}
 				if (clip->Channels.empty())
 				{
-					outResult.Warnings.push_back(fmt::format("animation '{}' has nothing Paralax can play; skipped", clip->Name));
+					outResult.Warnings.push_back(fmt::format("animation {} has nothing Paralax can play; skipped", QuoteText(clip->Name)));
 					continue;
 				}
 
@@ -701,14 +702,14 @@ namespace Paralax {
 					}
 				}
 				if (ambiguous)
-					outResult.Warnings.push_back(fmt::format("animation '{}' animates a node whose name a sibling shares; give them different names", clip->Name));
+					outResult.Warnings.push_back(fmt::format("animation {} animates a node whose name a sibling shares; give them different names", QuoteText(clip->Name)));
 
 				for (const AnimationChannel& channel : clip->Channels)
 					clip->Duration = std::max(clip->Duration, channel.Times.back());
 				std::string problem;
 				if (!clip->Validate(problem))
 				{
-					outResult.Warnings.push_back(fmt::format("animation '{}' is skipped: {}", clip->Name, problem));
+					outResult.Warnings.push_back(fmt::format("animation {} is skipped: {}", QuoteText(clip->Name), problem));
 					continue;
 				}
 				outResult.Animations.push_back({clip, host});
@@ -834,7 +835,7 @@ namespace Paralax {
 			const double scale = extras.RepeatMeters > 0.0 ? extras.DepthMeters / extras.RepeatMeters : 0.0;
 			if (extras.HeightMap.empty() || !std::isfinite(scale) || scale <= 0.0)
 			{
-				outResult.Warnings.push_back(fmt::format("material '{}': parallax needs height_map, height_depth_m and texture_repeat_m", source.name.c_str()));
+				outResult.Warnings.push_back(fmt::format("material {}: parallax needs height_map, height_depth_m and texture_repeat_m", QuoteText(source.name)));
 				return;
 			}
 			auto found = heightTextures.find(extras.HeightMap);
@@ -874,17 +875,17 @@ namespace Paralax {
 					}
 					else
 					{
-						problem = fmt::format("height map '{}' could not be decoded", ToUtf8(candidate));
+						problem = fmt::format("height map {} could not be decoded", QuoteText(ToUtf8(candidate)));
 					}
 					break;
 				}
 				if (!handle.IsValid() && problem.empty())
-					problem = fmt::format("height map '{}' not found beside the model, in its textures folder or beside its base color image", extras.HeightMap);
+					problem = fmt::format("height map {} not found beside the model, in its textures folder or beside its base color image", QuoteText(extras.HeightMap));
 				found = heightTextures.emplace(extras.HeightMap, HeightTexture{handle, problem}).first;
 			}
 			if (!found->second.Handle.IsValid())
 			{
-				outResult.Warnings.push_back(fmt::format("material '{}': {}", source.name.c_str(), found->second.Problem));
+				outResult.Warnings.push_back(fmt::format("material {}: {}", QuoteText(source.name), found->second.Problem));
 				return;
 			}
 			material.HeightTexture = found->second.Handle;
@@ -985,14 +986,14 @@ namespace Paralax {
 				const fastgltf::Primitive& primitive = sourceMesh.primitives[p];
 				if (primitive.type != fastgltf::PrimitiveType::Triangles)
 				{
-					outResult.Warnings.push_back(fmt::format("mesh '{}' primitive {}: only triangle lists are supported", sourceMesh.name.c_str(), p));
+					outResult.Warnings.push_back(fmt::format("mesh {} primitive {}: only triangle lists are supported", QuoteText(sourceMesh.name), p));
 					continue;
 				}
 
 				const auto* positionAttribute = primitive.findAttribute("POSITION");
 				if (positionAttribute == primitive.attributes.end() || !primitive.indicesAccessor.has_value())
 				{
-					outResult.Warnings.push_back(fmt::format("mesh '{}' primitive {}: missing positions or indices", sourceMesh.name.c_str(), p));
+					outResult.Warnings.push_back(fmt::format("mesh {} primitive {}: missing positions or indices", QuoteText(sourceMesh.name), p));
 					continue;
 				}
 
@@ -1008,12 +1009,12 @@ namespace Paralax {
 				}
 				if (!accessorsValid)
 				{
-					outError = fmt::format("mesh '{}' primitive {}: {}", sourceMesh.name.c_str(), p, problem);
+					outError = fmt::format("mesh {} primitive {}: {}", QuoteText(sourceMesh.name), p, problem);
 					return nullptr;
 				}
 				if (asset.accessors[*primitive.indicesAccessor].count % 3 != 0)
 				{
-					outResult.Warnings.push_back(fmt::format("mesh '{}' primitive {}: index count is not a multiple of 3; skipped", sourceMesh.name.c_str(), p));
+					outResult.Warnings.push_back(fmt::format("mesh {} primitive {}: index count is not a multiple of 3; skipped", QuoteText(sourceMesh.name), p));
 					continue;
 				}
 				builtVertices += asset.accessors[positionAttribute->accessorIndex].count;
@@ -1065,7 +1066,7 @@ namespace Paralax {
 				{
 					if (built->Indices[submesh.IndexOffset + i] >= submesh.VertexCount)
 					{
-						outError = fmt::format("mesh '{}' primitive {} has an out-of-range index", submesh.Name, p);
+						outError = fmt::format("mesh {} primitive {} has an out-of-range index", QuoteText(submesh.Name), p);
 						return nullptr;
 					}
 				}
@@ -1116,7 +1117,7 @@ namespace Paralax {
 			std::string validationError;
 			if (!built->Validate(validationError))
 			{
-				outError = fmt::format("mesh '{}' is invalid: {}", sourceMesh.name.c_str(), validationError);
+				outError = fmt::format("mesh {} is invalid: {}", QuoteText(sourceMesh.name), validationError);
 				return nullptr;
 			}
 			builtMeshes[meshIndex] = built;
