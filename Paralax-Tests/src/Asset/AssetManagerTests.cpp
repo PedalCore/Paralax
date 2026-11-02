@@ -361,8 +361,12 @@ TEST_CASE("AssetManager: malformed and out-of-project registry entries are skipp
 
 TEST_CASE("AssetManager: an oversized registry is refused before reading, and registers nothing")
 {
+	// A valid registry, padded with whitespace past the cap: read in full, it would register its entry.
 	const std::filesystem::path directory = MakeProject("AssetRegistryLarge");
-	Paralax::Testing::CreateSparseFile(directory / AssetManager::RegistryFileName, MaxTextFileBytes + 1);
+	const std::string valid = R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[{"Handle":"5003","Type":"Material","Path":"Brick.pxmat"}]})";
+	REQUIRE(WriteFileAtomically(directory / AssetManager::RegistryFileName, valid));
+	REQUIRE(AssetManager(directory).IsRegistered(AssetHandle(5003)));
+	REQUIRE(WriteFileAtomically(directory / AssetManager::RegistryFileName, valid + std::string(MaxTextFileBytes + 1 - valid.size(), ' ')));
 	Paralax::Testing::ScopedLogCapture log;
 	AssetManager assets(directory);
 	CHECK(log.Contains(spdlog::level::err, "too large"));

@@ -111,18 +111,19 @@ TEST_CASE("ComponentRegistry: vectors, quaternions and asset handles are validat
 	CHECK(ComponentRegistry::SetField(*info.FindField("Rotation"), &reloaded, stored, error));
 	CHECK(reloaded.Rotation == transform.Rotation);
 
-	// A rotation that is unit to float precision is kept bit for bit, and storing is idempotent, so saving and
-	// loading never drifts a rotation.
+	// Storing is idempotent, so saving and loading never drifts a rotation. [3, 3, 3, 1] normalises to a quaternion
+	// whose length is 4e-8 short of 1: dividing it by that length again would move w from 0.18898223 to 0.18898225,
+	// so this pins the rule that a quaternion already unit to float precision is kept bit for bit.
+	CHECK(ComponentRegistry::SetField(*info.FindField("Rotation"), &transform, json::array({3, 3, 3, 1}), error));
+	const glm::quat normalised(0.18898223340511322f, 0.5669466853141785f, 0.5669466853141785f, 0.5669466853141785f);
+	CHECK(transform.Rotation == normalised);
+	CHECK(ComponentRegistry::SetField(*info.FindField("Rotation"), &reloaded, ComponentRegistry::GetField(*info.FindField("Rotation"), &transform), error));
+	CHECK(reloaded.Rotation == normalised);
+	// A rotation made in code round-trips too.
 	const glm::quat quarterTurn = glm::angleAxis(glm::radians(-90.0f), glm::vec3(1.0f, 0.0f, 0.0f));
 	transform.Rotation = quarterTurn;
-	const json saved = ComponentRegistry::GetField(*info.FindField("Rotation"), &transform);
-	CHECK(ComponentRegistry::SetField(*info.FindField("Rotation"), &reloaded, saved, error));
+	CHECK(ComponentRegistry::SetField(*info.FindField("Rotation"), &reloaded, ComponentRegistry::GetField(*info.FindField("Rotation"), &transform), error));
 	CHECK(reloaded.Rotation == quarterTurn);
-	CHECK(ComponentRegistry::SetField(*info.FindField("Rotation"), &transform, json::array({1, 2, 3, 4}), error));
-	const glm::quat normalised = transform.Rotation;
-	CHECK(std::abs(glm::length(normalised) - 1.0f) < 1e-6f);
-	CHECK(ComponentRegistry::SetField(*info.FindField("Rotation"), &transform, ComponentRegistry::GetField(*info.FindField("Rotation"), &transform), error));
-	CHECK(transform.Rotation == normalised);
 
 	MeshComponent mesh;
 	const ComponentInfo& meshInfo = *ComponentRegistry::Find("Mesh");

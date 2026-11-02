@@ -113,12 +113,18 @@ TEST_CASE("Project: Load rejects hostile and malformed project files")
 
 TEST_CASE("Project: oversized project files are refused before reading")
 {
+	// A valid project, padded with whitespace past the cap: read in full, it would load.
 	const std::filesystem::path root = Paralax::Testing::CreateTestDirectory("ProjectLarge");
-	Paralax::Testing::CreateSparseFile(root / "Huge.pxproj", MaxTextFileBytes + 1);
+	const std::string valid = ValidProject("Huge");
+	WriteText(root / "Huge.pxproj", valid);
+	REQUIRE(Project::Load(root / "Huge.pxproj"));
+	WriteText(root / "Huge.pxproj", valid + std::string(MaxTextFileBytes + 1 - valid.size(), ' '));
 	Paralax::Testing::ScopedLogCapture log;
 	CHECK_FALSE(Project::Load(root / "Huge.pxproj"));
-	CHECK_FALSE(Project::Load(root)); // Found as the directory's one project file, and refused the same way.
-	CHECK(log.Contains(spdlog::level::err, "too large"));
+	CHECK(log.Count(spdlog::level::err, "too large") == 1);
+	// Found as the directory's one project file, and refused the same way.
+	CHECK_FALSE(Project::Load(root));
+	CHECK(log.Count(spdlog::level::err, "too large") == 2);
 	std::filesystem::remove(root / "Huge.pxproj");
 }
 
