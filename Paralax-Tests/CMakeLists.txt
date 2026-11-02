@@ -164,6 +164,32 @@ if(TARGET Paralax-Editor)
 		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp")
 endif()
 
+# Non-ASCII paths on the command line (Unicode on Windows, where argv is in the ANSI code page): the editor creates,
+# opens and exports projects at such paths, and the runtime plays the project and the export from them. The work
+# directory is outside TestOutput, which CI uploads, because it holds an exported game.
+if(TARGET Paralax-Editor)
+	set(PX_NON_ASCII_TEST_ARGUMENTS
+		"-DEDITOR=$<TARGET_FILE:Paralax-Editor>"
+		"-DRUNTIME=$<TARGET_FILE:Paralax-Runtime>"
+		"-DEXECUTABLE_SUFFIX=$<TARGET_FILE_SUFFIX:Paralax-Runtime>"
+		"-DFEATURE_TEST=${CMAKE_CURRENT_SOURCE_DIR}/FeatureTest"
+		"-DWORK=${CMAKE_CURRENT_BINARY_DIR}/NonAsciiCommandLine")
+	add_test(NAME "Command line: the editor creates, opens and exports projects at non-ASCII paths"
+		COMMAND "${CMAKE_COMMAND}" ${PX_NON_ASCII_TEST_ARGUMENTS} -DMODE=editor -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/NonAsciiCommandLineTest.cmake")
+	add_test(NAME "Command line: the runtime plays a project and its export from non-ASCII paths"
+		COMMAND "${CMAKE_COMMAND}" ${PX_NON_ASCII_TEST_ARGUMENTS} -DMODE=runtime -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/NonAsciiCommandLineTest.cmake")
+	set_tests_properties("Command line: the editor creates, opens and exports projects at non-ASCII paths" PROPERTIES
+		TIMEOUT 600
+		LABELS "smoke;gpu"
+		FIXTURES_SETUP NonAsciiCommandLine
+		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp")
+	set_tests_properties("Command line: the runtime plays a project and its export from non-ASCII paths" PROPERTIES
+		TIMEOUT 600
+		LABELS "smoke;gpu"
+		FIXTURES_REQUIRED NonAsciiCommandLine
+		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp")
+endif()
+
 # Without --project and with no game beside it (the build directory has none), the runtime refuses to start.
 if(TARGET Paralax-Runtime)
 	add_test(NAME "Runtime: without a project beside it the runtime exits with an error"
