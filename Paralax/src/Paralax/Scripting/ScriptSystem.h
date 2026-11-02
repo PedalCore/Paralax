@@ -55,9 +55,9 @@ namespace Paralax {
 	// deterministic math.random, an instruction budget per callback (which pcall cannot swallow), bounded pattern
 	// matching, a memory limit, and a cap on entities created per callback. `require("Scripts/Util")` loads another
 	// script from the project's assets.
-	// The API (Entity, Scene, Physics, Input, Time, Log and the vec2/vec3/vec4/quat math types) is documented in
-	// docs/Scripting.md. Add a PhysicsSystem after the ScriptSystem so forces applied in OnUpdate act in the same
-	// update's simulation step.
+	// The API (Entity and Component, the Scene, Physics, Audio, Game, Input, Time and Log tables, the Key and Mouse
+	// constants, and the vec2/vec3/vec4/quat math types) is documented in docs/Scripting.md. Add a PhysicsSystem
+	// after the ScriptSystem so forces applied in OnUpdate act in the same update's simulation step.
 	//
 	// Main-thread-only. Errors in scripts, and Lua errors in the engine's own calls into Lua (e.g. out of memory), are
 	// reported and recorded; they never propagate to C++ callers.
