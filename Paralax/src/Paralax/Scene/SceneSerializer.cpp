@@ -43,8 +43,13 @@ namespace Paralax {
 
 	}
 
-	bool WriteFileAtomically(const std::filesystem::path& path, const std::string& contents)
+	bool WriteFileAtomically(const std::filesystem::path& path, const std::string& contents, size_t maxBytes)
 	{
+		if (contents.size() > maxBytes)
+		{
+			PX_CORE_ERROR("Cannot write '{}': the document is too large ({} bytes; the limit is {})", ToUtf8(path), contents.size(), maxBytes);
+			return false;
+		}
 		std::error_code error;
 		if (path.has_parent_path())
 			std::filesystem::create_directories(path.parent_path(), error);
@@ -289,7 +294,7 @@ namespace Paralax {
 
 	bool SceneSerializer::SaveToFile(Scene& scene, const std::filesystem::path& path)
 	{
-		return WriteFileAtomically(path, FormatJsonDocument(Serialize(scene)));
+		return WriteFileAtomically(path, FormatJsonDocument(Serialize(scene)), MaxTextFileBytes);
 	}
 
 	Ref<Scene> SceneSerializer::LoadFromFile(const std::filesystem::path& path)

@@ -23,7 +23,7 @@ namespace Paralax {
 	class PrefabAsset : public Asset
 	{
 	public:
-		// The cap shared by every text document; also what the editor checks before it writes a prefab.
+		// The cap shared by every text document: LoadFromFile refuses a larger file and SaveToFile refuses to write one.
 		static constexpr size_t MaxFileBytes = MaxTextFileBytes;
 
 		AssetType GetType() const override { return AssetType::Prefab; }
@@ -37,7 +37,8 @@ namespace Paralax {
 		static Ref<PrefabAsset> FromJson(const nlohmann::json& document, std::string& outError);
 
 		nlohmann::json ToJson() const;
-		// Writes atomically. Returns false (with an error logged) on failure.
+		// Writes atomically. Refuses a prefab larger than MaxFileBytes, leaving any existing file untouched. Returns
+		// false (with an error logged) on failure.
 		bool SaveToFile(const std::filesystem::path& path) const;
 
 		// Copies the prefab into a scene (as the last child of parent, or the last root) and returns the new root.

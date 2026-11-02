@@ -598,7 +598,7 @@ namespace Paralax {
 		}
 
 		json document = {{"Paralax", {{"Type", "AssetRegistry"}, {"Version", 1}}}, {"Assets", std::move(assets)}};
-		return WriteFileAtomically(m_AssetDirectory / RegistryFileName, FormatJsonDocument(document));
+		return WriteFileAtomically(m_AssetDirectory / RegistryFileName, FormatJsonDocument(document), MaxTextFileBytes);
 	}
 
 	bool AssetManager::LoadRegistry()

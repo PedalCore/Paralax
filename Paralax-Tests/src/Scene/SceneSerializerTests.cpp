@@ -167,6 +167,26 @@ TEST_CASE("SceneSerializer: oversized scene files are refused before reading")
 	std::filesystem::remove(path);
 }
 
+TEST_CASE("SceneSerializer: a scene too large to open again is not written, and the existing file is kept")
+{
+	const std::filesystem::path path = Paralax::Testing::CreateTestDirectory("SceneTooLargeToSave") / "Level.pxscene";
+	Scene scene;
+	scene.CreateEntity("Kept");
+	REQUIRE(SceneSerializer::SaveToFile(scene, path));
+	const std::string before = Paralax::Testing::ReadFileText(path);
+
+	// Values set in code are not capped, so one text this long stands in for a scene with very many entities.
+	scene.CreateEntity("Huge").AddComponent<TextComponent>().Text = std::string(MaxTextFileBytes, 'x');
+	Paralax::Testing::ScopedLogCapture log;
+	CHECK_FALSE(SceneSerializer::SaveToFile(scene, path));
+	CHECK(log.Contains(spdlog::level::err, "too large"));
+	CHECK(Paralax::Testing::ReadFileText(path) == before);
+	CHECK_FALSE(std::filesystem::exists(path.string() + ".tmp"));
+	Ref<Scene> reopened = SceneSerializer::LoadFromFile(path);
+	REQUIRE(reopened);
+	CHECK(reopened->FindEntityByName("Kept").has_value());
+}
+
 TEST_CASE("SceneSerializer: names and tags longer than the registry allows are skipped with a warning")
 {
 	const json document = {{"Paralax", {{"Type", "Scene"}, {"Version", 1}}},

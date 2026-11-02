@@ -92,6 +92,8 @@ namespace Paralax {
 		// asset is kept in memory). The registry is saved only when its sub-asset entries change.
 		bool ReloadAsset(AssetHandle handle);
 
+		// Writes AssetRegistry.json atomically. Refuses a registry larger than LoadRegistry reads (MaxTextFileBytes),
+		// leaving the file on disk as it was. Returns false (with an error logged) on failure.
 		bool SaveRegistry() const;
 		// Replaces the registry with the one on disk (a missing file yields an empty registry).
 		bool LoadRegistry();

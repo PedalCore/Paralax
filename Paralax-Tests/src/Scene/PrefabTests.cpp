@@ -134,6 +134,27 @@ TEST_CASE("Prefab: oversized files are refused before reading")
 	CHECK(log.Contains(spdlog::level::err, "too large"));
 }
 
+TEST_CASE("Prefab: a prefab too large to load again is not written, and the existing file is kept")
+{
+	const std::filesystem::path path = Paralax::Testing::CreateTestDirectory("PrefabTooLargeToSave") / "Tower.pxprefab";
+	Ref<PrefabAsset> small = MakeTower();
+	REQUIRE(small->SaveToFile(path));
+	const std::string before = Paralax::Testing::ReadFileText(path);
+
+	// Values set in code are not capped, so one text this long stands in for a prefab with very many entities.
+	Scene scene;
+	Entity root = scene.CreateEntity("Huge");
+	root.AddComponent<TextComponent>().Text = std::string(PrefabAsset::MaxFileBytes, 'x');
+	Ref<PrefabAsset> huge = PrefabAsset::CreateFromEntity(scene, root);
+	Paralax::Testing::ScopedLogCapture log;
+	CHECK_FALSE(huge->SaveToFile(path));
+	CHECK(log.Contains(spdlog::level::err, "too large"));
+	CHECK(Paralax::Testing::ReadFileText(path) == before);
+	Ref<PrefabAsset> reloaded = PrefabAsset::LoadFromFile(path);
+	REQUIRE(reloaded);
+	CHECK(reloaded->GetRootName() == "Tower");
+}
+
 TEST_CASE("Prefab: creating from an invalid entity fails verification")
 {
 	Paralax::Testing::ScopedAssertionCapture capture;

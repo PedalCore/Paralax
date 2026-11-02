@@ -74,7 +74,7 @@ namespace Paralax {
 
 	bool PrefabAsset::SaveToFile(const std::filesystem::path& path) const
 	{
-		return WriteFileAtomically(path, FormatJsonDocument(ToJson()));
+		return WriteFileAtomically(path, FormatJsonDocument(ToJson()), MaxFileBytes);
 	}
 
 	Entity PrefabAsset::GetRoot() const
