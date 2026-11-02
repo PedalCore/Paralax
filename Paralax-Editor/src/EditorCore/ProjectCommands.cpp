@@ -6,6 +6,7 @@
 #include <Paralax/Scene/SceneSerializer.h>
 
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <set>
 #include <string_view>
@@ -75,7 +76,9 @@ namespace Paralax::Editor {
 			std::string contents = std::string(MarkerHeader) + "\n";
 			for (const std::string& file : files)
 				contents += file + "\n";
-			return WriteFileAtomically(directory / ExportMarker, contents);
+			// No document limit: the marker lists every exported file, so it grows with the project, and ReadMarker
+			// reads it line by line, never whole.
+			return WriteFileAtomically(directory / ExportMarker, contents, std::numeric_limits<size_t>::max());
 		}
 
 		// A previous export may be replaced only if everything in it is what the export wrote, or logs the game wrote

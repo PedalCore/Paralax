@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <limits>
 
 using namespace Paralax;
 
@@ -366,12 +367,48 @@ TEST_CASE("AssetManager: an oversized registry is refused before reading, and re
 	const std::string valid = R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[{"Handle":"5003","Type":"Material","Path":"Brick.pxmat"}]})";
 	REQUIRE(WriteFileAtomically(directory / AssetManager::RegistryFileName, valid));
 	REQUIRE(AssetManager(directory).IsRegistered(AssetHandle(5003)));
-	REQUIRE(WriteFileAtomically(directory / AssetManager::RegistryFileName, valid + std::string(MaxTextFileBytes + 1 - valid.size(), ' ')));
+	// A hostile file, so written past the limit the engine's own writers keep to.
+	REQUIRE(WriteFileAtomically(directory / AssetManager::RegistryFileName, valid + std::string(AssetManager::MaxRegistryBytes + 1 - valid.size(), ' '), std::numeric_limits<size_t>::max()));
 	Paralax::Testing::ScopedLogCapture log;
 	AssetManager assets(directory);
 	CHECK(log.Contains(spdlog::level::err, "too large"));
 	CHECK_FALSE(assets.IsRegistered(AssetHandle(5003)));
 	std::filesystem::remove(directory / AssetManager::RegistryFileName);
+}
+
+TEST_CASE("AssetManager: one registry byte limit governs loading and saving, and an import past it is undone")
+{
+	// At a small limit (the constructor's seam), the cases a 64 MiB registry would take minutes to reach.
+	const std::filesystem::path directory = MakeProject("AssetRegistryLimit");
+	const std::filesystem::path registry = directory / AssetManager::RegistryFileName;
+	{
+		AssetManager assets(directory);
+		REQUIRE(assets.ImportAsset("Brick.pxmat").IsValid());
+	}
+	const std::string before = Paralax::Testing::ReadFileText(registry);
+	REQUIRE_FALSE(before.empty());
+
+	// Just large enough for what is registered: it loads and saves, but nothing more fits.
+	Paralax::Testing::WriteGltf(directory, Paralax::Testing::MakeTriangleDocument(directory), "Model.gltf");
+	AssetManager assets(directory, before.size());
+	REQUIRE(assets.GetHandleForPath("Brick.pxmat").IsValid());
+	CHECK(assets.SaveRegistry());
+	const size_t registered = assets.GetRegisteredAssets().size();
+	Paralax::Testing::ScopedLogCapture log;
+	// A model brings sub-assets (material, texture, node meshes) with it; the import and all of them are undone.
+	CHECK_FALSE(assets.ImportAsset("Model.gltf").IsValid());
+	CHECK(log.Contains(spdlog::level::err, "too large"));
+	CHECK(log.Contains(spdlog::level::err, "registry could not be saved"));
+	CHECK(assets.GetRegisteredAssets().size() == registered);
+	CHECK_FALSE(assets.GetHandleForPath("Model.gltf").IsValid());
+	for (const AssetMetadata& metadata : assets.GetRegisteredAssets())
+		CHECK(metadata.FilePath != std::filesystem::path("Model.gltf"));
+	CHECK(Paralax::Testing::ReadFileText(registry) == before);
+
+	// One byte less, and the same registry no longer loads.
+	AssetManager smaller(directory, before.size() - 1);
+	CHECK_FALSE(smaller.GetHandleForPath("Brick.pxmat").IsValid());
+	CHECK(Paralax::Testing::ReadFileText(registry) == before);
 }
 
 TEST_CASE("MaterialSerializer: oversized material files are refused before reading")

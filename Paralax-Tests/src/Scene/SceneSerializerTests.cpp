@@ -5,6 +5,8 @@
 #include <Paralax/Scene/Entity.h>
 #include <Paralax/Scene/SceneSerializer.h>
 
+#include <limits>
+
 using namespace Paralax;
 using json = nlohmann::json;
 
@@ -87,9 +89,7 @@ TEST_CASE("SceneSerializer: files are saved atomically and loaded back")
 
 TEST_CASE("WriteFileAtomically: contents longer than the limit are refused and the existing file is kept")
 {
-	// The mechanism every capped writer (scenes, prefabs, the asset registry) relies on, at a small limit. A registry
-	// over the real cap cannot be built portably in a test: it needs over 44 MiB of entries to load first, with paths
-	// short enough for Windows and macOS, which is minutes of work under the sanitizers.
+	// The mechanism every capped writer (scenes, prefabs, the asset registry) relies on, at a small limit.
 	const std::filesystem::path path = Paralax::Testing::CreateTestDirectory("WriteLimit") / "Document.json";
 	REQUIRE(WriteFileAtomically(path, "kept", 4));
 	Paralax::Testing::ScopedLogCapture log;
@@ -99,7 +99,13 @@ TEST_CASE("WriteFileAtomically: contents longer than the limit are refused and t
 	CHECK_FALSE(std::filesystem::exists(path.string() + ".tmp"));
 	CHECK(WriteFileAtomically(path, "fits!", 5)); // Exactly the limit is written.
 	CHECK(Paralax::Testing::ReadFileText(path) == "fits!");
-	CHECK(WriteFileAtomically(path, std::string(1000, 'x'))); // No limit by default.
+
+	// Without a limit given, the one ReadTextFile reads applies, so a writer that forgets to pass it still never
+	// writes a document that cannot be opened again. A file never read whole opts out by name.
+	CHECK_FALSE(WriteFileAtomically(path, std::string(MaxTextFileBytes + 1, 'x')));
+	CHECK(Paralax::Testing::ReadFileText(path) == "fits!");
+	CHECK(WriteFileAtomically(path, std::string(1000, 'x'), std::numeric_limits<size_t>::max()));
+	CHECK(Paralax::Testing::ReadFileText(path).size() == 1000);
 }
 
 TEST_CASE("SceneSerializer: unknown components and invalid fields produce warnings, not failures")

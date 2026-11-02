@@ -2,6 +2,7 @@
 
 #include "Paralax/Asset/Asset.h"
 #include "Paralax/Core/Base.h"
+#include "Paralax/Core/JsonText.h"
 
 #include <filesystem>
 #include <optional>
@@ -43,9 +44,13 @@ namespace Paralax {
 		static std::span<const BuiltinAssetInfo> GetBuiltinAssets();
 
 		static constexpr const char* RegistryFileName = "AssetRegistry.json";
+		// The largest registry file LoadRegistry reads and SaveRegistry writes, so a saved registry always loads.
+		static constexpr size_t MaxRegistryBytes = MaxTextFileBytes;
 
 		// assetDirectory may be empty (no project): only built-in and memory assets are then available.
-		explicit AssetManager(std::filesystem::path assetDirectory = {});
+		// maxRegistryBytes replaces MaxRegistryBytes for this manager; it exists so tests can reach the limit with a
+		// small registry, and production code leaves it alone.
+		explicit AssetManager(std::filesystem::path assetDirectory = {}, size_t maxRegistryBytes = MaxRegistryBytes);
 		~AssetManager();
 
 		AssetManager(const AssetManager&) = delete;
@@ -92,7 +97,7 @@ namespace Paralax {
 		// asset is kept in memory). The registry is saved only when its sub-asset entries change.
 		bool ReloadAsset(AssetHandle handle);
 
-		// Writes AssetRegistry.json atomically. Refuses a registry larger than LoadRegistry reads (MaxTextFileBytes),
+		// Writes AssetRegistry.json atomically. Refuses a registry larger than LoadRegistry reads (MaxRegistryBytes),
 		// leaving the file on disk as it was. Returns false (with an error logged) on failure.
 		bool SaveRegistry() const;
 		// Replaces the registry with the one on disk (a missing file yields an empty registry).
@@ -114,6 +119,7 @@ namespace Paralax {
 
 	private:
 		std::filesystem::path m_AssetDirectory;
+		size_t m_MaxRegistryBytes = MaxRegistryBytes;
 		std::unordered_map<uint64_t, AssetMetadata> m_Registry;
 		std::unordered_map<uint64_t, Ref<Asset>> m_Loaded;
 		// Handles that are unknown or failed to load, reported once (cleared by imports, reloads and registry loads).

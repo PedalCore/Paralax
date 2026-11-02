@@ -74,8 +74,9 @@ namespace Paralax {
 		return builtins;
 	}
 
-	AssetManager::AssetManager(std::filesystem::path assetDirectory)
+	AssetManager::AssetManager(std::filesystem::path assetDirectory, size_t maxRegistryBytes)
 		: m_AssetDirectory(std::move(assetDirectory))
+		, m_MaxRegistryBytes(maxRegistryBytes)
 	{
 		if (!m_AssetDirectory.empty())
 		{
@@ -598,7 +599,7 @@ namespace Paralax {
 		}
 
 		json document = {{"Paralax", {{"Type", "AssetRegistry"}, {"Version", 1}}}, {"Assets", std::move(assets)}};
-		return WriteFileAtomically(m_AssetDirectory / RegistryFileName, FormatJsonDocument(document), MaxTextFileBytes);
+		return WriteFileAtomically(m_AssetDirectory / RegistryFileName, FormatJsonDocument(document), m_MaxRegistryBytes);
 	}
 
 	bool AssetManager::LoadRegistry()
@@ -612,7 +613,7 @@ namespace Paralax {
 
 		std::string text;
 		std::string readError;
-		if (!ReadTextFile(path, text, readError))
+		if (!ReadTextFile(path, text, readError, m_MaxRegistryBytes))
 		{
 			PX_CORE_ERROR("Cannot read asset registry '{}': {}", ToUtf8(path), readError);
 			return false;

@@ -2,6 +2,7 @@
 
 #include <nlohmann/json_fwd.hpp>
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 
@@ -18,6 +19,12 @@ namespace Paralax {
 	// Engine documents (scenes, prefabs, materials, projects, registries, agent requests) nest a handful of levels;
 	// anything near this limit is hostile.
 	inline constexpr int MaxJsonDepth = 64;
+
+	// The most bytes a text document the engine reads whole (scene, prefab, material, project, asset registry) may
+	// have, and so the most its writers write. Real documents are a few megabytes at most; anything near this is
+	// hostile or broken, and the limit stops a loader from allocating an arbitrary amount of memory before it can
+	// refuse the file.
+	inline constexpr size_t MaxTextFileBytes = 64ull * 1024 * 1024;
 
 	// Returns true if the JSON text nests arrays or objects deeper than maxDepth. nlohmann parses iteratively, but
 	// everything done with the value afterwards (copying, dumping, comparing, walking it) recurses once per level,

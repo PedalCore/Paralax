@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Paralax/Core/Base.h"
+#include "Paralax/Core/JsonText.h"
 #include "Paralax/Scene/Scene.h"
 
 #include <nlohmann/json.hpp>
@@ -40,16 +41,12 @@ namespace Paralax {
 		static Ref<Scene> LoadFromFile(const std::filesystem::path& path);
 	};
 
-	// The most bytes a text document the engine reads whole (scene, prefab, material, project, asset registry) may
-	// have. Real documents are a few megabytes at most; anything near this is hostile or broken, and the limit stops
-	// a loader from allocating an arbitrary amount of memory before it can refuse the file.
-	inline constexpr size_t MaxTextFileBytes = 64ull * 1024 * 1024;
-
 	// Writes text to a file atomically: a temporary sibling file is written, flushed and renamed over the target.
 	// Contents longer than maxBytes are refused before anything is written, so any existing file is left as it was.
-	// Writers of documents that are read back pass the reader's limit, so they never write a file that cannot be
-	// opened again. Returns false (with an error logged) on failure.
-	bool WriteFileAtomically(const std::filesystem::path& path, const std::string& contents, size_t maxBytes = std::numeric_limits<size_t>::max());
+	// The default is the limit ReadTextFile reads, so a document written here can always be opened again; a file
+	// that is never read whole (one read line by line, say) may pass std::numeric_limits<size_t>::max(), saying why.
+	// Returns false (with an error logged) on failure.
+	bool WriteFileAtomically(const std::filesystem::path& path, const std::string& contents, size_t maxBytes = MaxTextFileBytes);
 	// Reads a whole file of at most maxBytes into outContents. Returns false, describing why in outError, if the
 	// file is missing, larger than maxBytes (checked before anything is read) or cannot be read.
 	bool ReadTextFile(const std::filesystem::path& path, std::string& outContents, std::string& outError, size_t maxBytes = MaxTextFileBytes);
