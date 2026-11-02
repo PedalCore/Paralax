@@ -88,7 +88,8 @@ namespace Paralax {
 		void AddMemoryAsset(Ref<Asset> asset);
 
 		// Reloads a file-backed asset from disk, bumping its Version. Returns false if it cannot be reloaded, or if
-		// the registry's sub-asset entries changed and could not be saved (the reloaded asset is kept in memory).
+		// the file now yields different sub-assets and the registry cannot be saved to record them (the reloaded
+		// asset is kept in memory). The registry is saved only when its sub-asset entries change.
 		bool ReloadAsset(AssetHandle handle);
 
 		bool SaveRegistry() const;

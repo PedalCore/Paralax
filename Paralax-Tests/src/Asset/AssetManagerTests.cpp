@@ -460,10 +460,20 @@ TEST_CASE("AssetManager: removing and reloading fail without losing the registry
 	CHECK(assets.IsRegistered(model));
 	CHECK(assets.GetRegisteredAssets().size() == registered);
 	CHECK(assets.GetAsset<MeshAsset>(model));
-	// A model reload rewrites its sub-asset entries, which cannot be recorded either; a material's needs no save.
-	CHECK_FALSE(assets.ReloadAsset(model));
+	// Reloads that change nothing in the registry need no save; a material's never does.
+	CHECK(assets.ReloadAsset(model));
 	CHECK(assets.ReloadAsset(material));
 	CHECK(capture.Contains(spdlog::level::err, "registry could not be saved"));
+
+	// Re-exported with another object: the new mesh is registered in memory, but cannot be recorded.
+	document["meshes"].push_back(document["meshes"][0]);
+	document["meshes"][1]["name"] = "Second";
+	document["nodes"].push_back({{"name", "Other"}, {"mesh", 1}});
+	document["scenes"][0]["nodes"] = {0, 1};
+	Paralax::Testing::WriteGltf(directory, document, "Model.gltf");
+	CHECK_FALSE(assets.ReloadAsset(model));
+	CHECK(assets.GetRegisteredAssets().size() == registered + 1);
+	CHECK(capture.Contains(spdlog::level::err, "recorded only in memory"));
 
 	// Unlocked: removal goes through, and is on disk.
 	std::filesystem::remove_all(directory / AssetManager::RegistryFileName);

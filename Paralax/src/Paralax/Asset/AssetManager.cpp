@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <map>
 #include <unordered_set>
 
 namespace Paralax {
@@ -508,6 +509,17 @@ namespace Paralax {
 			if (subMetadata.Parent == handle && m_Loaded.contains(subHandle))
 				previousSubVersions[subHandle] = m_Loaded[subHandle]->Version;
 		}
+		// The registry's record of the sub-assets, ordered so a before/after comparison is exact.
+		auto subAssetEntries = [&] {
+			std::map<uint64_t, std::pair<AssetType, std::string>> entries;
+			for (const auto& [subHandle, subMetadata] : m_Registry)
+			{
+				if (subMetadata.Parent == handle)
+					entries[subHandle] = {subMetadata.Type, subMetadata.FilePath.generic_string()};
+			}
+			return entries;
+		};
+		const auto previousEntries = subAssetEntries();
 
 		const AssetMetadata parentMetadata = *metadata;
 		Ref<Asset> asset = LoadAsset(parentMetadata);
@@ -541,7 +553,9 @@ namespace Paralax {
 				auto previous = previousSubVersions.find(subHandle);
 				m_Loaded[subHandle]->Version = previous != previousSubVersions.end() ? previous->second + 1 : 1;
 			}
-			if (!SaveRegistry())
+			// Only a change needs recording, so a model that kept its objects still reloads where the registry cannot be
+			// written (a read-only project, a file held open elsewhere).
+			if (subAssetEntries() != previousEntries && !SaveRegistry())
 			{
 				PX_CORE_ERROR("Reloaded '{}', but the asset registry could not be saved; its sub-assets are recorded only in memory", parentMetadata.FilePath.generic_string());
 				return false;
