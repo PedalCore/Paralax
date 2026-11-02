@@ -67,7 +67,7 @@ instance is disabled. Other scripts keep running.
 
 | Member | Description |
 |---|---|
-| `entity.id` | UUID as a string (stable, and saved in scenes). |
+| `entity.id` | UUID as a string: stable for the entity's lifetime, and saved in scenes (entities created while playing get new ids each run). |
 | `entity.name`, `entity.tag` | Read/write. Names cannot be empty; both are limited to 256 bytes. |
 | `entity:IsValid()` | False once the entity has been destroyed. Using a destroyed entity raises an error. |
 | `entity:GetComponent(name)` | A component reference, or `nil` if the entity doesn't have it. |
@@ -244,7 +244,8 @@ on with the new clip from its start; pausing play mode in the editor pauses soun
 - Key names: `Key.A`–`Key.Z`, `Key.D0`–`Key.D9`, `Key.Space`, `Key.Enter`, `Key.Escape`, `Key.Left`/`Right`/`Up`/`Down`,
   `Key.LeftShift`, `Key.LeftControl`, `Key.F1`–`Key.F12`, `Key.KP0`–`Key.KP9`, and more (see `s_KeyNames`).
 - `Time.delta`, `Time.elapsed` (seconds since play started) and `Time.frame` (update count) come from the engine's
-  timestep. They never use wall-clock time, so runs are reproducible under a fixed timestep.
+  timestep, the same `dt` that `OnUpdate` gets. By default that is the real time each frame took; under a fixed
+  timestep (see [Determinism](#determinism)) it is the fixed step, so runs are reproducible.
 - `Log.Trace(...)`, `Log.Info(...)`, `Log.Warn(...)`, `Log.Error(...)` and `print(...)` write to the engine log and the
   editor console.
 
@@ -253,7 +254,9 @@ on with the new clip from its start; pausing play mode in the editor pauses soun
 `vec2`, `vec3`, `vec4` and `quat` are value types. Their components are read/write (`v.x`, `v.y`, `v.z`, `v.w`).
 
 - Constructors: `vec3()`, `vec3(s)`, `vec3(x, y, z)`; `quat()` is the identity, `quat(w, x, y, z)`.
-- Operators: `+ - * /` (with vectors or scalars, scalars on either side of `*`), unary `-`, `==` and `tostring`.
+- Vector operators: `+` and `-` between two vectors of the same type; `*` by a vector (per component) or by a scalar
+  on either side; `/` by a vector (per component) or by a scalar on the right (`2 / v` is an error); unary `-`, `==`
+  and `tostring`. Division by zero gives the IEEE result per component (`inf`, or NaN for 0/0).
 - Vector methods: `:Length()`, `:Normalized()` (the zero vector stays zero), `:Dot(v)`, `:Lerp(v, t)`. vec3 also has
   `:Cross(v)` and `:Distance(v)`.
 - Quaternions: `quat.FromEuler(vec3 radians)`, `quat.AngleAxis(radians, axis)`, `q:ToEuler()`, `q * q2`,
@@ -262,17 +265,25 @@ on with the new clip from its start; pausing play mode in the editor pauses soun
 
 ## Determinism
 
-Under a fixed timestep (play mode and exported games) a run is reproducible: scripts see time only through `Time`,
-`math.random` starts from the same seed, and physics, animation and sound follow simulated time. Two things in Lua
-itself need care:
+A run is reproducible under a fixed timestep: `--fixed-timestep <seconds>` for the editor or an exported game, or
+`play.start { paused: true }` and `play.step { frames, dt }` for agents. Scripts then see time only through `Time`,
+`math.random` starts from the same seed, and physics, animation and sound follow simulated time. Without one (the
+default in play mode and exported games), `OnUpdate`'s `dt` and `Time` follow the real time each frame took, so two
+runs differ; physics still steps at a fixed 1/60 s, but how many steps an update runs depends on the frame time.
 
-- `pairs` and `next` visit a table in hash order. That order is the same in every run for string keys (the hash seed
-  is fixed) and for integer keys, but tables, functions and userdata (entities, components, script instances) hash by
-  their memory address, which differs from run to run. Never let gameplay depend on the order of `pairs` over such
-  keys: keep sets of entities or script instances in arrays (`table.insert`, remove by index) and walk them with
-  `ipairs`, or key them by a string or integer of your own. Ids of entities created while playing are random, so
-  sorting by `entity.id` is no substitute; only ids saved in the scene file are stable.
-- `tostring` of a plain table or a function contains its address, so it is not a usable key or sort value either.
+Some things in Lua itself need care even under a fixed timestep:
+
+- `pairs` and `next` visit a table in hash order. That order is the same in every run for integer keys, and for
+  string keys as long as the strings are the same in every run (the hash seed is fixed). Tables, functions and
+  userdata (entities, components, script instances) hash by their memory address, which differs from run to run. A
+  table that holds any such key, even mixed with string or integer keys, has no reproducible order for any of its
+  keys. Never let gameplay depend on the order of `pairs` over such a table: keep sets of entities or script
+  instances in arrays (`table.insert`, remove by index) and walk them with `ipairs`, or key them by a string or
+  integer of your own.
+- `entity.id` of an entity created while playing (by `Scene.CreateEntity` or `Scene.Instantiate`) is different in
+  every run, so do not key tables by it or sort by it either; only ids saved in the scene file stay the same.
+- `tostring` of a plain table or a function contains its address, and so does `string.format('%p', value)`: neither
+  is a usable key or sort value.
 
 ## Modules
 

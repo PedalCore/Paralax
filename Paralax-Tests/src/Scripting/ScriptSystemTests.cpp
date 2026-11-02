@@ -496,8 +496,21 @@ TEST_CASE("ScriptSystem: math types support arithmetic and conversions")
 	CHECK(fixture.Eval("tostring(vec4(2, 4, 6, 8) / 2)") == "vec4(1, 2, 3, 4)");
 	CHECK(fixture.Eval("tostring(vec4(2, 4, 6, 8) / vec4(1, 2, 3, 4))") == "vec4(2, 2, 2, 2)");
 	CHECK(fixture.Eval("tostring(vec4(0, 3, 0, 0):Normalized())") == "vec4(0, 1, 0, 0)");
-	CHECK(fixture.Eval("vec4(1, 2, 3, 4):Normalized():Length() - 1 < 1e-6") == "true");
+	CHECK(fixture.Eval("math.abs(vec4(1, 2, 3, 4):Normalized():Length() - 1) < 1e-6") == "true");
 	CHECK(fixture.Eval("tostring(vec2():Normalized()) .. tostring(vec3():Normalized()) .. tostring(vec4():Normalized())") == "vec2(0, 0)vec3(0, 0, 0)vec4(0, 0, 0, 0)");
+	// Division by zero gives the IEEE result per component, as float division does: +-inf, and NaN for 0/0 (checked
+	// as x ~= x, since how NaN prints differs between platforms).
+	for (const char* type : {"vec2", "vec3", "vec4"})
+	{
+		CAPTURE(type);
+		CHECK(fixture.Eval(std::string("local v = ") + type + "(-2) / 0 return v.x == -math.huge and v.y == -math.huge") == "true");
+		CHECK(fixture.Eval(std::string("local v = ") + type + "(1) / " + type + "(0) return v.x == math.huge and v.y == math.huge") == "true");
+		CHECK(fixture.Eval(std::string("local v = ") + type + "(0) / 0 return v.x ~= v.x and v.y ~= v.y") == "true");
+	}
+	// A scalar divided by a vector is not defined (only vector / vector and vector / scalar are).
+	std::string divisionError;
+	CHECK_FALSE(fixture.System->Evaluate("return 2 / vec4(1)", divisionError));
+	CHECK_FALSE(fixture.System->Evaluate("return 2 / vec2(1)", divisionError));
 	CHECK(fixture.Eval("vec3(1, 2, 3) == vec3(1, 2, 3)") == "true");
 	CHECK(fixture.Eval("local v = vec3(); v.y = 7; return v.y") == "7.0");
 
@@ -508,6 +521,30 @@ TEST_CASE("ScriptSystem: math types support arithmetic and conversions")
 	CHECK(fixture.Eval("quat().w") == "1.0");
 	std::string error;
 	CHECK_FALSE(fixture.System->Evaluate("quat.AngleAxis(1, vec3(0))", error));
+}
+
+TEST_CASE("ScriptSystem: vec2, vec3 and vec4 bind the same methods and operators")
+{
+	// The docs describe the vector types together, and the feature-test coverage check cannot tell which type a
+	// ":Length(" call is on, nor see operators, so the shared surface is pinned here type by type.
+	ScriptFixture fixture;
+	fixture.Start();
+	for (const char* type : {"vec2", "vec3", "vec4"})
+	{
+		CAPTURE(type);
+		const std::string make = std::string("local T = ") + type + " local a, b = T(1), T(2) ";
+		for (const char* method : {"Length", "Normalized", "Dot", "Lerp"})
+		{
+			CAPTURE(method);
+			CHECK(fixture.Eval(make + "return type(a." + method + ")") == "function");
+		}
+		// __add, __sub, __mul (by a vector, or a scalar on either side), __div (by a vector or a scalar), __unm, __eq,
+		// __tostring: each used once.
+		CHECK(fixture.Eval(make + "return a + b == T(3) and b - a == T(1) and a * b == T(2) and b * 2 == T(4) and 2 * b == T(4) and b / b == T(1) and b / 2 == T(1) and -a == T(-1)") ==
+			  "true");
+		CHECK(fixture.Eval(make + "return a == T(1) and a ~= b") == "true");
+		CHECK(fixture.Eval(make + "return tostring(a):sub(1, #'" + type + "(') == '" + type + "('") == "true");
+	}
 }
 
 TEST_CASE("ScriptSystem: scripts read input state")
@@ -816,8 +853,9 @@ TEST_CASE("ScriptSystem: the API listing names every binding")
 	// The listing is derived from the tables the bindings create, so every global table a script sees is either listed
 	// (which makes the docs and the feature test require it) or one of the known exceptions: the Lua standard libraries,
 	// the Key/Mouse constants, and Component, whose members are the reflected fields of each component type (resolved
-	// by its index metamethod and covered by the component tests). A binding table that this check finds unlisted was
-	// created without CreateApiTable.
+	// by its index metamethod and covered by the component tests). A table this check finds unlisted is a function table
+	// created without CreateApiTable, a usertype missing from GetApiNames' userdata list, or a library that should not
+	// be in the sandbox.
 	ScriptFixture fixture;
 	fixture.Start();
 	const std::string globals = fixture.Eval("local names = {} for name, value in pairs(_G) do if type(value) == 'table' then names[#names + 1] = name end end "
@@ -832,7 +870,8 @@ TEST_CASE("ScriptSystem: the API listing names every binding")
 			continue;
 		CAPTURE(global);
 		const bool found = std::any_of(api.begin(), api.end(), [&](const std::string& name) { return name.starts_with(global + '.') || name.starts_with(global + ':'); });
-		CHECK_MESSAGE(found, "A global table scripts can use is missing from GetApiNames: create it with CreateApiTable");
+		CHECK_MESSAGE(found, "A global table scripts can use is not listed by GetApiNames: create a function table with CreateApiTable, add a usertype to "
+							 "GetApiNames' userdata list, or remove it if it is a library the sandbox must not expose");
 		listed++;
 	}
 	CHECK(listed >= 12); // Scene, Input, Log, Time, Physics, Audio, Game, Entity, vec2, vec3, vec4, quat.
