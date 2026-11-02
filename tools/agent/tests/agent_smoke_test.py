@@ -66,12 +66,15 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
     camera_state = editor.call("editor.camera.set", {"position": [4, 3, 6], "target": [0, 0.5, 0]})
     check(abs(camera_state["position"][0] - 4) < 1e-3, "editor camera was not placed")
     editor.call("editor.camera.focus", id=ball)
-    editor.call("editor.gizmo.set", operation="rotate", space="world")
+    check(editor.call("editor.gizmo.get") == {"operation": "none", "space": "local"}, "the editor did not start without a gizmo")
+    gizmo = editor.call("editor.gizmo.set", operation="rotate", space="world")
+    check(gizmo == {"operation": "rotate", "space": "world"}, f"editor.gizmo.set did not return the gizmo: {gizmo}")
     try:
         editor.call("editor.gizmo.set", operation="explode")
         raise AssertionError("expected an invalid gizmo operation to fail")
     except AgentError:
         pass
+    check(editor.call("editor.gizmo.get") == gizmo, "a refused gizmo change must change nothing")
     settings = editor.call("render.settings.set", {"settings": {"Exposure": 1.5, "Tonemapper": "ACES"}})
     check(settings["Exposure"] == 1.5 and settings["Tonemapper"] == "ACES", f"settings not applied: {settings}")
     try:
@@ -101,6 +104,13 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
     image = output / "AgentCapture.png"
     capture = editor.call("render.capture", path=str(image), width=320, height=180)
     check(capture["width"] == 320 and image.stat().st_size > 1000, "capture failed")
+    # The viewport renders every editor frame too, but nothing renders between the requests of one batch: these
+    # statistics are the capture's, whose camera sees the ground and the ball (and no point or spot lights).
+    captured, stats = editor.batch([("render.capture", {"path": str(image), "width": 320, "height": 180}), ("render.stats", {})])
+    check(not isinstance(captured, AgentError) and not isinstance(stats, AgentError), f"batch failed: {captured}, {stats}")
+    check(set(stats) == {"drawCalls", "shadowDrawCalls", "triangles", "culledSubmeshes", "textGlyphs", "lights",
+                         "staticLightingGenerations"}, f"unexpected render statistics: {stats}")
+    check(stats["drawCalls"] == 2 and stats["triangles"] > 2 and stats["lights"] == 0, f"unexpected render statistics: {stats}")
     editor_image = output / "AgentCaptureEditorCamera.png"
     editor.call("render.capture", path=str(editor_image), width=160, height=90, camera="editor")
     check(editor_image.exists(), "editor camera capture failed")

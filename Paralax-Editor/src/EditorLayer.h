@@ -51,8 +51,8 @@ namespace Paralax::Editor {
 		void FocusEntity(Entity entity);
 
 		// Commands this layer registers while attached (they need the renderer, camera or gizmo).
-		static constexpr const char* s_LayerCommands[] = {"editor.camera.get", "editor.camera.set", "editor.camera.focus", "editor.gizmo.set",
-														  "render.settings.get", "render.settings.set"};
+		static constexpr const char* s_LayerCommands[] = {"editor.camera.get", "editor.camera.set", "editor.camera.focus", "editor.gizmo.get", "editor.gizmo.set",
+														  "render.settings.get", "render.settings.set", "render.stats"};
 
 	private:
 		EditorContext& m_Context;
