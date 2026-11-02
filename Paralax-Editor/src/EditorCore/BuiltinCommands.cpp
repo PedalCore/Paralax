@@ -182,10 +182,11 @@ namespace Paralax::Editor {
 						   }});
 
 		// --- Entities --------------------------------------------------------------------------------
-		registry.Register({"entity.create", "Creates an entity, optionally with a parent and components ({\"Mesh\": {\"Mesh\": \"1\"}, ...}).", {{"name", "string", "Entity name.", false}, {"parent", "any", "Parent entity id.", false}, {"components", "object", "Components to add, with field values.", false}}, true, [](EditorContext& context, const json& params) {
+		registry.Register({"entity.create", "Creates an entity, optionally with a parent and components ({\"Mesh\": {\"Mesh\": \"1\"}, ...}).", {{"name", "string", "Entity name.", false}, {"parent", "any", "Parent entity id (null or omitted = root).", false}, {"components", "object", "Components to add, with field values.", false}}, true, [](EditorContext& context, const json& params) {
 							   Scene& scene = context.GetActiveScene();
 							   std::optional<Entity> parent;
-							   if (params.contains("parent"))
+							   // null means root, as it does for entity.set_parent and prefab.instantiate.
+							   if (params.contains("parent") && !params["parent"].is_null())
 							   {
 								   parent = context.ResolveEntity(params["parent"]);
 								   if (!parent)

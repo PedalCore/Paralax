@@ -87,6 +87,12 @@ TEST_CASE("BuiltinCommands: entities can be reparented, duplicated and destroyed
 	CHECK(context.Execute("scene.info").Result["entities"] == 4);
 	CHECK(context.Execute("entity.set_parent", {{"id", b}, {"parent", nullptr}}).Success);
 
+	// An explicit null parent means root for entity.create too (generic clients send nulls for omitted fields).
+	const std::string root = CreateEntity(context, {{"name", "Root"}, {"parent", nullptr}});
+	CHECK(context.Execute("entity.get", {{"id", root}}).Result["parent"] == "0");
+	CHECK_FALSE(context.Execute("entity.create", {{"name", "Orphan"}, {"parent", "12345"}}).Success);
+	CHECK(context.Execute("entity.destroy", {{"id", root}}).Success);
+
 	CHECK(context.Execute("entity.destroy", {{"id", copy}}).Success);
 	CHECK(context.Execute("scene.info").Result["entities"] == 2);
 	CHECK(context.Execute("scene.list").Result["entities"].size() == 2);
