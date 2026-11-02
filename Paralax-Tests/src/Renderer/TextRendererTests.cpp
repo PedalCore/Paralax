@@ -7,6 +7,7 @@
 #include <Paralax/Renderer/FontAtlas.h>
 #include <Paralax/Renderer/Image.h>
 #include <Paralax/Renderer/SceneRenderer.h>
+#include <Paralax/Renderer/TextRenderer.h>
 #include <Paralax/Renderer/TextureReadback.h>
 #include <Paralax/Scene/ComponentRegistry.h>
 #include <Paralax/Scene/Components.h>
@@ -181,6 +182,28 @@ TEST_CASE("FontAtlas: alignment places shorter lines against the widest")
 	CHECK(static_cast<double>(centre.Min.x - left.Min.x) == doctest::Approx(static_cast<double>(right.Min.x - centre.Min.x)).epsilon(1e-4));
 	// Right-aligned, the short line is moved over by the difference in widths.
 	CHECK(static_cast<double>(right.Min.x - left.Min.x) == doctest::Approx(static_cast<double>(widest - Width(*atlas, "I"))).epsilon(1e-4));
+}
+
+TEST_CASE("TextRenderer: a null device, a null command list and rendering before Initialize are asserted preconditions")
+{
+	Paralax::Testing::ScopedAssertionCapture capture;
+	CHECK_THROWS_AS(TextRenderer(nullptr), Paralax::Testing::AssertionFailedError);
+
+	if (!Paralax::Testing::RequireTestGraphicsDevice())
+		return;
+	GraphicsDevice& graphics = *Paralax::Testing::GetTestGraphicsDevice();
+	const uint32_t initialErrors = graphics.GetValidationErrorCount();
+	{
+		TextRenderer renderer(graphics.GetDevice());
+		CHECK_THROWS_AS(renderer.Initialize(nullptr), Paralax::Testing::AssertionFailedError);
+		// Never initialised: rendering has no atlas to draw with. The verify comes before the command list is used, so
+		// it is never opened (an opened list that is never submitted would keep its command buffer past the device).
+		Scene scene("TextTest");
+		RenderTarget target = CreateOutput(graphics.GetDevice(), 16, 16);
+		nvrhi::CommandListHandle commands = graphics.GetDevice()->createCommandList();
+		CHECK_THROWS_AS(renderer.Render(commands, scene, glm::mat4(1.0f), target.Framebuffer, nullptr), Paralax::Testing::AssertionFailedError);
+	}
+	CHECK(graphics.GetValidationErrorCount() == initialErrors);
 }
 
 TEST_CASE("TextRenderer: screen-space text is drawn where its anchor says, at any output size")

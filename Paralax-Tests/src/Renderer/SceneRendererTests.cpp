@@ -96,6 +96,31 @@ namespace {
 
 }
 
+TEST_CASE("SceneRenderer: rendering before Initialize or without an output is an asserted precondition")
+{
+	if (!Paralax::Testing::RequireTestGraphicsDevice())
+		return;
+	GraphicsDevice& graphics = *Paralax::Testing::GetTestGraphicsDevice();
+	const uint32_t initialErrors = graphics.GetValidationErrorCount();
+	{
+		AssetManager assets;
+		Scene scene("PreconditionTest");
+		const CameraView camera = CameraView::LookAt({0.0f, 1.0f, 4.0f}, {0.0f, 0.0f, 0.0f}, glm::radians(60.0f), 1.0f);
+		RenderTarget target = CreateOutput(graphics.GetDevice(), 16, 16);
+		Paralax::Testing::ScopedAssertionCapture capture;
+
+		// The runtime drops a renderer whose Initialize failed; one that is kept must not render uninitialised
+		// pipelines.
+		SceneRenderer renderer(graphics, assets);
+		CHECK_THROWS_AS(renderer.Render(scene, camera, target.Framebuffer), Paralax::Testing::AssertionFailedError);
+		REQUIRE(renderer.Initialize());
+		CHECK_THROWS_AS(renderer.Render(scene, camera, nullptr), Paralax::Testing::AssertionFailedError);
+		// Still usable after the refused calls.
+		renderer.Render(scene, camera, target.Framebuffer);
+	}
+	CHECK(graphics.GetValidationErrorCount() == initialErrors);
+}
+
 TEST_CASE("SceneRenderer: renders a lit, shadowed PBR scene without validation errors")
 {
 	if (!Paralax::Testing::RequireTestGraphicsDevice())

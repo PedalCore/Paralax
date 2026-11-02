@@ -181,6 +181,10 @@ TEST_CASE("ShaderLibrary: embedded modules are listed and unknown modules are re
 	CHECK(module[2] == 0x23);
 	CHECK(module[3] == 0x07);
 	CHECK(ShaderLibrary::GetModule("NoSuchModule").empty());
+	{
+		Paralax::Testing::ScopedAssertionCapture assertions;
+		CHECK_THROWS_AS(ShaderLibrary::CreateShader(nullptr, "DebugShapes", "main", nvrhi::ShaderType::Vertex), Paralax::Testing::AssertionFailedError);
+	}
 
 	if (!RequireTestGraphicsDevice())
 		return;

@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "GPUTestContext.h"
+#include "TestUtilities.h"
 
 #include <Paralax/Asset/AssetManager.h>
 #include <Paralax/Asset/TextureAsset.h>
@@ -52,6 +53,18 @@ namespace {
 		return values;
 	}
 
+}
+
+TEST_CASE("EnvironmentLighting: constructing it without a device is an asserted precondition")
+{
+	Paralax::Testing::ScopedAssertionCapture capture;
+	CHECK_THROWS_AS(EnvironmentLighting(nullptr), Paralax::Testing::AssertionFailedError);
+}
+
+TEST_CASE("GPUResourceCache: constructing it without a device is an asserted precondition")
+{
+	Paralax::Testing::ScopedAssertionCapture capture;
+	CHECK_THROWS_AS(GPUResourceCache(nullptr), Paralax::Testing::AssertionFailedError);
 }
 
 TEST_CASE("EnvironmentLighting: BRDF integration and every specular mip retain finite nonzero energy")
