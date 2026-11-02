@@ -69,6 +69,7 @@ TEST_CASE("ConsoleCommands: console.get returns the latest log messages, filtere
 	CHECK(all["messages"][0]["revision"].get<uint64_t>() < all["messages"][2]["revision"].get<uint64_t>());
 	CHECK(all["revision"].get<uint64_t>() == start + 4);
 	CHECK(all["omitted"] == 0);
+	CHECK(all["complete"] == true);
 
 	CHECK(Texts(fixture.Get({{"sinceRevision", start}, {"minLevel", "trace"}})).size() == 4);
 	CHECK(Texts(fixture.Get({{"sinceRevision", start}, {"minLevel", "warn"}})) == std::vector<std::string>{"warning line", "error line"});
@@ -101,16 +102,29 @@ TEST_CASE("ConsoleCommands: console.get rejects invalid parameters")
 TEST_CASE("ConsoleCommands: the console keeps its most recent messages, and console.clear empties it")
 {
 	ConsoleFixture fixture(3);
-	for (int i = 0; i < 5; i++)
+	const uint64_t start = fixture.Get()["revision"].get<uint64_t>();
+	PX_CORE_INFO("message 0");
+	PX_CORE_INFO("message 1");
+	const uint64_t afterTwo = fixture.Get()["revision"].get<uint64_t>();
+	for (int i = 2; i < 5; i++)
 		PX_CORE_INFO("message {}", i);
 	const json kept = fixture.Get({{"minLevel", "trace"}});
 	CHECK(Texts(kept) == std::vector<std::string>{"message 2", "message 3", "message 4"});
+	// Messages pushed out are reported as missing to a caller that asked for them, and only to one.
+	CHECK(kept["complete"] == false);
+	CHECK(fixture.Get({{"sinceRevision", start}})["complete"] == false);
+	const json sinceTwo = fixture.Get({{"sinceRevision", afterTwo}});
+	CHECK(sinceTwo["complete"] == true);
+	CHECK(Texts(sinceTwo).size() == 3);
 
 	const CommandResult cleared = fixture.Context.Execute("console.clear");
 	REQUIRE(cleared.Success);
 	CHECK(cleared.Result["revision"].get<uint64_t>() > kept["revision"].get<uint64_t>());
 	CHECK(fixture.Get({{"minLevel", "trace"}})["messages"].empty());
 	CHECK(fixture.Sink->GetMessages().empty());
+	// Cleared messages are gone too; nothing after the clear is.
+	CHECK(fixture.Get({{"sinceRevision", afterTwo}})["complete"] == false);
+	CHECK(fixture.Get({{"sinceRevision", cleared.Result["revision"]}})["complete"] == true);
 	PX_CORE_INFO("after clearing");
 	CHECK(Texts(fixture.Get()) == std::vector<std::string>{"after clearing"});
 }

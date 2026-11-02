@@ -82,7 +82,8 @@ windowed one.
      command that fails with "see the log" explains itself there: note `revision` from one call, run the command,
      then `console.get { sinceRevision, minLevel: "error" }` returns only what it logged. `minLevel` is `trace`,
      `debug`, `info` (the default), `warning`, `error` or `critical`; the most recent `limit` messages (default 100)
-     come back oldest first, and `omitted` counts older ones left out. `console.clear` empties the log.
+     come back oldest first, and `omitted` counts older ones left out. `complete` is false when some of what was
+     logged after `sinceRevision` is gone: the log keeps its latest 2000 messages, and `console.clear` empties it.
    - `render.capture { path }` saves what the camera sees (a project-relative path; MCP returns the image).
    - `audio.status` and `input.state` show what is playing and what is held.
 5. **Iterate.** `play.stop` returns to the edited scene unchanged. Change scripts with `script.update` (while

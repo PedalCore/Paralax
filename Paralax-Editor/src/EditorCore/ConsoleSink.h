@@ -41,24 +41,36 @@ namespace Paralax::Editor {
 			return {m_Messages.begin(), m_Messages.end()};
 		}
 
-		// The kept messages added after the given revision (all of them for 0), oldest first, and the current
-		// revision, read together so a caller that asks again from outRevision misses nothing still kept.
-		std::vector<Message> GetMessagesAfter(uint64_t revision, uint64_t& outRevision) const
+		struct Snapshot
+		{
+			std::vector<Message> Messages; // Oldest first.
+			uint64_t Revision = 0;         // The sink's revision when the snapshot was taken.
+			// False if a message added after the requested revision is no longer kept (pushed out by the capacity,
+			// or cleared).
+			bool Complete = true;
+		};
+
+		// The kept messages added after the given revision (all of them for 0), read together with the current
+		// revision, so a caller that asks again from Snapshot::Revision misses nothing that is still kept.
+		Snapshot GetMessagesAfter(uint64_t revision) const
 		{
 			std::scoped_lock lock(m_MessagesMutex);
-			std::vector<Message> messages;
+			Snapshot snapshot;
 			for (const Message& message : m_Messages)
 			{
 				if (message.Revision > revision)
-					messages.push_back(message);
+					snapshot.Messages.push_back(message);
 			}
-			outRevision = m_Revision;
-			return messages;
+			snapshot.Revision = m_Revision;
+			snapshot.Complete = m_LastForgottenRevision <= revision;
+			return snapshot;
 		}
 
 		void Clear()
 		{
 			std::scoped_lock lock(m_MessagesMutex);
+			if (!m_Messages.empty())
+				m_LastForgottenRevision = m_Messages.back().Revision;
 			m_Messages.clear();
 			m_Revision++;
 		}
@@ -82,7 +94,10 @@ namespace Paralax::Editor {
 			m_Revision++;
 			m_Messages.push_back({msg.level, std::string(msg.logger_name.begin(), msg.logger_name.end()), std::string(msg.payload.begin(), msg.payload.end()), buffer, m_Revision});
 			while (m_Messages.size() > m_Capacity)
+			{
+				m_LastForgottenRevision = m_Messages.front().Revision;
 				m_Messages.pop_front();
+			}
 		}
 
 		void flush_() override {}
@@ -92,6 +107,7 @@ namespace Paralax::Editor {
 		mutable std::mutex m_MessagesMutex;
 		std::deque<Message> m_Messages;
 		uint64_t m_Revision = 0;
+		uint64_t m_LastForgottenRevision = 0; // The newest message no longer kept.
 	};
 
 }

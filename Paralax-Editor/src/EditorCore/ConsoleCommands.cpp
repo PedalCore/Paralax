@@ -12,7 +12,7 @@ namespace Paralax::Editor {
 
 	namespace {
 
-		constexpr int64_t DefaultLimit = 100;
+		constexpr uint64_t DefaultLimit = 100;
 
 		// Level names as agents write and read them: spdlog's, with "warn" also accepted.
 		constexpr std::array<std::pair<std::string_view, spdlog::level::level_enum>, 7> LevelNames{{
@@ -95,8 +95,8 @@ namespace Paralax::Editor {
 								   since = *revision;
 							   }
 
-							   uint64_t revision = 0;
-							   std::vector<ConsoleSink::Message> messages = sink->GetMessagesAfter(since, revision);
+							   ConsoleSink::Snapshot snapshot = sink->GetMessagesAfter(since);
+							   std::vector<ConsoleSink::Message>& messages = snapshot.Messages;
 							   std::erase_if(messages, [minLevel](const ConsoleSink::Message& message) { return message.Level < minLevel; });
 							   const size_t omitted = messages.size() > limit ? messages.size() - static_cast<size_t>(limit) : 0;
 							   json entries = json::array();
@@ -105,7 +105,8 @@ namespace Paralax::Editor {
 								   const ConsoleSink::Message& message = messages[i];
 								   entries.push_back({{"revision", message.Revision}, {"level", LevelName(message.Level)}, {"logger", message.Logger}, {"text", message.Text}, {"time", message.Time}});
 							   }
-							   return CommandResult::Ok({{"messages", std::move(entries)}, {"revision", revision}, {"omitted", omitted}});
+							   // complete says whether anything logged since sinceRevision is gone, which omitted cannot.
+							   return CommandResult::Ok({{"messages", std::move(entries)}, {"revision", snapshot.Revision}, {"omitted", omitted}, {"complete", snapshot.Complete}});
 						   }});
 
 		registry.Register({"console.clear", "Empties the editor log shown by the Console panel and console.get.", {}, false, [sink](EditorContext&, const json&) {
