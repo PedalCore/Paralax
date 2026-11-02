@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "ci-probe/**"]
   pull_request:
   workflow_dispatch:
 
@@ -35,16 +35,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: "Linux GCC Debug",          os: ubuntu-24.04, cc: gcc,   cxx: g++,     config: Debug,   generator: Ninja }
-          - { name: "Linux Clang Release",      os: ubuntu-24.04, cc: clang, cxx: clang++, config: Release, generator: Ninja }
-          - { name: "Linux Clang Dist",         os: ubuntu-24.04, cc: clang, cxx: clang++, config: Dist,    generator: Ninja, extra: "-DPX_BUILD_EDITOR=OFF" }
           - { name: "Linux GCC ASan+UBSan",     os: ubuntu-24.04, cc: gcc,   cxx: g++,     config: Debug,   generator: Ninja, extra: "-DPX_SANITIZERS=address,undefined" }
-          - { name: "Linux Clang TSan",         os: ubuntu-24.04, cc: clang, cxx: clang++, config: Debug,   generator: Ninja, extra: "-DPX_SANITIZERS=thread", tsan: true }
-          - { name: "Windows MSVC Debug",       os: windows-2025, config: Debug,   generator: "Visual Studio" }
-          - { name: "Windows MSVC Release",     os: windows-2025, config: Release, generator: "Visual Studio" }
-          - { name: "Windows MSVC Dist",        os: windows-2025, config: Dist,    generator: "Visual Studio", extra: "-DPX_BUILD_EDITOR=OFF" }
-          - { name: "macOS AppleClang Debug",   os: macos-15,     config: Debug,   generator: Ninja }
-          - { name: "macOS AppleClang Release", os: macos-15,     config: Release, generator: Ninja }
 
     steps:
       - uses: actions/checkout@v5
@@ -106,6 +97,11 @@ jobs:
       - name: Build
         shell: bash
         run: .github/scripts/run-step.sh Build cmake --build build --config ${{ matrix.config }} --parallel
+
+      - name: Report driver versions (probe only)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: echo "::notice title=versions::$(dpkg-query -W -f='${Package} ${Version}; ' mesa-vulkan-drivers libvulkan1 vulkan-validationlayers libllvm19 libllvm18 libllvm20 2>/dev/null) kernel $(uname -r) image ${ImageOS:-?} ${ImageVersion:-?}"
 
       - name: Configure sanitizer suppressions
         if: matrix.tsan
