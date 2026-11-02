@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
+#include <map>
 #include <set>
 #include <sstream>
 
@@ -798,6 +799,36 @@ TEST_CASE("ScriptSystem: string- and integer-key iteration order is the same in 
 	CHECK(arrayOrder() == arrayOrder());
 }
 
+TEST_CASE("ScriptSystem: AddComponent puts an existing component back exactly when a field is refused")
+{
+	ScriptFixture fixture;
+	// Values set in code may lie outside the field ranges, which putting the component back field by field refuses.
+	fixture.World.CreateEntity("Lamp").AddComponent<PointLightComponent>().Intensity = 200000.0f;
+	fixture.Start();
+
+	// Fields are written in the table's iteration order: use a valid field that comes before the refused one, so a
+	// value really is written before the refusal undoes it.
+	const std::map<std::string, std::string> candidates = {{"Intensity", "5"}, {"Color", "vec3(0, 1, 0)"}, {"CastShadows", "true"}};
+	std::string valid;
+	for (const auto& [field, unused] : candidates)
+	{
+		if (fixture.Eval(fmt::format("local t = {{ {} = true, Range = true }} return (next(t))", field)) == field)
+		{
+			valid = field;
+			break;
+		}
+	}
+	REQUIRE_FALSE(valid.empty());
+	std::string error;
+	CHECK_FALSE(fixture.System->Evaluate(fmt::format("Scene.FindEntityByName('Lamp'):AddComponent('PointLight', {{ {} = {}, Range = -1 }})", valid, candidates.at(valid)), error));
+	CHECK(error.find("Range") != std::string::npos);
+	const PointLightComponent& light = fixture.World.FindEntityByName("Lamp")->GetComponent<PointLightComponent>();
+	CHECK(light.Intensity == 200000.0f);
+	CHECK(light.Color == glm::vec3(1.0f));
+	CHECK(light.Range == 10.0f);
+	CHECK_FALSE(light.CastShadows);
+}
+
 TEST_CASE("ScriptSystem: names, tags and entity creation are bounded")
 {
 	ScriptSystemSpecification specification;
@@ -809,8 +840,11 @@ TEST_CASE("ScriptSystem: names, tags and entity creation are bounded")
 		CHECK_FALSE(fixture.System->Evaluate(code, error));
 		CHECK_MESSAGE(error.find(expected) != std::string::npos, error);
 	};
-	fails("Scene.CreateEntity(string.rep('n', 300))", "limited to 256 bytes");
-	fails("local e = Scene.CreateEntity() e.tag = string.rep('t', 300)", "limited to 256 bytes");
+	// The registry's limit and wording, whichever way the name is written.
+	fails("Scene.CreateEntity(string.rep('n', 300))", "Scene.CreateEntity's name expects at most 256 bytes");
+	fails("local e = Scene.CreateEntity() e.tag = string.rep('t', 300)", "entity.tag expects at most 256 bytes");
+	fails("local e = Scene.CreateEntity() e.name = string.rep('n', 257)", "entity.name expects at most 256 bytes");
+	CHECK(fixture.Eval("local e = Scene.CreateEntity() e.name = string.rep('n', 256) e.tag = string.rep('t', 256) return #e.name + #e.tag") == "512");
 	// Component writes are bounded by the registry's MaxLength, the same rule scene files and agents meet.
 	fails("Scene.CreateEntity():GetComponent('Tag').Name = string.rep('n', 257)", "at most 256 bytes");
 	fails("Scene.CreateEntity():AddComponent('Tag', { Tag = string.rep('t', 257) })", "at most 256 bytes");

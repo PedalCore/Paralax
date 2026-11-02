@@ -36,8 +36,6 @@ namespace Paralax {
 		constexpr size_t MaxArrayElements = 4096;
 		// Worst-case step estimate above which pattern-matching calls are refused (they are not instruction-metered).
 		constexpr double PatternCostLimit = 1e9;
-		// Longest entity name or tag a script may set: names live outside the Lua heap (and its memory limit).
-		constexpr size_t MaxNameLength = 256;
 
 		// Accounts every allocation of a Lua state against a limit.
 		struct LuaMemory
@@ -572,10 +570,12 @@ namespace Paralax {
 				ScriptError("an entity name cannot be empty");
 		}
 
+		// The registry's limit and wording, for the setters that write the Tag component directly. (Names live outside
+		// the Lua heap and its memory limit, so the bound matters here too.)
 		static void CheckName(const std::string& text, const char* what)
 		{
-			if (text.size() > MaxNameLength)
-				ScriptError(fmt::format("{} is limited to {} bytes", what, MaxNameLength));
+			if (text.size() > TagComponent::MaxLength)
+				ScriptError(fmt::format("{} expects at most {} bytes", what, TagComponent::MaxLength));
 		}
 
 		// Entities live outside the Lua heap, so the memory limit does not bound them: cap creation per call instead.
@@ -1092,22 +1092,27 @@ namespace Paralax {
 				entity = Resolve(self); // Re-resolve after running conversions.
 				entt::registry& registry = GetScene().GetRegistry();
 				const bool existed = info.Has(registry, entity.GetHandle());
-				const json previous = existed ? ComponentRegistry::ToJson(info, info.Get(registry, entity.GetHandle())) : json();
+				// An exact copy of the component as it was, to put back if a field is refused. Restoring field by field
+				// would validate the old values, and leave behind any the ranges refuse (values set in code may be).
+				std::optional<entt::registry> saved;
+				entt::entity savedEntity = entt::null;
+				if (existed && !values.empty())
+				{
+					saved.emplace();
+					savedEntity = saved->create();
+					info.Copy(registry, entity.GetHandle(), *saved, savedEntity);
+				}
 				void* data = info.Add(registry, entity.GetHandle());
 				for (const auto& [field, value] : values)
 				{
 					std::string error;
 					if (ComponentRegistry::SetField(*field, data, value, error))
 						continue;
-					// Undo: remove the new component, or restore the existing one's fields. The restore reports into its
-					// own string, so the error raised below is the failed field's, not the restore's.
+					// Undo: remove the new component, or put the existing one back as it was.
 					if (!existed && info.Remove)
 						info.Remove(registry, entity.GetHandle());
 					else if (existed)
-					{
-						std::string restoreError;
-						ComponentRegistry::FromJson(info, data, previous, restoreError);
-					}
+						info.Copy(*saved, savedEntity, registry, entity.GetHandle());
 					ScriptError(fmt::format("{}.{}: {}", name, field->Name, error));
 				}
 				return ComponentRef{self.ID, &info};
@@ -1155,12 +1160,12 @@ namespace Paralax {
 									  [this](const ScriptEntity& self, const std::string& value) {
 										  if (value.empty())
 											  ScriptError("an entity name cannot be empty");
-										  CheckName(value, "an entity name");
+										  CheckName(value, "entity.name");
 										  Resolve(self).GetComponent<TagComponent>().Name = value;
 									  });
 			auto tag = sol::property([this](const ScriptEntity& self) { return Resolve(self).GetComponent<TagComponent>().Tag; },
 									 [this](const ScriptEntity& self, const std::string& value) {
-										 CheckName(value, "a tag");
+										 CheckName(value, "entity.tag");
 										 Resolve(self).GetComponent<TagComponent>().Tag = value;
 									 });
 			auto toString = [this](const ScriptEntity& self) {
@@ -1181,7 +1186,7 @@ namespace Paralax {
 				if (parent)
 					resolvedParent = Resolve(*parent);
 				if (name)
-					CheckName(*name, "an entity name");
+					CheckName(*name, "Scene.CreateEntity's name");
 				CountCreatedEntities(1);
 				Entity entity = active.CreateEntity(name && !name->empty() ? *name : "Entity");
 				if (resolvedParent)
