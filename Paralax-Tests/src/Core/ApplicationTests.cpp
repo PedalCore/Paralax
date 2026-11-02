@@ -467,7 +467,7 @@ TEST_CASE("Application: layer changes requested from OnDetach during destruction
 	CHECK(log == std::vector<std::string>{"Last:detach", "Greedy:detach", "First:detach"});
 }
 
-TEST_CASE("Application: PopLayer outside iteration detaches immediately; unknown layers are ignored with a warning")
+TEST_CASE("Application: PopLayer outside iteration detaches immediately and unknown layers are ignored with a warning")
 {
 	Paralax::Testing::ScopedLogCapture capture;
 	std::vector<std::string> log;

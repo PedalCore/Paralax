@@ -21,6 +21,16 @@ target_compile_definitions(Paralax-Tests PRIVATE DOCTEST_CONFIG_SUPER_FAST_ASSER
 	PX_TEST_FLAC_FILE="${miniaudio_SOURCE_DIR}/data/16-44100-stereo.flac")
 px_configure_target(Paralax-Tests)
 
+# doctest_discover_tests turns the test list into a CMake list, so a ';' in a test name registers two CTest tests
+# that match no case and pass without running anything. Refuse such names here instead, whichever doctest macro
+# declares the case (the name is the first string literal of the macro's arguments).
+foreach(source IN LISTS PX_TEST_SOURCES)
+	file(STRINGS "${source}" PX_TEST_NAMES_WITH_SEMICOLON REGEX "(TEST_CASE(_FIXTURE|_TEMPLATE)?|SCENARIO)\\([^\"]*\"[^\"]*;")
+	if(PX_TEST_NAMES_WITH_SEMICOLON)
+		message(FATAL_ERROR "Test case names must not contain ';' (CTest could not run them): ${source}: ${PX_TEST_NAMES_WITH_SEMICOLON}")
+	endif()
+endforeach()
+
 # Register each doctest test case as its own CTest test so failures are reported individually.
 include("${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake")
 doctest_discover_tests(Paralax-Tests

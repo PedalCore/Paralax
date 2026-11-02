@@ -242,7 +242,7 @@ TEST_CASE("AnimationSystem: rotation and scale channels, and playback independen
 	CHECK(Near(positions[1], positions[2], 1e-5f));
 }
 
-TEST_CASE("AnimationSystem: missing clips and targets are reported once and skipped; bad numbers are made safe")
+TEST_CASE("AnimationSystem: missing clips and targets are reported once and skipped, and bad numbers are made safe")
 {
 	AnimationFixture fixture({Channel(AnimationProperty::Translation, AnimationInterpolation::Linear, {0.0f, 1.0f}, {glm::vec4(0.0f), glm::vec4(1.0f, 0.0f, 0.0f, 0.0f)}, {"Missing"})}, 1.0f);
 	Entity lost = fixture.Animated("Lost");

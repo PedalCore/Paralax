@@ -263,7 +263,7 @@ TEST_CASE("MeshImporter: per-node meshes keep their handles when a re-export ren
 	CHECK(byRepeat.at("TableObject") == byIndex.at("TableObject")); // Both keyed by index 0.
 }
 
-TEST_CASE("MeshImporter: malformed lights are skipped with a warning; the meshes still import")
+TEST_CASE("MeshImporter: malformed lights are skipped with a warning and the meshes still import")
 {
 	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("GltfBadLights");
 	for (const json& light : {json{{"type", "laser"}, {"intensity", 1.0}}, json{{"type", "point"}, {"range", 0.0}},
