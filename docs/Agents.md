@@ -114,6 +114,6 @@ windowed one.
   Only files whose names are valid UTF-8 can be imported or saved into a project. Paths on the editor's and the
   runtime's command lines (`--project`, `--new-project`, `--scene`, `--export`, `--agent-info`, `--screenshot`) may
   use any Unicode characters, on Windows too: there the engine reads the Unicode command line, not the system code
-  page. (The last folder of `--new-project` names the project, so it takes only letters, digits, spaces, `_` and
-  `-`; the folders above it may use anything.)
+  page. (The last folder of `--new-project` names the project, so it must be 1 to 64 characters, each an ASCII letter
+  or digit, a space, `_` or `-`; the folders above it may use anything.)
 - Commands that edit the scene are undoable, and they are rolled back if they fail partway.

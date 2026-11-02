@@ -28,7 +28,8 @@ namespace Paralax {
 		// An empty list gives an empty command line.
 		static CommandLine FromProcessArguments(std::vector<std::string> arguments, std::vector<std::string> flags = {});
 
-		// The program path (argv[0]), or empty if not provided. UTF-8 when built from GetProcessArguments.
+		// The program path (argv[0]), or empty if not provided. Built from GetProcessArguments it is in the engine's path
+		// encoding (UTF-8 on Windows, argv's bytes on POSIX), like every argument.
 		const std::string& GetProgram() const { return m_Program; }
 		const std::vector<std::string>& GetArguments() const { return m_Arguments; }
 		const std::vector<std::string>& GetPositional() const { return m_Positional; }
