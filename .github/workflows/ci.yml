@@ -101,7 +101,10 @@ jobs:
       - name: Report driver versions and CPU (probe only)
         if: runner.os == 'Linux'
         shell: bash
-        run: echo "::notice title=versions::$(dpkg-query -W -f='${Package} ${Version}; ' mesa-vulkan-drivers libvulkan1 vulkan-validationlayers 2>/dev/null) cpu $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2) x$(nproc) flags-avx512f=$(grep -c avx512f /proc/cpuinfo) image ${ImageVersion:-?}"
+        run: |
+          cpu=$(grep -m1 'model name' /proc/cpuinfo | sed 's/.*: //')
+          versions=$(dpkg-query -W -f='${Package} ${Version}; ' mesa-vulkan-drivers libvulkan1 vulkan-validationlayers 2>/dev/null)
+          echo "::notice title=versions::${versions} cpu ${cpu} x$(nproc) avx512f=$(grep -c avx512f /proc/cpuinfo) image ${ImageVersion:-unknown}"
 
       - name: Configure sanitizer suppressions
         if: matrix.tsan
