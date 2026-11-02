@@ -10,6 +10,7 @@
 #include <Paralax/Core/Application.h>
 #include <Paralax/Core/PathEncoding.h>
 
+#include <limits>
 #include <memory>
 #include <set>
 #include <string>
@@ -87,7 +88,7 @@ TEST_CASE("EditorLayer: registers its commands while attached and unregisters ev
 			added.insert(name);
 	}
 	CHECK(added == std::set<std::string>{"editor.camera.focus", "editor.camera.get", "editor.camera.set", "editor.gizmo.get", "editor.gizmo.set", "render.settings.get",
-										 "render.settings.set", "render.stats"});
+										 "render.settings.set", "render.stats", "render.gi.state", "render.gi.reset", "render.gi.step", "render.gi.inspect"});
 	CHECK(editor.Context.GetCaptureHandler());
 
 	editor.App->PopLayer(editor.Layer);
@@ -162,5 +163,54 @@ TEST_CASE("EditorLayer: render.stats reports the statistics of the latest frame 
 	CHECK(emptied["drawCalls"] == 0);
 	CHECK(emptied["triangles"] == 0);
 	CHECK(emptied["lights"] == 0);
+	CHECK(editor.App->GetGraphicsDevice().GetValidationErrorCount() == 0);
+}
+
+TEST_CASE("EditorLayer: live play captures succeed while positive GI warmup requires paused simulation")
+{
+	if (!RequireOwnGraphicsDevice())
+		return;
+	AttachedEditorLayer editor;
+	EditorContext& context = editor.Context;
+	Run(context, "render.settings.set", {{"settings", {{"GIFreeze", true}, {"GIRaysPerProbe", 32}}}});
+	const std::filesystem::path image = Paralax::Testing::GetTestOutputDirectory() / "EditorLayerPlaying.png";
+	const json capture = {{"path", ToUtf8(image)}, {"width", 64}, {"height", 64}, {"camera", "editor"}};
+	for (bool withVolume : {false, true})
+	{
+		CAPTURE(withVolume);
+		if (withVolume)
+			Run(context, "entity.create", {{"name", "GI"}, {"components", {{"GIVolume", {{"ProbeCountX", 2}, {"ProbeCountY", 2}, {"ProbeCountZ", 2}}}}}});
+		Run(context, "play.start", {{"paused", false}});
+		CHECK(Run(context, "render.capture", capture)["width"] == 64);
+		json zeroWarmup = capture;
+		zeroWarmup["giWarmupFrames"] = 0;
+		CHECK(Run(context, "render.capture", zeroWarmup)["height"] == 64);
+		CHECK(context.IsPlaying());
+		CHECK_FALSE(context.IsPaused());
+
+		json warmup = capture;
+		warmup["giWarmupFrames"] = 1;
+		const auto refused = context.Execute("render.capture", warmup);
+		CHECK_FALSE(refused.Success);
+		CHECK(refused.Error.find("Pause play mode") != std::string::npos);
+		Run(context, "play.pause");
+		if (withVolume && Run(context, "render.gi.state")["supported"].get<bool>())
+		{
+			const uint32_t before = Run(context, "render.gi.state")["updates"];
+			Run(context, "render.capture", warmup);
+			CHECK(Run(context, "render.gi.state")["updates"] == before + 1);
+		}
+		else
+			CHECK_FALSE(context.Execute("render.capture", warmup).Success);
+		Run(context, "play.stop");
+	}
+
+	for (const json& invalid : {json(-1), json(1025), json(std::numeric_limits<uint64_t>::max()), json(1.5), json(true), json("1"), json(nullptr)})
+	{
+		CAPTURE(invalid);
+		json params = capture;
+		params["giWarmupFrames"] = invalid;
+		CHECK_FALSE(context.Execute("render.capture", params).Success);
+	}
 	CHECK(editor.App->GetGraphicsDevice().GetValidationErrorCount() == 0);
 }

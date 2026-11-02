@@ -98,7 +98,7 @@ namespace Paralax {
 																	   MakeField<&SpotLightComponent::CastShadows>("CastShadows"),
 																   }));
 
-			components.push_back(MakeComponent<GIVolumeComponent>("GIVolume", "A world-aligned grid of light probes caching indirect lighting (global illumination); one per scene.",
+			components.push_back(MakeComponent<GIVolumeComponent>("GIVolume", "Experimental diffuse global illumination: a world-aligned probe grid, one per scene. Approximate visibility can leak at grazing surfaces or with sparse valid neighbours.",
 																  {
 																	  MakeField<&GIVolumeComponent::Enabled>("Enabled"),
 																	  MakeField<&GIVolumeComponent::ProbeSpacing>("ProbeSpacing", FieldOptions().Range(0.1f, 100.0f).Describe("Metres between probes.")),

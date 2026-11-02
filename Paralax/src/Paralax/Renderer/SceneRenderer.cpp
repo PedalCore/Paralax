@@ -31,7 +31,20 @@ namespace Paralax {
 			MakeField<&SceneRendererSettings::ShadowSoftness>("ShadowSoftness", FieldOptions().Range(0.0f, 0.5f).Describe("Penumbra size in meters.")),
 			MakeField<&SceneRendererSettings::ShadowCascadeBlend>("ShadowCascadeBlend", FieldOptions().Range(0.0f, 0.3f).Describe("Fraction of each shadow cascade blended into the next; zero disables blending.")),
 			MakeField<&SceneRendererSettings::DefaultEnvironmentIntensity>("SkyIntensity", FieldOptions().Range(0.0f, 3.0f).Describe("Environment intensity when the scene has no SkyLight.")),
-			MakeField<&SceneRendererSettings::DebugView>("DebugView", FieldOptions().Enum({"Lit", "Normals", "BaseColor"})),
+			MakeField<&SceneRendererSettings::GIEnabled>("GIEnabled", FieldOptions().Describe("Enable diffuse probe lighting in scenes with a GI volume.")),
+			MakeField<&SceneRendererSettings::GIFreeze>("GIFreeze", FieldOptions().Describe("Freeze probe history between explicitly queued updates; reset still refills once.")),
+			MakeField<&SceneRendererSettings::GIVisibility>("GIVisibility", FieldOptions().Describe("Apply distance-moment visibility weights. Disable only for diagnosis; leaking is expected.")),
+			MakeField<&SceneRendererSettings::GIBounceFeedback>("GIBounceFeedback", FieldOptions().Describe("Feed previous probe lighting into reflected hit lighting. Reset history when comparing.")),
+			MakeField<&SceneRendererSettings::EnvironmentSpecular>("EnvironmentSpecular", FieldOptions().Describe("Include specular image-based lighting in the composite.")),
+			MakeField<&SceneRendererSettings::GIDebugProbe>("GIDebugProbe", FieldOptions().Range(-1, 1727)),
+			MakeField<&SceneRendererSettings::GIDebugScale>("GIDebugScale", FieldOptions().Range(0.0001f, 1000.0f)),
+			MakeField<&SceneRendererSettings::GIShowProbes>("GIShowProbes", FieldOptions().Describe("Display diagnostic probe markers.")),
+			MakeField<&SceneRendererSettings::GIRaysPerProbe>("GIRaysPerProbe", FieldOptions().Range(32, 256).Describe("Rays traced per updated probe; higher counts reduce noise at greater tracing cost.")),
+			MakeField<&SceneRendererSettings::GIProbesPerFrame>("GIProbesPerFrame", FieldOptions().Range(1, 1728).Describe("Round-robin probe update budget after the initial full-volume fill.")),
+			MakeField<&SceneRendererSettings::GIHysteresis>("GIHysteresis", FieldOptions().Range(0.0f, 0.99f).Describe("Previous lighting retained on each probe update.")),
+			MakeField<&SceneRendererSettings::GINormalBias>("GINormalBias", FieldOptions().Range(0.0f, 0.05f).Describe("Receiver normal offset in metres.")),
+			MakeField<&SceneRendererSettings::GIViewBias>("GIViewBias", FieldOptions().Range(0.0f, 0.5f).Describe("Receiver view offset as a fraction of probe spacing, limited to half the available view-ray distance.")),
+			MakeField<&SceneRendererSettings::DebugView>("DebugView", FieldOptions().Enum({"Lit", "Normals", "BaseColor", "Indirect", "GICoverage", "DirectDiffuse", "DirectSpecular", "EnvironmentDiffuse", "EnvironmentSpecular", "Emissive", "IndirectDiffuse", "GIWeightSum", "GIValidNeighbours", "GIProbeWeight", "GIMeanDistance", "GISecondMoment", "GIVariance"})),
 		};
 		return s_Fields;
 	}
@@ -140,6 +153,7 @@ namespace Paralax {
 		, m_Resources(device.GetDevice())
 		, m_Environment(device.GetDevice())
 		, m_Text(device.GetDevice())
+		, m_ProbeGI(device.GetDevice(), device.GetInfo().Limits)
 	{
 	}
 
@@ -183,9 +197,10 @@ namespace Paralax {
 		m_Resources.Initialize(m_CommandList);
 		const bool environmentReady = m_Environment.Initialize(m_CommandList);
 		const bool textReady = m_Text.Initialize(m_CommandList);
+		const bool probeReady = m_ProbeGI.Initialize(m_CommandList);
 		m_CommandList->close();
 		m_Device->executeCommandList(m_CommandList);
-		if (!environmentReady || !textReady)
+		if (!environmentReady || !textReady || !probeReady)
 			return false;
 
 		if (!CreatePipelines())
@@ -339,7 +354,7 @@ namespace Paralax {
 			forward.inputLayout = m_InputLayout;
 			forward.VS = m_ForwardVS;
 			forward.PS = m_ForwardPS;
-			forward.bindingLayouts = {m_ViewLayout, m_MaterialLayout};
+			forward.bindingLayouts = {m_ViewLayout, m_MaterialLayout, m_ProbeGI.GetLayout()};
 			forward.renderState.rasterState.setFrontCounterClockwise(true).setCullBack();
 			forward.renderState.depthStencilState.enableDepthTest().enableDepthWrite().setDepthFunc(nvrhi::ComparisonFunc::GreaterOrEqual);
 			m_OpaquePipeline = m_Device->createGraphicsPipeline(forward, m_HDRFramebuffer->getFramebufferInfo());
@@ -404,6 +419,72 @@ namespace Paralax {
 		nvrhi::GraphicsPipelineHandle pipeline = m_Device->createGraphicsPipeline(desc, info);
 		m_TonemapPipelines[key] = pipeline;
 		return pipeline;
+	}
+
+	void SceneRenderer::RenderProbeMarkers(const CameraView& camera, nvrhi::IFramebuffer* output)
+	{
+		if (!m_Settings.GIShowProbes || !GetGIState().Available || !m_ProbeGI.HasHistory())
+			return;
+		struct MarkerConstants
+		{
+			glm::mat4 ViewProjection;
+			glm::vec4 Origin, Spacing;
+			glm::uvec4 Grid;
+			glm::vec4 Viewport;
+		};
+		static_assert(sizeof(MarkerConstants) == 128);
+		if (!m_ProbeMarkerLayout)
+		{
+			nvrhi::BindingLayoutDesc layout;
+			layout.visibility = nvrhi::ShaderType::All;
+			layout.bindings = {nvrhi::BindingLayoutItem::PushConstants(0, sizeof(MarkerConstants)), nvrhi::BindingLayoutItem::Texture_SRV(0)};
+			m_ProbeMarkerLayout = m_Device->createBindingLayout(layout);
+		}
+		if (!m_ProbeMarkerVS)
+			m_ProbeMarkerVS = ShaderLibrary::CreateShader(m_Device, "ProbeMarkers", "MarkerVS", nvrhi::ShaderType::Vertex);
+		if (!m_ProbeMarkerPS)
+			m_ProbeMarkerPS = ShaderLibrary::CreateShader(m_Device, "ProbeMarkers", "MarkerPS", nvrhi::ShaderType::Pixel);
+		if (!m_ProbeMarkerLayout || !m_ProbeMarkerVS || !m_ProbeMarkerPS)
+			return;
+		const auto& info = output->getFramebufferInfo();
+		uint64_t key = HashCombine(static_cast<uint64_t>(info.depthFormat), (static_cast<uint64_t>(info.sampleCount) << 8) | info.sampleQuality);
+		for (auto format : info.colorFormats)
+			key = HashCombine(key, static_cast<uint64_t>(format));
+		auto& pipeline = m_ProbeMarkerPipelines[key];
+		if (!pipeline)
+		{
+			nvrhi::GraphicsPipelineDesc desc;
+			desc.VS = m_ProbeMarkerVS;
+			desc.PS = m_ProbeMarkerPS;
+			desc.bindingLayouts = {m_ProbeMarkerLayout};
+			desc.renderState.rasterState.setCullNone();
+			desc.renderState.depthStencilState.disableDepthTest().disableDepthWrite();
+			pipeline = m_Device->createGraphicsPipeline(desc, info);
+		}
+		nvrhi::IBindingSet* binding = nullptr;
+		for (const auto& candidate : m_ProbeMarkerBindings)
+			if (candidate && candidate->getDesc()->bindings[1].resourceHandle == m_ProbeGI.GetDistance())
+				binding = candidate;
+		if (!binding)
+		{
+			nvrhi::BindingSetDesc set;
+			set.bindings = {nvrhi::BindingSetItem::PushConstants(0, sizeof(MarkerConstants)), nvrhi::BindingSetItem::Texture_SRV(0, m_ProbeGI.GetDistance())};
+			auto& slot = m_ProbeMarkerBindings[m_NextProbeMarkerBinding++ % 2];
+			slot = m_Device->createBindingSet(set, m_ProbeMarkerLayout);
+			binding = slot;
+		}
+		if (!pipeline || !binding)
+			return;
+		const auto& probes = m_ProbeGI.GetConstants();
+		MarkerConstants constants{camera.Projection * camera.View, probes.Origin, probes.Spacing, probes.Grid, {static_cast<float>(info.width), static_cast<float>(info.height), probes.Diagnostics.x, 0.0f}};
+		nvrhi::GraphicsState state;
+		state.pipeline = pipeline;
+		state.framebuffer = output;
+		state.bindings = {binding};
+		state.viewport.addViewportAndScissorRect(nvrhi::Viewport(static_cast<float>(info.width), static_cast<float>(info.height)));
+		m_CommandList->setGraphicsState(state);
+		m_CommandList->setPushConstants(&constants, sizeof(constants));
+		m_CommandList->draw(nvrhi::DrawArguments().setVertexCount(6).setInstanceCount(probes.Grid.w));
 	}
 
 	nvrhi::ITexture* SceneRenderer::ResolveTexture(AssetHandle handle, nvrhi::ITexture* fallback)
@@ -741,7 +822,7 @@ namespace Paralax {
 								 : draw.Mirrored    ? m_OpaqueMirroredPipeline
 													: m_OpaquePipeline;
 				state.framebuffer = m_HDRFramebuffer;
-				state.bindings = {m_ViewBindings, draw.Material};
+				state.bindings = {m_ViewBindings, draw.Material, m_ProbeGI.GetBindings()};
 				state.vertexBuffers = {nvrhi::VertexBufferBinding().setBuffer(draw.Mesh->VertexBuffer)};
 				state.indexBuffer = nvrhi::IndexBufferBinding().setBuffer(draw.Mesh->IndexBuffer).setFormat(nvrhi::Format::R32_UINT);
 				state.viewport.addViewportAndScissorRect(viewport);
@@ -756,7 +837,8 @@ namespace Paralax {
 
 		drawItems(false);
 
-		// Sky fills the pixels no geometry covered.
+		// Raw lighting diagnostics describe surfaces; preserve the sky in the original material debug views.
+		if (view.DebugView < static_cast<uint32_t>(RenderDebugView::DirectDiffuse))
 		{
 			nvrhi::GraphicsState state;
 			state.pipeline = m_SkyPipeline;
@@ -771,6 +853,41 @@ namespace Paralax {
 
 		drawItems(true);
 		(void)view;
+	}
+
+	GIState SceneRenderer::GetGIState() const
+	{
+		const auto& parameters = m_ProbeGI.GetConstants();
+		GIState state;
+		state.Enabled = m_Settings.GIEnabled;
+		state.Supported = m_ProbeGI.IsSupported();
+		state.Frozen = m_Settings.GIFreeze;
+		state.HistoryValid = m_ProbeGI.HasHistory();
+		state.Available = state.Enabled && state.Supported && parameters.Origin.w > 0.0f;
+		state.Updates = m_ProbeGI.GetUpdateCount();
+		state.Queued = m_QueuedGIUpdates;
+		state.Origin = glm::vec3(parameters.Origin);
+		state.Spacing = parameters.Spacing.x;
+		state.Counts = glm::uvec3(parameters.Grid);
+		state.Frame = m_FrameIndex;
+		return state;
+	}
+
+	bool SceneRenderer::ResetGIHistory()
+	{
+		if (!GetGIState().Available)
+			return false;
+		m_QueuedGIUpdates = 0;
+		m_ProbeGI.ResetHistory();
+		return true;
+	}
+
+	bool SceneRenderer::QueueGIUpdates(uint32_t frames)
+	{
+		if (!GetGIState().Available || !m_Settings.GIFreeze || frames == 0 || frames > 1024 || m_QueuedGIUpdates > 1024 - frames)
+			return false;
+		m_QueuedGIUpdates += frames;
+		return true;
 	}
 
 	void SceneRenderer::Render(Scene& scene, const CameraView& camera, nvrhi::IFramebuffer* output)
@@ -867,9 +984,67 @@ namespace Paralax {
 		view.Exposure = m_Settings.Exposure;
 		view.LightCount = static_cast<uint32_t>(m_Lights.size());
 		view.DebugView = static_cast<uint32_t>(m_Settings.DebugView);
+		view.Diagnostics = {m_Settings.EnvironmentSpecular ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
 		if (sunShadows)
 			ComputeCascades(camera, sunDirection, view);
 		m_CommandList->writeBuffer(m_ViewConstants, &view, sizeof(view));
+
+		Entity volume;
+		uint32_t enabledVolumes = 0;
+		if (m_Settings.GIEnabled)
+			for (auto handle : scene.GetAllEntitiesWith<GIVolumeComponent>())
+			{
+				Entity candidate(handle, &scene);
+				if (candidate.GetComponent<GIVolumeComponent>().Enabled)
+				{
+					++enabledVolumes;
+					if (!volume || uint64_t(candidate.GetUUID()) < uint64_t(volume.GetUUID()))
+						volume = candidate;
+				}
+			}
+		if (enabledVolumes <= 1)
+			m_ReportedMultipleGIVolumes = false;
+		if (enabledVolumes > 1 && !m_ReportedMultipleGIVolumes)
+		{
+			PX_CORE_WARN("Only one GI volume is supported; using the enabled volume with the lowest UUID");
+			m_ReportedMultipleGIVolumes = true;
+		}
+		if (volume)
+		{
+			const auto& component = volume.GetComponent<GIVolumeComponent>();
+			ProbeGISpecification specification;
+			specification.Origin = glm::vec3(scene.GetWorldTransform(volume)[3]);
+			specification.Spacing = component.ProbeSpacing;
+			specification.Counts = {static_cast<uint32_t>(component.ProbeCountX), static_cast<uint32_t>(component.ProbeCountY), static_cast<uint32_t>(component.ProbeCountZ)};
+			specification.RaysPerProbe = static_cast<uint32_t>(m_Settings.GIRaysPerProbe);
+			specification.ProbesPerFrame = static_cast<uint32_t>(m_Settings.GIProbesPerFrame);
+			specification.Hysteresis = m_Settings.GIHysteresis;
+			specification.NormalBias = m_Settings.GINormalBias;
+			specification.ViewBias = m_Settings.GIViewBias;
+			specification.FreezeUpdates = m_Settings.GIFreeze && m_QueuedGIUpdates == 0;
+			specification.VisibilityWeighting = m_Settings.GIVisibility;
+			specification.BounceFeedback = m_Settings.GIBounceFeedback;
+			specification.DebugProbe = m_Settings.GIDebugProbe;
+			if (!m_ProbeGI.Update(scene, m_Assets, specification, m_CommandList, m_ViewConstants, m_LightBuffer, m_EnvironmentMaps.Radiance, view.LightCount))
+			{
+				m_ProbeGI.Disable(m_CommandList);
+				m_QueuedGIUpdates = 0;
+				if (!m_ReportedGIFailure && m_ProbeGI.IsSupported() && !m_ProbeGI.HasReportedUpdateFailure())
+					PX_CORE_ERROR("Probe GI update failed: invalid volume, scene data or unavailable GPU resources");
+				m_ReportedGIFailure = true;
+			}
+			else
+			{
+				m_ReportedGIFailure = false;
+				if (m_QueuedGIUpdates > 0)
+					--m_QueuedGIUpdates;
+			}
+		}
+		else
+		{
+			m_QueuedGIUpdates = 0;
+			m_ProbeGI.Disable(m_CommandList);
+		}
 
 		if (!m_ViewBindings || m_ViewBindings->getDesc()->bindings[3].resourceHandle != m_ShadowMap.Get() || m_ViewBindings->getDesc()->bindings[4].resourceHandle != m_EnvironmentMaps.Specular.Get())
 		{
@@ -909,10 +1084,13 @@ namespace Paralax {
 		tonemap.viewport.addViewportAndScissorRect(nvrhi::Viewport(static_cast<float>(outputInfo.width), static_cast<float>(outputInfo.height)));
 		m_CommandList->setGraphicsState(tonemap);
 		GPU::TonemapConstants tonemapConstants{};
-		tonemapConstants.Exposure = m_Settings.Exposure;
-		tonemapConstants.Operator = static_cast<uint32_t>(m_Settings.Tonemapper);
+		const bool rawDiagnostic = static_cast<uint32_t>(m_Settings.DebugView) >= 3;
+		tonemapConstants.Exposure = rawDiagnostic ? m_Settings.GIDebugScale : m_Settings.Exposure;
+		tonemapConstants.Operator = rawDiagnostic ? 3u : static_cast<uint32_t>(m_Settings.Tonemapper);
 		m_CommandList->setPushConstants(&tonemapConstants, sizeof(tonemapConstants));
 		m_CommandList->draw(nvrhi::DrawArguments().setVertexCount(3));
+
+		RenderProbeMarkers(camera, output);
 
 		// Text goes over the tone-mapped image, so exposure never changes it; world-space text still respects depth.
 		m_Stats.TextGlyphs = m_Text.Render(m_CommandList, scene, camera.Projection * camera.View, output, m_DepthTarget);

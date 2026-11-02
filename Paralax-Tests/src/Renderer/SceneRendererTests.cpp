@@ -16,6 +16,7 @@
 #include <array>
 #include <cstring>
 #include <limits>
+#include <tuple>
 #include <vector>
 
 using namespace Paralax;
@@ -88,6 +89,36 @@ namespace {
 		point.Color = {0.3f, 0.6f, 1.0f};
 		point.Intensity = 4.0f;
 		point.Range = 5.0f;
+	}
+
+	std::vector<glm::vec3> ReadLinearHDR(nvrhi::IDevice* device, nvrhi::ITexture* texture)
+	{
+		auto desc = texture->getDesc();
+		desc.isRenderTarget = false;
+		desc.initialState = nvrhi::ResourceStates::CopyDest;
+		auto staging = device->createStagingTexture(desc, nvrhi::CpuAccessMode::Read);
+		auto commands = device->createCommandList();
+		REQUIRE(staging);
+		REQUIRE(commands);
+		commands->open();
+		commands->copyTexture(staging, {}, texture, {});
+		commands->close();
+		device->executeCommandList(commands);
+		device->waitForIdle();
+		size_t pitch = 0;
+		const auto* mapped = static_cast<const uint8_t*>(device->mapStagingTexture(staging, {}, nvrhi::CpuAccessMode::Read, &pitch));
+		REQUIRE(mapped);
+		std::vector<glm::vec3> pixels(static_cast<size_t>(desc.width) * desc.height);
+		for (uint32_t y = 0; y < desc.height; ++y)
+			for (uint32_t x = 0; x < desc.width; ++x)
+				for (uint32_t channel = 0; channel < 3; ++channel)
+				{
+					uint16_t bits;
+					std::memcpy(&bits, mapped + y * pitch + (x * 4 + channel) * sizeof(bits), sizeof(bits));
+					pixels[y * desc.width + x][channel] = glm::unpackHalf1x16(bits);
+				}
+		device->unmapStagingTexture(staging);
+		return pixels;
 	}
 
 	float Luminance(glm::u8vec4 c)
@@ -618,4 +649,261 @@ TEST_CASE("SceneRenderer: static lighting is regenerated after render targets ar
 		CHECK(readLut() == first);
 	}
 	CHECK(graphics.GetValidationErrorCount() == initialErrors);
+}
+
+TEST_CASE("SceneRenderer: diagnostic settings round trip and reject invalid values")
+{
+	SceneRendererSettings settings;
+	const auto fields = SceneRendererSettings::GetFields();
+	std::string error;
+	for (const char* name : {"GIFreeze", "GIVisibility", "GIBounceFeedback", "EnvironmentSpecular", "GIShowProbes"})
+	{
+		const auto* field = FindField(fields, name);
+		REQUIRE(field);
+		for (bool value : {false, true})
+		{
+			REQUIRE(Reflection::SetField(*field, &settings, value, error));
+			SceneRendererSettings restored;
+			REQUIRE(Reflection::FromJson(fields, "Settings", &restored, Reflection::ToJson(fields, &settings), error));
+			CHECK(Reflection::ToJson(fields, &restored)[name] == value);
+		}
+		CHECK_FALSE(Reflection::SetField(*field, &settings, "true", error));
+	}
+	const auto* debug = FindField(fields, "DebugView");
+	REQUIRE(debug);
+	for (const char* name : {"Lit", "Normals", "BaseColor", "Indirect", "GICoverage", "DirectDiffuse", "DirectSpecular", "EnvironmentDiffuse", "EnvironmentSpecular", "Emissive", "IndirectDiffuse", "GIWeightSum", "GIValidNeighbours", "GIProbeWeight", "GIMeanDistance", "GISecondMoment", "GIVariance"})
+	{
+		REQUIRE(Reflection::SetField(*debug, &settings, name, error));
+		SceneRendererSettings restored;
+		REQUIRE(Reflection::FromJson(fields, "Settings", &restored, Reflection::ToJson(fields, &settings), error));
+		CHECK(Reflection::ToJson(fields, &restored)["DebugView"] == name);
+	}
+	CHECK_FALSE(Reflection::SetField(*debug, &settings, "Unknown", error));
+	for (const auto& [name, low, high] : {std::tuple{"GIDebugProbe", -2.0, 1728.0}, std::tuple{"GIDebugScale", 0.0, 1001.0}})
+	{
+		const auto* field = FindField(fields, name);
+		REQUIRE(field);
+		CHECK_FALSE(Reflection::SetField(*field, &settings, low, error));
+		CHECK_FALSE(Reflection::SetField(*field, &settings, high, error));
+		CHECK_FALSE(Reflection::SetField(*field, &settings, nullptr, error));
+	}
+}
+
+TEST_CASE("SceneRenderer: material debug views preserve sky while lighting diagnostics leave background black")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	{
+		SceneRenderer renderer(graphics, assets);
+		REQUIRE(renderer.Initialize());
+		auto output = CreateOutput(graphics.GetDevice(), 32, 32);
+		const auto camera = CameraView::LookAt({0, 1, 4}, {0, 1, 0}, glm::radians(50.0f), 1.0f);
+		renderer.Render(scene, camera, output.Framebuffer);
+		const auto sky = ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget());
+		REQUIRE(sky.size() == 32 * 32);
+		CHECK(glm::length(sky[16 * 32 + 16]) > 0.01f);
+		for (auto mode : {RenderDebugView::Normals, RenderDebugView::BaseColor})
+		{
+			renderer.GetSettings().DebugView = mode;
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget()) == sky);
+		}
+		for (auto mode : {RenderDebugView::DirectDiffuse, RenderDebugView::IndirectDiffuse})
+		{
+			renderer.GetSettings().DebugView = mode;
+			renderer.Render(scene, camera, output.Framebuffer);
+			for (const auto& pixel : ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget()))
+				CHECK(pixel == glm::vec3(0.0f));
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("SceneRenderer: lighting diagnostic terms sum to the linear HDR composite")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	BuildTestScene(scene, assets);
+	scene.CreateEntity("Sky").AddComponent<SkyLightComponent>().ShowBackground = false;
+	Entity volume = scene.CreateEntity("GI");
+	volume.GetTransform().Translation = glm::vec3(-2.0f);
+	volume.AddComponent<GIVolumeComponent>().ProbeSpacing = 2.0f;
+	{
+		SceneRenderer renderer(graphics, assets);
+		REQUIRE(renderer.Initialize());
+		auto output = CreateOutput(graphics.GetDevice(), 64, 64);
+		const auto camera = CameraView::LookAt({0, 2, 4}, {0, 0.4f, 0}, glm::radians(50.0f), 1.0f);
+		auto& settings = renderer.GetSettings();
+		settings.GIFreeze = true;
+		settings.ShadowResolution = ShadowQuality::Low;
+		for (bool gi : {false, true})
+		{
+			settings.GIEnabled = gi;
+			settings.DebugView = RenderDebugView::None;
+			renderer.Render(scene, camera, output.Framebuffer);
+			const auto lit = ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget());
+			std::vector<glm::vec3> sum(lit.size(), glm::vec3(0));
+			for (auto mode : {RenderDebugView::DirectDiffuse, RenderDebugView::DirectSpecular, RenderDebugView::EnvironmentDiffuse,
+							  RenderDebugView::EnvironmentSpecular, RenderDebugView::Emissive, RenderDebugView::IndirectDiffuse})
+			{
+				settings.DebugView = mode;
+				renderer.Render(scene, camera, output.Framebuffer);
+				const auto term = ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget());
+				for (size_t pixel = 0; pixel < sum.size(); ++pixel)
+					sum[pixel] += term[pixel];
+			}
+			size_t mismatches = 0, illuminated = 0;
+			for (size_t pixel = 0; pixel < sum.size(); ++pixel)
+			{
+				illuminated += glm::length(lit[pixel]) > 0.05f ? 1 : 0;
+				for (int channel = 0; channel < 3; ++channel)
+					mismatches += std::abs(lit[pixel][channel] - sum[pixel][channel]) > 0.003f * std::max(1.0f, lit[pixel][channel]) ? 1 : 0;
+			}
+			CHECK(illuminated > 200);
+			CHECK(mismatches == 0);
+		}
+		settings.DebugView = RenderDebugView::IndirectDiffuse;
+		renderer.Render(scene, camera, output.Framebuffer);
+		const auto diagnostic = ReadbackTexture(graphics.GetDevice(), output.Texture);
+		settings.Exposure = 32.0f;
+		settings.Tonemapper = TonemapOperator::ACES;
+		renderer.Render(scene, camera, output.Framebuffer);
+		CHECK(Image::MaxChannelDifference(diagnostic, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
+		settings.GIShowProbes = true;
+		renderer.Render(scene, camera, output.Framebuffer);
+		CHECK(Image::MaxChannelDifference(diagnostic, ReadbackTexture(graphics.GetDevice(), output.Texture)) > 10);
+		settings.GIShowProbes = false;
+		renderer.Render(scene, camera, output.Framebuffer);
+		CHECK(Image::MaxChannelDifference(diagnostic, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("SceneRenderer: frozen GI stepping matches an exact unfrozen update sequence")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	BuildTestScene(scene, assets);
+	Entity volume = scene.CreateEntity("GI");
+	volume.GetTransform().Translation = glm::vec3(-2.0f);
+	volume.AddComponent<GIVolumeComponent>().ProbeSpacing = 2.0f;
+	Image expected;
+	for (bool frozen : {false, true})
+	{
+		SceneRenderer renderer(graphics, assets);
+		REQUIRE(renderer.Initialize());
+		CHECK_FALSE(renderer.QueueGIUpdates(1));
+		CHECK_FALSE(renderer.ResetGIHistory());
+		renderer.GetSettings().GIFreeze = frozen;
+		renderer.GetSettings().ShadowResolution = ShadowQuality::Low;
+		auto output = CreateOutput(graphics.GetDevice(), 64, 64);
+		const auto camera = CameraView::LookAt({0, 2, 4}, {0, 0.4f, 0}, glm::radians(50.0f), 1.0f);
+		auto render = [&] {
+			renderer.Render(scene, camera, output.Framebuffer);
+			graphics.WaitForIdle();
+			graphics.CollectGarbage();
+		};
+		render();
+		CHECK(renderer.GetGIState().Updates == 1);
+		CHECK_FALSE(renderer.QueueGIUpdates(0));
+		CHECK_FALSE(renderer.QueueGIUpdates(1025));
+		if (frozen)
+			REQUIRE(renderer.QueueGIUpdates(4));
+		else
+			CHECK_FALSE(renderer.QueueGIUpdates(4));
+		for (int frame = 0; frame < 4; ++frame)
+			render();
+		CHECK(renderer.GetGIState().Updates == 5);
+		CHECK(renderer.GetGIState().Queued == 0);
+		const Image actual = ReadbackTexture(graphics.GetDevice(), output.Texture);
+		if (!frozen)
+			expected = actual;
+		else
+		{
+			CHECK(Image::MaxChannelDifference(expected, actual) == 0);
+			render();
+			CHECK(renderer.GetGIState().Updates == 5);
+			CHECK(Image::MaxChannelDifference(actual, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
+			REQUIRE(renderer.ResetGIHistory());
+			CHECK_FALSE(renderer.GetGIState().HistoryValid);
+			render();
+			CHECK(renderer.GetGIState().Updates == 1);
+			REQUIRE(renderer.QueueGIUpdates(1024));
+			CHECK_FALSE(renderer.QueueGIUpdates(1));
+			renderer.GetSettings().GIEnabled = false;
+			render();
+			CHECK(renderer.GetGIState().Queued == 0);
+			CHECK_FALSE(renderer.QueueGIUpdates(1));
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("SceneRenderer: orthographic GI uses parallel view rays without a finite camera-distance clamp")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	glm::quat rotation(1, 0, 0, 0);
+	SUBCASE("axis-aligned camera") {}
+	SUBCASE("rotated camera")
+	{
+		rotation = glm::angleAxis(0.5f, glm::normalize(glm::vec3(1, 2, 0)));
+	}
+	AssetManager assets;
+	Scene scene;
+	Entity slab = scene.CreateEntity("Receiver");
+	slab.GetTransform().Translation = rotation * glm::vec3(0, 0, -0.1f);
+	slab.GetTransform().Rotation = rotation;
+	slab.GetTransform().Scale = {4, 4, 0.2f};
+	slab.AddComponent<MeshComponent>().Mesh = AssetHandle(AssetManager::BuiltinCube);
+	Entity volume = scene.CreateEntity("GI");
+	volume.GetTransform().Translation = {-2, -2, -2};
+	auto& grid = volume.AddComponent<GIVolumeComponent>();
+	grid.ProbeSpacing = 2.0f;
+	grid.ProbeCountX = grid.ProbeCountY = grid.ProbeCountZ = 3;
+	SceneRenderer renderer(graphics, assets);
+	REQUIRE(renderer.Initialize());
+	auto& settings = renderer.GetSettings();
+	settings.GIFreeze = true;
+	settings.DebugView = RenderDebugView::GIProbeWeight;
+	settings.GIDebugProbe = 22;
+	settings.GINormalBias = 0.0f;
+	auto target = CreateOutput(graphics.GetDevice(), 32, 32);
+	CameraView camera = CameraView::LookAt({0, 0, 0.1f}, {}, glm::radians(60.0f), 1.0f, 0.01f, 20.0f);
+	camera.Position = rotation * camera.Position;
+	camera.View = glm::lookAt(camera.Position, glm::vec3(0), rotation * glm::vec3(0, 1, 0));
+	camera.Orthographic = true;
+	camera.Projection = glm::orthoRH_ZO(-1.5f, 1.5f, -1.5f, 1.5f, camera.Far, camera.Near);
+	renderer.Render(scene, camera, target.Framebuffer);
+	const auto close = ReadbackTexture(graphics.GetDevice(), target.Texture);
+	camera.Position = rotation * glm::vec3(0, 0, 10);
+	camera.View = glm::lookAt(camera.Position, glm::vec3(0), rotation * glm::vec3(0, 1, 0));
+	renderer.Render(scene, camera, target.Framebuffer);
+	const auto far = ReadbackTexture(graphics.GetDevice(), target.Texture);
+	REQUIRE_FALSE(close.IsEmpty());
+	CHECK(close.GetPixel(16, 16).r > 10);
+	CHECK(close.GetPixels() == far.GetPixels());
+	const auto query = renderer.InspectGI(rotation * glm::vec3(0.046875f, -0.046875f, 0), rotation * glm::vec3(0, 0, 1), rotation * glm::vec3(0, 0, 1));
+	REQUIRE(query);
+	float expected = 0.0f;
+	for (const auto& neighbour : query->Neighbours)
+		if (neighbour.Metadata.x == 22)
+			expected = neighbour.IrradianceWeight.w;
+	const auto linear = ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget());
+	CHECK(linear[16 * 32 + 16].r == doctest::Approx(static_cast<double>(expected)).epsilon(0.003));
+	CHECK(graphics.GetValidationErrorCount() == errors);
 }

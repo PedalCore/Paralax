@@ -30,8 +30,18 @@ namespace Paralax {
 		std::vector<std::string> InstanceExtensions;
 	};
 
+	// Numeric resource limits reported by the selected adapter. Defaults are Vulkan 1.3 core guarantees.
+	struct GraphicsDeviceLimits
+	{
+		uint64_t MaxStorageBufferBytes = 128u * 1024 * 1024;
+		uint32_t MaxTextureArrayLayers = 256;
+		uint32_t MaxStorageBuffersPerStage = 4;
+		uint32_t MaxStorageBuffersPerSet = 24;
+	};
+
 	struct GraphicsDeviceInfo
 	{
+		GraphicsDeviceLimits Limits;
 		std::string AdapterName;
 		std::string DriverName;
 		uint32_t VendorID = 0;

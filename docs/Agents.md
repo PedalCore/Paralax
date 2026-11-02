@@ -115,6 +115,155 @@ windowed one.
 6. **Ship.** `project.export { output }` writes a standalone game folder: the runtime, its resources and the project.
    Run that folder's executable with `--headless --frames N --fail-on-script-error` to check it on its own.
 
+## Experimental diffuse global illumination
+
+Diffuse probe GI is experimental: its approximate distance-moment visibility still leaks in some configurations.
+The retained grazing-corner diagnostic measures about +771% excess and the earlier sphere-underside diagnostic
+about +26% against exact segment visibility using the same cache. In the authored maintenance-bay review,
+the converged sphere underside is about +38.65% high; the bench-floor sample has no physically visible eligible
+neighbours, so its exact-cache comparison is zero, not a ground-truth irradiance estimate. These cases need
+stronger visibility and probe support; more convergence or AO does not fix them. The grazing diagnostic is
+retained separately from baseline CI. Bounded real-geometry visibility is the planned follow-up.
+
+Add an enabled `GIVolume` component to cover the surfaces that need indirect lighting. Its entity's world
+translation is the minimum probe centre. The grid is world aligned: rotation and scale do not affect it.
+`ProbeSpacing` is in metres (0.1–100), and `ProbeCountX`, `ProbeCountY`, `ProbeCountZ` are integers (2–12).
+Coverage extends from the origin to `origin + spacing * (counts - 1)`. Include the room's surfaces within those
+bounds, and place enough probes in free space: probes classified inside solid geometry do not contribute.
+Classification counts geometric backface hits, independently of material `DoubleSided`; two-sided materials
+still shade both sides. This is a winding-based heuristic, not a topology/closed-volume test. If at least 25%
+of a probe's rays hit backfaces, it is inactive. A large open sheet can therefore deactivate probes on its
+back side even in free space. Use consistently wound solid walls with thickness, or move the probe grid so
+receiving surfaces retain valid neighbours; changing `DoubleSided` does not change this geometric limitation.
+If several volumes are enabled, the lowest entity UUID wins and the renderer reports a warning.
+
+```python
+editor.call("entity.create", name="Room GI", components={
+    "Transform": {"Translation": [-5.0, 0.5, -5.0]},
+    "GIVolume": {"ProbeSpacing": 2.0, "ProbeCountX": 6, "ProbeCountY": 3, "ProbeCountZ": 6}
+})
+editor.call("render.settings.set", settings={
+    "GIEnabled": True, "GIRaysPerProbe": 64, "GIProbesPerFrame": 32, "GIHysteresis": 0.85
+})
+editor.call("render.settings.set", settings={"DebugView": "Indirect"})
+editor.call("render.capture", path="Captures/Indirect.png", width=1280, height=720, camera="scene")
+editor.call("render.settings.set", settings={"DebugView": "Lit"})
+```
+
+`render.settings.get` reports the active controls. Rays per probe range from 32 to 256, probes updated per rendered
+frame from 1 to 1728, and hysteresis from 0 to 0.99. Higher ray counts reduce noise at greater tracing cost;
+higher hysteresis smooths noise but delays changes. Receiver bias controls are described below.
+`Indirect` (also named `IndirectDiffuse`) shows the exact composited diffuse GI term, including surface colour,
+Fresnel/metallic diffuse response and material occlusion. `GICoverage` shows where a volume replaces environment
+diffuse; coverage does not certify validity or lighting quality. `DirectDiffuse`, `DirectSpecular`,
+`EnvironmentDiffuse`, `EnvironmentSpecular` and `Emissive` isolate the other terms. These views and GI diagnostics
+bypass exposure, tone mapping and dithering; `GIDebugScale` (0.0001–1000, default 1) scales their display.
+PNG output still uses sRGB encoding and clips values above 1. HDR readbacks retain the linear values.
+`EnvironmentSpecular` is an independent boolean setting (default true); GI replaces environment diffuse only.
+
+The first rendered frame fills the volume. Later frames update probes in a deterministic round-robin order;
+multiple diffuse bounces converge over time. Moving static meshes rebuilds and uploads the whole CPU trace scene, including expanded textures and BVH sorting.
+That is an expected cost of this experimental implementation; dynamic/kinematic rigid-body hierarchies are excluded.
+Geometry/material edits upload new tracing data while preserving
+history and the update budget, so occlusion and lighting can remain stale until probes refresh. Volume
+placement/count/spacing changes, scene replacement and disabling GI reset history. Camera movement and viewport
+resizing preserve it. Simulation
+steps and rendered frames are distinct: editor rendering between agent requests can also update GI. Record
+warmup conditions when comparing captures; a count of capture requests is not an exact GI frame count.
+
+Each trace buffer is limited by the adapter's maximum storage-buffer range. Triangle records cost 144 bytes,
+BVH nodes 48 bytes (at most one per triangle), materials 96 bytes, and expanded texture texels 16 bytes.
+The independent hard caps are 1,048,576 triangles/materials and 16,777,216 texels; the adapter usually lowers them.
+At the Vulkan baseline 128 MiB range this allows 932,067 triangles and 8,388,608 texels including the white
+fallback texel (31 complete 512×512 textures plus the fallback). Material records remain capped at 1,048,576.
+The CPU retains accepted arrays for diagnostics; rebuilding and GPU upload add temporary memory costs. Packed
+8-bit texels, channel stripping and incremental rebuilds are follow-ups. Invalid or oversized data disables GI
+with a named, memoized cause, preserving the last accepted snapshot; unrelated movement does not retry the
+same asset failure. Correcting/reloading the asset, removing its use or correcting a failing transform recovers.
+
+For reproducible investigation, keep camera, lights, volume and update settings fixed, stop or pause play mode,
+and set `GIFreeze: true`. Freeze preserves initialized history; the first render after a reset still fills every
+probe. `render.gi.reset {}` invalidates history and sets the update counter to zero. `render.gi.step {frames: N}`
+then renders exactly N updates without advancing simulation, requiring frozen GI and N in 1–1024. These synchronous
+commands wait for the GPU and can be slow. A scene/volume must have rendered once before reset or step is available.
+`render.capture` also accepts `giWarmupFrames` (0–1024, default 0); a positive count requires frozen GI and performs
+exactly that many updates before the final frozen capture. Background renders do not add updates while frozen.
+
+`render.gi.state` returns fixed keys: `enabled`, `supported`, `frozen`, `historyValid`, `updates`, `queued`,
+`origin` ([x,y,z]), `spacing`, `counts` ([x,y,z]), and `frame` (renderer frame count, distinct from GI updates).
+A reset followed by background rendering can already show `updates: 1`, the initial fill. Compare counters,
+not request counts. Freeze is a diagnostic control; changing geometry or lights while frozen leaves stale GI.
+
+`GIVisibility: false` bypasses distance-moment visibility during reconstruction, leaving facing, validity and
+trilinear weighting intact; expect light leaking. `GIBounceFeedback: false` disables previous probe irradiance
+at traced hits, retaining first-bounce direct, emissive and environment lighting. Reset and converge history
+after changing feedback. `GIShowProbes` overlays probe centres after tone mapping: green valid, red inactive,
+yellow selected. These are x-ray markers, including probes behind walls, and never modify scene depth.
+
+GI receiver bias uses two explicit units: `GINormalBias` is in metres (default 0.05, range 0–0.05);
+`GIViewBias` is a **fraction of probe spacing** (default 0.20, range 0–0.5). The view bias is capped at half the receiver-to-camera distance in a
+perspective view, or half the known traced segment for probe-hit feedback. The independent normal offset is not
+part of that clamp. Orthographic views use parallel
+rays with an origin at infinity, so no finite-distance cap applies. Distance moments use 32×32 tiles with
+30×30 interiors, separately from 8×8 irradiance tiles; the angular filter follows the distance resolution.
+The distance atlas pair consumes 54 MiB at the 1728-probe limit (15.75 MiB for 504 probes), in addition to
+the irradiance atlas and scene tracing data.
+
+`render.gi.inspect {position:[x,y,z], normal:[x,y,z], view:[x,y,z], viewDistance?:metres}` performs a synchronous GPU query using the
+same reconstruction as shading. Directions are normalized; view points from the receiver towards the camera.
+It stalls the GPU, returns owned records for exactly eight neighbours, and does not advance history. Results
+include each neighbour's index, position, validity, distance, stored mean and second moment, raw and clamped
+variance, trilinear/facing/visibility weights, raw and normalized weight, and directional irradiance. Normalized weights can sum below one when confidence
+is insufficient: reconstruction normally divides by visible support, but a black prior limits amplification
+below 5% mean visibility or 0.01% eligible cell support. These dimensionless thresholds prevent all-occluded
+probes leaking full brightness and keep vanishing support continuous; they are not additional ambient light. Outside
+coverage, zero directions, uninitialized GI and unpaused play are errors. Reset, step and captures with positive
+`giWarmupFrames` also reject unpaused play. Ordinary captures, including explicit zero warmup, work during play;
+`render.gi.state` is always read-only.
+Omit `viewDistance` for an unbounded view ray; otherwise supply a finite value in [0,1000000] to reproduce the perspective clamp. This query does not infer a camera distance from the unit view vector.
+Each neighbour reports `distanceSupportMass`, `distanceExpectedMass` (the analytic angular-filter integral), and `distanceConfidence` (their ratio clamped to 0–1). Distance moments and mass are blended together through history and bilinear reconstruction; normalization happens at lookup. Confidence weights eligible neighbour support before visibility normalization, so lack of sampling confidence is distinct from confirmed occlusion. Zero mass invalidates that neighbour.
+Each neighbour also includes `surfaceRay` and `biasedRay`: the production BVH tracer tests the segment
+from the physical receiver or its GI-biased position to that probe. Both report `origin`, `end`, `length`,
+`epsilon`, `hitPosition`, `hitDistance`, `triangle`, `material`, `blocked`, `backface` and `reliable`. Starts are offset
+along the supplied normal and ends trimmed by the reported world-space epsilon; coincident endpoints
+produce a clear zero-length segment. Other segments too short to trim, or whose normal offset cannot be
+represented accurately at the receiver coordinates, have `reliable:false`; they are conservatively rejected,
+not classified as clear. The aggregate `surfaceReliable`/`biasedReliable` flags are false if any eligible
+neighbour is indeterminate. Interpret those aggregate estimates only when their reliability flag is true. Clear segments use triangle/material ID 4294967295 and their endpoint
+as the hit position. IDs index the current GPU trace snapshot, not scene entity IDs. Use geometric normals
+to isolate material-normal effects. `surfaceRejected`/`biasedRejected` are RGB irradiance/PI after rejecting
+blocked neighbours while retaining moment visibility. `surfaceExact`/`biasedExact` replace moment visibility
+with binary segment visibility. All four preserve the original eligible-support normalization, active
+probe classification and cached irradiance. These diagnostics do not repair lighting already stored in probes.
+
+
+`GIWeightSum` shows raw total weight and `GIValidNeighbours` shows active count divided by eight.
+Select a probe with `GIDebugProbe` (-1 means none); `GIProbeWeight`, `GIMeanDistance`, `GISecondMoment` and
+`GIVariance` show its normalized contribution and stored statistics at affected surfaces. Values are zero
+where that probe is not one of the eight neighbours. Distances use metres, second moments and variance m².
+
+This implementation traces opaque/masked geometry through a portable compute BVH, including surfaces outside
+the camera view. Dynamic and kinematic rigid bodies and their descendant meshes receive GI but do not occlude or
+contribute bounce lighting. Other transform animation still rebuilds the tracing scene; efficient animated
+geometry updates are future work. It samples emissive, base-colour and metallic textures, shadows hit lighting, and stores
+irradiance and directional distance moments. Diffuse material textures use existing mips up to 512 pixels per
+axis when available; alpha-cutout base textures retain full resolution. POM and normal maps remain raster shading
+detail, and blended/transmissive surfaces do not participate. Limits are 1,048,576 triangles and 16,777,216 cached
+texels. Invalid data or unavailable resources disable GI and report an error; retrying after a repair is supported.
+The adapter's storage-buffer range and texture-array layer limits may impose smaller budgets. Adapters with fewer
+than six compute storage-buffer descriptors retain normal forward rendering with GI unavailable. Probe sampling
+uses explicit bilinear loads, so optional 32-bit-float linear filtering is not required.
+
+At probe hits, GI always tests direct-light occlusion regardless of the **light's** `CastShadows` setting.
+A **mesh** with `CastShadows: false` is excluded from those direct-light shadow rays, matching raster shadow
+passes. It remains visible to radiance rays, probe classification and distance moments, so an emissive bulb
+proxy can emit without blocking its own point light, while remaining physical geometry for GI visibility.
+
+Within the volume, GI replaces environment diffuse. Outside it, the existing environment lighting remains.
+An interior with no valid visible probes stays dark. Environment specular is still separate and unoccluded;
+this is diffuse GI, not ray-traced reflections, SSAO, SSR or a visibility-buffer renderer. Hardware ray tracing
+is not required. Software Vulkan tests establish correctness, not hardware frame-rate performance.
+
 ## Rules that keep runs reproducible
 
 - Prefer `play.start { paused: true }` and `play.step` over letting the game run with the editor's frames. Simulation
@@ -277,19 +426,35 @@ editor's commands, names and parameters both, so an entry cannot go missing or s
 
 ### Rendering and the viewport
 
-- `render.capture { path: string, width?: integer, height?: integer, camera?: string }`: renders the scene (the
+- `render.capture { path: string, width?: integer, height?: integer, camera?: string, giWarmupFrames?: integer }`: renders the scene (the
   running copy while playing) to a PNG of `width` x `height` pixels (16 to 8192 each, default 1280 x 720). `path`
   must end in `.png`; with a project open it is relative to the project directory and must stay inside it.
   `camera` is `"scene"` (the default: the scene's primary camera, or the editor camera if it has none) or
   `"editor"`, the editor camera wherever `editor.camera.set` or `editor.camera.focus` left it: `{ path, width,
-  height }`. MCP returns the image.
+  height }`. MCP returns the image. `giWarmupFrames` (0–1024, default 0) performs exactly that many GI updates
+  before capture; a positive count requires frozen GI and paused/stopped simulation.
 - `render.stats`: the statistics of the renderer's latest frame: `{ drawCalls, shadowDrawCalls, triangles,
   culledSubmeshes, textGlyphs, lights, staticLightingGenerations }`, `lights` counting point and spot lights. The
   viewport renders every editor frame: send `render.capture` and `render.stats` in one batch to read a capture's.
 - `render.settings.get`: the renderer settings: `{ Exposure, Tonemapper, Shadows, ShadowResolution, ShadowDistance,
-  ShadowSoftness, ShadowCascadeBlend, SkyIntensity, DebugView }`.
+  ShadowSoftness, ShadowCascadeBlend, SkyIntensity, DebugView }`, plus the GI, diagnostics and
+  `EnvironmentSpecular` controls described in the experimental GI section above.
 - `render.settings.set { settings: object }`: changes some of them, returning them all; nothing changes if any value
   is refused. The settings are the editor's view, not part of the scene, so they are not undoable.
+- `render.gi.state`: the current GI status and update counters, without rendering: `{ enabled, supported, frozen,
+  historyValid, updates, queued, origin, spacing, counts, frame }`.
+- `render.gi.reset`: discards history and returns GI state; the next render fills the entire volume, even when
+  frozen. Requires an enabled supported volume rendered at least once and paused/stopped simulation.
+- `render.gi.step { frames: integer }`: performs exactly `frames` (1–1024) GI updates without advancing simulation,
+  returning GI state and `before` (the prior update count). Requires frozen, previously rendered GI and
+  paused/stopped simulation; waits for the GPU.
+- `render.gi.inspect { position: array, normal: array, view: array, viewDistance?: number }`: reads the eight
+  contributing neighbours at a world-space receiver, including moments, weights and exact visibility rays.
+  The three arrays contain finite `[x,y,z]` values; normal and view must be nonzero. `viewDistance` is metres
+  (0–1,000,000); omit it for an unbounded orthographic view. Returns `irradiance`, `surfaceReliable`,
+  `biasedReliable`, `surfaceRejected`, `surfaceExact`, `biasedRejected`, `biasedExact`, `weightSum`,
+  `activeNeighbours` and `neighbours`. Requires enabled GI with valid history and paused/stopped simulation; synchronous
+  GPU readback leaves history unchanged.
 - `editor.camera.get`: the editor camera: `{ position, target, verticalFov }`, the field of view in degrees.
 - `editor.camera.set { position: array, target: array }`: places the editor camera at `position` (`[x, y, z]` in
   meters) looking at `target`, returning it as `editor.camera.get` does.

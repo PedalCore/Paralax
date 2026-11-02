@@ -662,9 +662,15 @@ namespace Paralax {
 
 	std::optional<bool> AssetManager::RegistryFileMatches(const std::filesystem::path& path, std::string& outError) const
 	{
+		std::error_code error;
+		// file_size on directories is implementation-defined; a different size cannot classify them as a readable registry.
+		if (!std::filesystem::is_regular_file(path, error))
+		{
+			outError = error ? error.message() : "the registry path is not a regular file";
+			return std::nullopt;
+		}
 		if (!m_RegistryIdentity)
 			return false;
-		std::error_code error;
 		const uintmax_t size = std::filesystem::file_size(path, error);
 		if (error)
 		{

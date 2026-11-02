@@ -6,13 +6,15 @@
 #include "Paralax/Math/AABB.h"
 #include "Paralax/Renderer/EnvironmentLighting.h"
 #include "Paralax/Renderer/GPUResourceCache.h"
-#include "Paralax/Renderer/TextRenderer.h"
+#include "Paralax/Renderer/ProbeGI.h"
 #include "Paralax/Renderer/SceneRendererTypes.h"
+#include "Paralax/Renderer/TextRenderer.h"
 
 #include <glm/glm.hpp>
 #include <nvrhi/nvrhi.h>
 
 #include <algorithm>
+#include <array>
 #include <optional>
 #include <span>
 #include <unordered_map>
@@ -37,7 +39,21 @@ namespace Paralax {
 	{
 		None = 0,
 		Normals = 1,
-		BaseColor = 2
+		BaseColor = 2,
+		Indirect = 3,
+		GICoverage = 4,
+		DirectDiffuse = 5,
+		DirectSpecular = 6,
+		EnvironmentDiffuse = 7,
+		EnvironmentSpecular = 8,
+		Emissive = 9,
+		IndirectDiffuse = 10,
+		GIWeightSum = 11,
+		GIValidNeighbours = 12,
+		GIProbeWeight = 13,
+		GIMeanDistance = 14,
+		GISecondMoment = 15,
+		GIVariance = 16
 	};
 
 	enum class ShadowQuality
@@ -61,10 +77,37 @@ namespace Paralax {
 		float ShadowCascadeBlend = 0.1f;
 		// Environment intensity when the scene has no SkyLight (procedural sky lit by the sun).
 		float DefaultEnvironmentIntensity = 0.65f;
+		bool GIEnabled = true;
+		bool GIFreeze = false;
+		bool GIVisibility = true;
+		bool GIBounceFeedback = true;
+		bool EnvironmentSpecular = true;
+		int GIDebugProbe = -1;
+		float GIDebugScale = 1.0f;
+		bool GIShowProbes = false;
+		// Rays traced per updated probe (32–256).
+		int GIRaysPerProbe = 64;
+		// Round-robin update budget (1–1728); initialization fills the whole volume.
+		int GIProbesPerFrame = 32;
+		float GIHysteresis = 0.85f;
+		// Receiver normal offset in metres (0–0.05).
+		float GINormalBias = 0.05f;
+		// View offset as a fraction of spacing (0–0.5), capped at half the view-ray distance.
+		float GIViewBias = 0.2f;
 		RenderDebugView DebugView = RenderDebugView::None;
 
 		uint32_t GetShadowMapSize() const { return 1024u << std::clamp(static_cast<int>(ShadowResolution), 0, 2); }
 		static std::span<const FieldInfo> GetFields();
+	};
+
+	struct GIState
+	{
+		bool Enabled = false, Supported = false, Frozen = false, HistoryValid = false, Available = false;
+		uint32_t Updates = 0, Queued = 0;
+		glm::vec3 Origin{0.0f};
+		float Spacing = 0.0f;
+		glm::uvec3 Counts{0};
+		uint64_t Frame = 0;
 	};
 
 	// A camera to render from (view and projection are D3D-style, reversed Z).
@@ -122,6 +165,17 @@ namespace Paralax {
 		const EnvironmentMaps& GetEnvironmentMaps() const { return m_EnvironmentMaps; }
 		nvrhi::ITexture* GetHDRTarget() const { return m_HDRTarget; }
 		GPUResourceCache& GetResourceCache() { return m_Resources; }
+		// Diagnostic state is owned by this renderer and updated on the main thread; these queries do not render.
+		GIState GetGIState() const;
+		// Reset schedules one full refill on the next render, even while frozen. False if GI is unavailable.
+		bool ResetGIHistory();
+		// Queue 1..1024 deterministic updates while frozen. False if unavailable or the bounded queue would overflow.
+		bool QueueGIUpdates(uint32_t frames);
+		// Synchronous, main-thread-only GPU inspection between renders; returns owned data or nullopt.
+		std::optional<GPU::ProbeInspection> InspectGI(glm::vec3 position, glm::vec3 normal, glm::vec3 view, float viewDistance = 1000000.0f)
+		{
+			return m_Settings.GIEnabled ? m_ProbeGI.Inspect(position, normal, view, viewDistance) : std::nullopt;
+		}
 
 	private:
 		struct DrawItem
@@ -157,6 +211,7 @@ namespace Paralax {
 		bool CreatePipelines();
 		void EnsureTargets(uint32_t width, uint32_t height);
 		nvrhi::IGraphicsPipeline* GetTonemapPipeline(nvrhi::IFramebuffer* output);
+		void RenderProbeMarkers(const CameraView& camera, nvrhi::IFramebuffer* output);
 		MaterialEntry* GetMaterial(AssetHandle handle);
 		nvrhi::ITexture* ResolveTexture(AssetHandle handle, nvrhi::ITexture* fallback);
 		void CollectDraws(Scene& scene, const CameraView& camera);
@@ -174,9 +229,13 @@ namespace Paralax {
 		GPUResourceCache m_Resources;
 		EnvironmentLighting m_Environment;
 		TextRenderer m_Text;
+		ProbeGI m_ProbeGI;
 		EnvironmentMaps m_EnvironmentMaps;
 		bool m_Initialized = false;
 		uint64_t m_FrameIndex = 0;
+		bool m_ReportedMultipleGIVolumes = false;
+		bool m_ReportedGIFailure = false;
+		uint32_t m_QueuedGIUpdates = 0;
 
 		nvrhi::CommandListHandle m_CommandList;
 
@@ -201,6 +260,11 @@ namespace Paralax {
 		nvrhi::BindingLayoutHandle m_MaterialLayout;
 		nvrhi::BindingLayoutHandle m_ShadowViewLayout;
 		nvrhi::BindingLayoutHandle m_TonemapLayout;
+		nvrhi::BindingLayoutHandle m_ProbeMarkerLayout;
+		nvrhi::ShaderHandle m_ProbeMarkerVS, m_ProbeMarkerPS;
+		std::array<nvrhi::BindingSetHandle, 2> m_ProbeMarkerBindings;
+		uint32_t m_NextProbeMarkerBinding = 0;
+		std::unordered_map<uint64_t, nvrhi::GraphicsPipelineHandle> m_ProbeMarkerPipelines;
 		nvrhi::BindingSetHandle m_ViewBindings;
 		nvrhi::BindingSetHandle m_ShadowViewBindings;
 		nvrhi::BindingSetHandle m_TonemapBindings;
