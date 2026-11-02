@@ -182,7 +182,14 @@ TEST_CASE("AssetManager: malformed and out-of-project registry entries are skipp
 		{"Handle":"5000","Type":5,"Path":"Brick.pxmat"},
 		{"Handle":"5001","Type":"Texture","Path":"../outside.png"},
 		{"Handle":"5002","Type":"Texture","Path":"/etc/passwd"},
-		{"Handle":"5003","Type":"Material","Path":"Brick.pxmat"}]})";
+		{"Handle":"5003","Type":"Material","Path":"Brick.pxmat"},
+		{"Handle":"5004","Type":"Material","Path":"Brick.pxmat","Parent":"5004"},
+		{"Handle":"5005","Type":"Material","Path":"Brick.pxmat","Parent":"5006"},
+		{"Handle":"5006","Type":"Material","Path":"Brick.pxmat","Parent":"5005"},
+		{"Handle":"5007","Type":"Material","Path":"Brick.pxmat","Parent":"5003"},
+		{"Handle":"5008","Type":"Material","Path":"Brick.pxmat","Parent":"5007"},
+		{"Handle":"5009","Type":"Material","Path":"Brick.pxmat","Parent":"4999"},
+		{"Handle":"20","Type":"Material","Path":"Brick.pxmat"}]})";
 
 	Paralax::Testing::ScopedLogCapture capture;
 	AssetManager assets(directory);
@@ -190,6 +197,19 @@ TEST_CASE("AssetManager: malformed and out-of-project registry entries are skipp
 	CHECK_FALSE(assets.IsRegistered(AssetHandle(5001)));
 	CHECK_FALSE(assets.IsRegistered(AssetHandle(5002)));
 	CHECK(assets.IsRegistered(AssetHandle(5003)));
+	// Parents must be registered file assets: a self-parent, a cycle, a chain and a missing parent are dropped, and
+	// asking for them cannot recurse. A one-level sub-asset of a file that does not produce it fails cleanly.
+	for (uint64_t handle : {5004u, 5005u, 5006u, 5008u, 5009u})
+	{
+		CAPTURE(handle);
+		CHECK_FALSE(assets.IsRegistered(AssetHandle(handle)));
+		CHECK(assets.GetAsset(AssetHandle(handle)) == nullptr);
+	}
+	CHECK(assets.IsRegistered(AssetHandle(5007)));
+	CHECK(assets.GetAsset(AssetHandle(5007)) == nullptr);
+	// The built-in range belongs to the built-ins, never to the registry.
+	CHECK_FALSE(assets.IsRegistered(AssetHandle(20)));
+	CHECK(assets.GetAssetType(AssetHandle(20)) == AssetType::None);
 }
 
 TEST_CASE("AssetManager: relative lookups are normalised")

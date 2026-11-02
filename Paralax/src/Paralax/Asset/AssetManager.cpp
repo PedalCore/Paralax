@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <unordered_set>
 
 namespace Paralax {
 
@@ -298,8 +299,16 @@ namespace Paralax {
 
 		if (metadata->Parent.IsValid())
 		{
-			// Loading the parent registers its sub-assets in the cache.
+			// LoadRegistry and ImportAsset only register one-level parents; refuse anything else rather than recurse.
 			const AssetHandle parent = metadata->Parent;
+			const AssetMetadata* parentMetadata = parent != handle ? GetMetadata(parent) : nullptr;
+			if (!parentMetadata || parentMetadata->Parent.IsValid())
+			{
+				PX_CORE_ERROR("Asset {} has an invalid parent {}", static_cast<uint64_t>(handle), static_cast<uint64_t>(parent));
+				m_Failed.insert(handle);
+				return nullptr;
+			}
+			// Loading the parent registers its sub-assets in the cache.
 			if (!GetAsset(parent))
 			{
 				m_Failed.insert(handle);
@@ -563,6 +572,13 @@ namespace Paralax {
 				PX_CORE_WARN("Asset registry: skipping entry without a valid handle");
 				continue;
 			}
+			if (static_cast<uint64_t>(metadata.Handle) < FirstUserHandle)
+			{
+				// Built-ins own this range and GetAsset resolves them first; a registry entry there would be a
+				// different asset depending on which API is asked.
+				PX_CORE_WARN("Asset registry: skipping entry {} in the reserved built-in range", static_cast<uint64_t>(metadata.Handle));
+				continue;
+			}
 			metadata.Type = AssetTypeFromString(stringField(entry, "Type"));
 			if (entry.contains("Parent") && !ParseHandle(entry["Parent"], metadata.Parent))
 				PX_CORE_WARN("Asset registry: invalid parent for {}", static_cast<uint64_t>(metadata.Handle));
@@ -577,6 +593,23 @@ namespace Paralax {
 			}
 			metadata.FilePath = *contained;
 			m_Registry[metadata.Handle] = std::move(metadata);
+		}
+
+		// Sub-assets are one level deep: a parent is a registered file asset with no parent of its own. An entry that
+		// is its own parent, a cycle or a longer chain would recurse in GetAsset, so such entries are dropped here.
+		std::unordered_set<AssetHandle> fileAssets;
+		for (const auto& [handle, metadata] : m_Registry)
+			if (!metadata.Parent.IsValid())
+				fileAssets.insert(handle);
+		for (auto it = m_Registry.begin(); it != m_Registry.end();)
+		{
+			if (!it->second.Parent.IsValid() || fileAssets.contains(it->second.Parent))
+				++it;
+			else
+			{
+				PX_CORE_WARN("Asset registry: skipping {} whose parent {} is not a registered file asset", static_cast<uint64_t>(it->first), static_cast<uint64_t>(it->second.Parent));
+				it = m_Registry.erase(it);
+			}
 		}
 		return true;
 	}
