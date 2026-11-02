@@ -56,10 +56,12 @@ namespace Paralax {
 		// Registers a file (absolute, or relative to the asset directory) and returns its handle. Importing an
 		// already registered file returns the existing handle. Returns 0 (with an error logged) if the file does
 		// not exist, lies outside the asset directory or has an unsupported type. Mesh imports also register
-		// their materials and textures as sub-assets. The registry is saved automatically.
+		// their materials and textures as sub-assets. The registry is saved at once; if that fails, the import is
+		// undone and 0 is returned, so no handle exists that the next session would not know.
 		AssetHandle ImportAsset(const std::filesystem::path& path);
 
-		// Removes an asset (and its sub-assets) from the registry and the cache. The file is not deleted.
+		// Removes an asset (and its sub-assets) from the registry and the cache. The file is not deleted. Returns
+		// false if the handle is not registered, or if the registry cannot be saved (the asset then stays).
 		bool RemoveAsset(AssetHandle handle);
 
 		bool IsRegistered(AssetHandle handle) const;
@@ -85,7 +87,8 @@ namespace Paralax {
 		// Adds an asset that exists only in memory. Verifies the handle is set and not already in use.
 		void AddMemoryAsset(Ref<Asset> asset);
 
-		// Reloads a file-backed asset from disk, bumping its Version. Returns false if it cannot be reloaded.
+		// Reloads a file-backed asset from disk, bumping its Version. Returns false if it cannot be reloaded, or if
+		// the registry's sub-asset entries changed and could not be saved (the reloaded asset is kept in memory).
 		bool ReloadAsset(AssetHandle handle);
 
 		bool SaveRegistry() const;
@@ -100,6 +103,9 @@ namespace Paralax {
 	private:
 		Ref<Asset> LoadAsset(const AssetMetadata& metadata);
 		Ref<Asset> CreateBuiltin(AssetHandle handle) const;
+		// Takes an asset and its sub-assets out of the registry and the cache (without saving), returning them so a
+		// failed save can put them back.
+		std::vector<std::pair<AssetMetadata, Ref<Asset>>> DetachAsset(AssetHandle handle);
 
 	private:
 		std::filesystem::path m_AssetDirectory;

@@ -415,6 +415,65 @@ TEST_CASE("AssetManager: imported HDR retains its registered environment type")
 	CHECK(assets.GetAsset<TextureAsset>(handle)->GetType() == AssetType::EnvironmentMap);
 }
 
+TEST_CASE("AssetManager: an import whose registry cannot be saved is undone")
+{
+	const std::filesystem::path directory = MakeProject("AssetRegistryUnwritable");
+	// A directory where the registry file belongs: nothing can be written or renamed over it, on any platform.
+	std::filesystem::create_directories(directory / AssetManager::RegistryFileName);
+	Paralax::Testing::ScopedLogCapture capture;
+	AssetManager assets(directory);
+
+	CHECK_FALSE(assets.ImportAsset("Brick.pxmat").IsValid());
+	CHECK_FALSE(assets.ImportAsset("Textures/Brick.png").IsValid());
+	CHECK(assets.GetRegisteredAssets().empty());
+	CHECK_FALSE(assets.GetHandleForPath("Brick.pxmat").IsValid());
+	CHECK(capture.Contains(spdlog::level::err, "registry could not be saved"));
+
+	// Writable again: the same files import.
+	std::filesystem::remove_all(directory / AssetManager::RegistryFileName);
+	CHECK(assets.ImportAsset("Brick.pxmat").IsValid());
+	CHECK(std::filesystem::is_regular_file(directory / AssetManager::RegistryFileName));
+}
+
+TEST_CASE("AssetManager: removing and reloading fail without losing the registry when it cannot be saved")
+{
+	const std::filesystem::path directory = MakeProject("AssetRegistryLocked");
+	nlohmann::json document = Paralax::Testing::MakeTriangleDocument(directory);
+	document["nodes"] = {{{"name", "Node"}, {"mesh", 0}}};
+	document["scenes"][0]["nodes"] = {0};
+	Paralax::Testing::WriteGltf(directory, document, "Model.gltf");
+	AssetManager assets(directory);
+	const AssetHandle material = assets.ImportAsset("Brick.pxmat");
+	const AssetHandle model = assets.ImportAsset("Model.gltf");
+	REQUIRE(material.IsValid());
+	REQUIRE(model.IsValid());
+	const size_t registered = assets.GetRegisteredAssets().size();
+	REQUIRE(registered >= 3); // The material, the model and its node mesh at least.
+
+	// Lock the registry by putting a directory in its place.
+	std::filesystem::remove(directory / AssetManager::RegistryFileName);
+	std::filesystem::create_directories(directory / AssetManager::RegistryFileName);
+	Paralax::Testing::ScopedLogCapture capture;
+	CHECK_FALSE(assets.RemoveAsset(material));
+	CHECK(assets.IsRegistered(material));
+	CHECK_FALSE(assets.RemoveAsset(model));
+	CHECK(assets.IsRegistered(model));
+	CHECK(assets.GetRegisteredAssets().size() == registered);
+	CHECK(assets.GetAsset<MeshAsset>(model));
+	// A model reload rewrites its sub-asset entries, which cannot be recorded either; a material's needs no save.
+	CHECK_FALSE(assets.ReloadAsset(model));
+	CHECK(assets.ReloadAsset(material));
+	CHECK(capture.Contains(spdlog::level::err, "registry could not be saved"));
+
+	// Unlocked: removal goes through, and is on disk.
+	std::filesystem::remove_all(directory / AssetManager::RegistryFileName);
+	CHECK(assets.RemoveAsset(material));
+	CHECK_FALSE(assets.IsRegistered(material));
+	AssetManager reopened(directory);
+	CHECK_FALSE(reopened.IsRegistered(material));
+	CHECK(reopened.IsRegistered(model));
+}
+
 TEST_CASE("AssetManager: a model's per-node meshes are registered, and follow re-exports that drop objects")
 {
 	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("AssetManagerNodeMeshes");

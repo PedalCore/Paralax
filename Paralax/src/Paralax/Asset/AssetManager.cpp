@@ -176,34 +176,60 @@ namespace Paralax {
 		}
 
 		m_Registry[metadata.Handle] = metadata;
-		SaveRegistry();
+		if (!SaveRegistry())
+		{
+			// The registry on disk is what the next session and the runtime know: a handle recorded only in memory
+			// would leave every scene that references it broken, so the import is undone instead.
+			DetachAsset(metadata.Handle);
+			PX_CORE_ERROR("Cannot import '{}': the asset registry could not be saved", absolute.string());
+			return 0;
+		}
 		PX_CORE_INFO("Imported {} '{}' as {}", AssetTypeToString(type), metadata.FilePath.generic_string(), static_cast<uint64_t>(metadata.Handle));
 		return metadata.Handle;
+	}
+
+	std::vector<std::pair<AssetMetadata, Ref<Asset>>> AssetManager::DetachAsset(AssetHandle handle)
+	{
+		std::vector<std::pair<AssetMetadata, Ref<Asset>>> detached;
+		auto take = [&](uint64_t taken) {
+			auto loaded = m_Loaded.find(taken);
+			detached.emplace_back(m_Registry[taken], loaded == m_Loaded.end() ? nullptr : loaded->second);
+			m_Registry.erase(taken);
+			m_Loaded.erase(taken);
+		};
+		// Sub-assets go with their parent.
+		std::vector<uint64_t> subAssets;
+		for (const auto& [subHandle, metadata] : m_Registry)
+		{
+			if (metadata.Parent == handle)
+				subAssets.push_back(subHandle);
+		}
+		for (uint64_t subHandle : subAssets)
+			take(subHandle);
+		if (m_Registry.contains(handle))
+			take(handle);
+		return detached;
 	}
 
 	bool AssetManager::RemoveAsset(AssetHandle handle)
 	{
 		m_Failed.erase(handle);
-		auto it = m_Registry.find(handle);
-		if (it == m_Registry.end())
+		if (!m_Registry.contains(handle))
 			return false;
 
-		// Remove sub-assets with the parent.
-		for (auto sub = m_Registry.begin(); sub != m_Registry.end();)
+		const std::vector<std::pair<AssetMetadata, Ref<Asset>>> removed = DetachAsset(handle);
+		if (!SaveRegistry())
 		{
-			if (sub->second.Parent == handle)
+			// Memory and disk must agree on what is registered: put the entries back.
+			for (const auto& [metadata, asset] : removed)
 			{
-				m_Loaded.erase(sub->first);
-				sub = m_Registry.erase(sub);
+				m_Registry[metadata.Handle] = metadata;
+				if (asset)
+					m_Loaded[metadata.Handle] = asset;
 			}
-			else
-			{
-				++sub;
-			}
+			PX_CORE_ERROR("Cannot remove asset {}: the asset registry could not be saved", static_cast<uint64_t>(handle));
+			return false;
 		}
-		m_Registry.erase(handle);
-		m_Loaded.erase(handle);
-		SaveRegistry();
 		return true;
 	}
 
@@ -515,7 +541,11 @@ namespace Paralax {
 				auto previous = previousSubVersions.find(subHandle);
 				m_Loaded[subHandle]->Version = previous != previousSubVersions.end() ? previous->second + 1 : 1;
 			}
-			SaveRegistry();
+			if (!SaveRegistry())
+			{
+				PX_CORE_ERROR("Reloaded '{}', but the asset registry could not be saved; its sub-assets are recorded only in memory", parentMetadata.FilePath.generic_string());
+				return false;
+			}
 		}
 		return true;
 	}
