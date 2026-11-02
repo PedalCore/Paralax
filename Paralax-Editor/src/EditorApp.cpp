@@ -167,12 +167,7 @@ namespace Paralax {
 				m_Context.SetAudioOutput(AudioOutput::Device);
 			m_EditorLayer = PushLayer<Editor::EditorLayer>(m_Context, m_ConsoleSink);
 
-			// The log is what commands refer to when they fail ("see the log"), so agents can read it too.
-			Editor::RegisterConsoleCommands(m_Context.GetCommands(), m_ConsoleSink);
-			m_Context.GetCommands().Register({"editor.quit", "Closes the editor at the end of the current frame. Unsaved changes are lost.", {}, false, [](Editor::EditorContext&, const nlohmann::json&) {
-												  Application::Get().Close();
-												  return Editor::CommandResult::Ok();
-											  }});
+			Editor::RegisterApplicationCommands(m_Context.GetCommands(), m_ConsoleSink);
 
 			if (std::optional<std::string> output = args.GetOption("export"))
 			{

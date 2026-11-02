@@ -233,5 +233,9 @@ namespace Paralax::Editor {
 	// Registers console.get and console.clear, which read and clear the log kept by sink (the editor's console). The
 	// editor application owns the sink and calls this; the commands keep it alive. Verifies sink is set.
 	void RegisterConsoleCommands(CommandRegistry& registry, std::shared_ptr<ConsoleSink> sink);
+	// Registers the editor application's own commands: the console commands over sink (RegisterConsoleCommands) and
+	// editor.quit, which closes the running Application (one must exist when it runs). The editor calls this once
+	// its application exists; the UI's commands come from the editor layer while it is attached.
+	void RegisterApplicationCommands(CommandRegistry& registry, std::shared_ptr<ConsoleSink> sink);
 
 }
