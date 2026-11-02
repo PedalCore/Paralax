@@ -23,6 +23,7 @@ target_compile_definitions(Paralax-Tests PRIVATE DOCTEST_CONFIG_SUPER_FAST_ASSER
 # ccache (base_dir) make __FILE__ relative to the build directory. Only these sources get it, so the other test
 # sources stay identical across worktrees and share cache hits.
 set_source_files_properties(
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/Editor/CommandReferenceTests.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/Renderer/SceneRendererTests.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/Scripting/FeatureTestCoverageTests.cpp"
 	PROPERTIES COMPILE_DEFINITIONS "PX_SOURCE_ROOT=\"${PROJECT_SOURCE_DIR}\"")
