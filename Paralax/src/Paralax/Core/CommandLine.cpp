@@ -91,6 +91,17 @@ namespace Paralax {
 		return arguments;
 	}
 
+	std::optional<std::vector<std::string>> ProcessArgumentsFromCommandLine(const char16_t* commandLine, std::u16string_view executablePath)
+	{
+		if (!commandLine)
+			return std::nullopt;
+		// The C runtime still names the program in argv[0] here, but by splitting its path as a command line; the path
+		// is kept whole instead, so one with spaces does not turn into arguments.
+		if (*commandLine == u'\0')
+			return std::vector<std::string>{Utf16ToUtf8(executablePath)};
+		return SplitWindowsCommandLine(commandLine);
+	}
+
 	CommandLine::CommandLine(int argc, const char* const* argv, std::vector<std::string> flags)
 		: CommandLine(FromProcessArguments(CopyArgv(argc, argv), std::move(flags)))
 	{

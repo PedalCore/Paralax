@@ -49,17 +49,15 @@ namespace Paralax {
 	std::vector<std::string> GetProcessArguments(int argc, const char* const* argv)
 	{
 		// argv is never preferred: it is the C runtime's split of the ANSI command line, which best-fit mapping can
-		// give different quotes and backslashes (see CommandLine.h), so it may not even split the same way.
-		if (const wchar_t* commandLine = GetCommandLineW())
-		{
-			// CreateProcess accepts an empty command line. The C runtime then still gives the program's path as argv[0]
-			// (by parsing the path as a command line, which would split a path with spaces: not copied here).
-			if (*commandLine == L'\0')
-				return std::vector<std::string>{Utf16ToUtf8(ToUtf16(GetExecutablePath().wstring()))};
-			return SplitWindowsCommandLine(ToUtf16(commandLine));
-		}
+		// give different quotes and backslashes (see CommandLine.h), so it may not even split the same way. What to make
+		// of the UTF-16 line is decided in Core, where every platform tests it.
+		const wchar_t* commandLine = GetCommandLineW();
+		const std::u16string units = commandLine ? ToUtf16(commandLine) : std::u16string();
+		const std::u16string executable = ToUtf16(GetExecutablePath().wstring());
+		if (std::optional<std::vector<std::string>> fromCommandLine = ProcessArgumentsFromCommandLine(commandLine ? units.c_str() : nullptr, executable))
+			return std::move(*fromCommandLine);
 
-		// Not documented as possible: a guard, so that a program still starts with what argv holds.
+		// No command line, which Windows does not document as possible: a guard, so the program still starts with argv.
 		PX_CORE_WARN("Could not read the Unicode command line: using argv in the system code page, which may have lost characters");
 		std::vector<std::string> arguments;
 		if (argc <= 0 || !argv)

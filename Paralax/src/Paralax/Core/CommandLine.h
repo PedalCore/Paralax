@@ -62,12 +62,11 @@ namespace Paralax {
 	// On Windows that encoding is UTF-8, and argv is unusable: the C runtime splits it from the ANSI command line,
 	// which Windows derives from the UTF-16 one with best-fit mapping. Characters the code page lacks become '?' or
 	// look-alikes, and some look-alikes are quotes or backslashes (U+FF02 becomes '"'), so a crafted file name could
-	// split into other arguments, options included. The UTF-16 command line is split instead, by
-	// SplitWindowsCommandLine. If it is empty (a launcher may give none), the program's own path is the only argument,
-	// as the C runtime's argv[0] is then. Only if Windows gives no command line at all, which it does not document as
-	// possible, is argv used, converted from the code page (so the characters it can represent survive), with a warning
-	// logged. On POSIX argv is returned unchanged: its bytes are the file names, whatever their encoding, and FromUtf8
-	// passes them through.
+	// split into other arguments, options included. The UTF-16 command line is used instead, as
+	// ProcessArgumentsFromCommandLine decides (an empty one gives the program's own path). Only if Windows gives no
+	// command line at all, which it does not document as possible, is argv used, converted from the code page (so the
+	// characters it can represent survive), with a warning logged. On POSIX argv is returned unchanged: its bytes are
+	// the file names, whatever their encoding, and FromUtf8 passes them through.
 	//
 	// Never throws (other than std::bad_alloc). Main thread only, called once at startup by the entry point, after
 	// Log::Init so the warning can be reported.
@@ -91,9 +90,19 @@ namespace Paralax {
 	//   - Backslashes not followed by '"' are literal.
 	//   - The line ends at its end or at a NUL. Trailing spaces add no argument; "", or a lone '"' at the end of the
 	//     line, is an empty one.
-	// An empty command line gives one empty program path (GetProcessArguments substitutes the program's own path, as
-	// the C runtime does). Never fails; throws only std::bad_alloc. Pure; safe to call from any thread. Public so
-	// every platform tests it; only Windows uses it.
+	// An empty command line gives one empty program path (ProcessArgumentsFromCommandLine handles that case). Never
+	// fails; throws only std::bad_alloc. Pure; safe to call from any thread. Public so every platform tests it; only
+	// Windows uses it.
 	std::vector<std::string> SplitWindowsCommandLine(std::u16string_view commandLine);
+
+	// The arguments GetProcessArguments gives on Windows for the line GetCommandLineW returned, public so every platform
+	// tests the decision. executablePath is the running program's path (GetExecutablePath), used only for an empty line.
+	//   - A normal line, even one of blanks only: SplitWindowsCommandLine(commandLine).
+	//   - An empty line (CreateProcess allows one): {executablePath} as UTF-8, whole. This is the one deliberate
+	//     difference from the C runtime's __wargv: the C runtime parses the module path as if it were the command line,
+	//     so "C:\Program Files\Game\Game.exe" would become "C:\Program" and an argument "Files\Game\Game.exe".
+	//   - commandLine null (Windows does not document that it can be): nullopt, so the caller falls back to argv.
+	// Never fails; throws only std::bad_alloc. Pure; safe to call from any thread.
+	std::optional<std::vector<std::string>> ProcessArgumentsFromCommandLine(const char16_t* commandLine, std::u16string_view executablePath);
 
 }
