@@ -173,24 +173,24 @@ namespace Paralax {
 			for (const auto& material : result.Materials)
 			{
 				m_Registry[material->Handle] = {material->Handle, AssetType::Material, metadata.FilePath, metadata.Handle};
-				m_Loaded[material->Handle] = material;
+				CacheAsset(material->Handle, material);
 			}
 			for (const auto& texture : result.Textures)
 			{
 				m_Registry[texture->Handle] = {texture->Handle, AssetType::Texture, metadata.FilePath, metadata.Handle};
-				m_Loaded[texture->Handle] = texture;
+				CacheAsset(texture->Handle, texture);
 			}
 			for (const auto& nodeMesh : result.NodeMeshes)
 			{
 				m_Registry[nodeMesh->Handle] = {nodeMesh->Handle, AssetType::Mesh, metadata.FilePath, metadata.Handle};
-				m_Loaded[nodeMesh->Handle] = nodeMesh;
+				CacheAsset(nodeMesh->Handle, nodeMesh);
 			}
 			for (const auto& animation : result.Animations)
 			{
 				m_Registry[animation.Clip->Handle] = {animation.Clip->Handle, AssetType::AnimationClip, metadata.FilePath, metadata.Handle};
-				m_Loaded[animation.Clip->Handle] = animation.Clip;
+				CacheAsset(animation.Clip->Handle, animation.Clip);
 			}
-			m_Loaded[metadata.Handle] = result.Mesh;
+			CacheAsset(metadata.Handle, result.Mesh);
 		}
 
 		m_Registry[metadata.Handle] = metadata;
@@ -377,7 +377,7 @@ namespace Paralax {
 
 		Ref<Asset> asset = LoadAsset(*metadata);
 		if (asset)
-			m_Loaded[handle] = asset;
+			CacheAsset(handle, asset);
 		else
 			m_Failed.insert(handle);
 		return asset;
@@ -416,22 +416,22 @@ namespace Paralax {
 				m_LastSubAssets.clear();
 				for (const auto& material : result.Materials)
 				{
-					m_Loaded[material->Handle] = material;
+					CacheAsset(material->Handle, material);
 					m_LastSubAssets.emplace_back(material->Handle, AssetType::Material);
 				}
 				for (const auto& texture : result.Textures)
 				{
-					m_Loaded[texture->Handle] = texture;
+					CacheAsset(texture->Handle, texture);
 					m_LastSubAssets.emplace_back(texture->Handle, AssetType::Texture);
 				}
 				for (const auto& nodeMesh : result.NodeMeshes)
 				{
-					m_Loaded[nodeMesh->Handle] = nodeMesh;
+					CacheAsset(nodeMesh->Handle, nodeMesh);
 					m_LastSubAssets.emplace_back(nodeMesh->Handle, AssetType::Mesh);
 				}
 				for (const auto& animation : result.Animations)
 				{
-					m_Loaded[animation.Clip->Handle] = animation.Clip;
+					CacheAsset(animation.Clip->Handle, animation.Clip);
 					m_LastSubAssets.emplace_back(animation.Clip->Handle, AssetType::AnimationClip);
 				}
 				asset = result.Mesh;
@@ -549,7 +549,7 @@ namespace Paralax {
 		if (!asset)
 			return false;
 		asset->Version = previousVersion + 1;
-		m_Loaded[handle] = asset;
+		CacheAsset(handle, asset);
 
 		if (parentMetadata.Type == AssetType::Mesh)
 		{
@@ -573,8 +573,10 @@ namespace Paralax {
 			for (const auto& [subHandle, type] : produced)
 			{
 				m_Registry[subHandle] = {AssetHandle(subHandle), type, parentMetadata.FilePath, handle};
-				auto previous = previousSubVersions.find(subHandle);
-				m_Loaded[subHandle]->Version = previous != previousSubVersions.end() ? previous->second + 1 : 1;
+				// A sub-asset cached before counts up from its version; a new one keeps the version CacheAsset gave it (1, or
+				// above that of one LoadRegistry evicted).
+				if (auto previous = previousSubVersions.find(subHandle); previous != previousSubVersions.end())
+					m_Loaded[subHandle]->Version = previous->second + 1;
 			}
 			// Only a change needs recording, so a model that kept its objects still reloads where the registry cannot be
 			// written (a read-only project, a file held open elsewhere).
@@ -682,7 +684,53 @@ namespace Paralax {
 		return true;
 	}
 
+	void AssetManager::CacheAsset(AssetHandle handle, Ref<Asset> asset)
+	{
+		if (const auto evicted = m_EvictedVersions.find(handle); evicted != m_EvictedVersions.end())
+		{
+			asset->Version = std::max(asset->Version, evicted->second + 1);
+			m_EvictedVersions.erase(evicted);
+		}
+		m_Loaded[handle] = std::move(asset);
+	}
+
 	bool AssetManager::LoadRegistry()
+	{
+		const std::unordered_map<uint64_t, AssetMetadata> previous = std::move(m_Registry);
+		const bool loaded = ReadRegistryFile();
+
+		// A cached asset must be what its entry now names: otherwise play mode and captures would show an asset the
+		// registry no longer lists, or the file it used to name, which an export (a copy of the file) would not. Each
+		// evicted asset's Version is kept, so the one loaded in its place counts on from it and no cache keyed on
+		// (handle, Version) can take one for the other. Memory assets and built-ins are never registered, so they stay.
+		auto evict = [&](uint64_t handle) {
+			const auto cached = m_Loaded.find(handle);
+			if (cached == m_Loaded.end())
+				return;
+			uint32_t& version = m_EvictedVersions[handle];
+			version = std::max(version, cached->second->Version);
+			m_Loaded.erase(cached);
+		};
+		std::unordered_set<uint64_t> changed;
+		for (const auto& [handle, before] : previous)
+		{
+			const AssetMetadata* now = GetMetadata(handle);
+			if (!now || now->Type != before.Type || now->FilePath != before.FilePath || now->Parent != before.Parent)
+			{
+				changed.insert(handle);
+				evict(handle);
+			}
+		}
+		// Sub-assets come from their parent's file: one whose parent's entry changed is stale too, even if its own is not.
+		for (const auto& [handle, metadata] : m_Registry)
+		{
+			if (metadata.Parent.IsValid() && changed.contains(metadata.Parent))
+				evict(handle);
+		}
+		return loaded;
+	}
+
+	bool AssetManager::ReadRegistryFile()
 	{
 		m_Registry.clear();
 		m_Failed.clear();

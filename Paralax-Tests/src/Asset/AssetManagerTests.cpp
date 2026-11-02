@@ -562,10 +562,10 @@ TEST_CASE("AssetManager: a registry changed on disk since it was loaded or saved
 		CHECK(Paralax::Testing::ReadFileText(registry) == checkedOut);
 	}
 
-	// Reloaded, the registry is the checkout's, and saves go through again. What was loaded stays in the cache.
+	// Reloaded, the registry is the checkout's, and saves go through again. The material it dropped is unloaded.
 	REQUIRE(assets.LoadRegistry());
 	CHECK_FALSE(assets.IsRegistered(material));
-	CHECK(assets.IsLoaded(material));
+	CHECK_FALSE(assets.IsLoaded(material));
 	CHECK(assets.GetHandleForPath("Textures/Brick.png") == AssetHandle(5004));
 	CHECK(assets.SaveRegistry());
 
@@ -631,6 +631,132 @@ TEST_CASE("AssetManager: a registry changed on disk since it was loaded or saved
 	AssetManager last(directory);
 	CHECK(last.IsRegistered(texture));
 	CHECK_FALSE(last.IsRegistered(recreated));
+}
+
+TEST_CASE("AssetManager: a reloaded registry unloads assets whose entries it dropped or changed, and their Versions only grow")
+{
+	const std::filesystem::path directory = MakeProject("AssetRegistryReloadEvicts");
+	const std::filesystem::path registry = directory / AssetManager::RegistryFileName;
+	for (const auto& [name, roughness] : {std::pair{"A.pxmat", 0.1f}, std::pair{"B.pxmat", 0.2f}, std::pair{"C.pxmat", 0.3f}})
+	{
+		MaterialAsset material;
+		material.RoughnessFactor = roughness;
+		REQUIRE(MaterialSerializer::SaveToFile(material, directory / name));
+	}
+	const std::string header = R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[)";
+	REQUIRE(WriteFileAtomically(registry, header + R"({"Handle":"5003","Type":"Material","Path":"Brick.pxmat"},)"
+												   R"({"Handle":"5004","Type":"Material","Path":"A.pxmat"},)"
+												   R"({"Handle":"5005","Type":"Material","Path":"C.pxmat"},)"
+												   R"({"Handle":"5006","Type":"Texture","Path":"Textures/Brick.png"}]})"));
+	AssetManager assets(directory);
+	const Ref<MaterialAsset> kept = assets.GetAsset<MaterialAsset>(AssetHandle(5003));
+	REQUIRE(kept);
+	REQUIRE(assets.GetAsset<MaterialAsset>(AssetHandle(5004)));
+	// Reloaded twice, so the Version to count on from is not just the first.
+	REQUIRE(assets.ReloadAsset(AssetHandle(5004)));
+	REQUIRE(assets.ReloadAsset(AssetHandle(5004)));
+	const uint32_t remappedVersion = assets.GetAsset(AssetHandle(5004))->Version;
+	REQUIRE(remappedVersion == 3);
+	const Ref<Asset> dropped = assets.GetAsset(AssetHandle(5005));
+	REQUIRE(dropped);
+	const Ref<Asset> texture = assets.GetAsset(AssetHandle(5006));
+	REQUIRE(texture);
+	REQUIRE(texture->GetType() == AssetType::Texture);
+	// A memory asset and a built-in, which no registry lists.
+	auto memory = CreateRef<MaterialAsset>();
+	memory->Handle = AssetHandle(424242);
+	assets.AddMemoryAsset(memory);
+	const Ref<Asset> cube = assets.GetAsset(AssetHandle(AssetManager::BuiltinCube));
+	REQUIRE(cube);
+
+	// The file now names another file for 5004 and another type for 5006, and drops 5005.
+	REQUIRE(WriteFileAtomically(registry, header + R"({"Handle":"5003","Type":"Material","Path":"Brick.pxmat"},)"
+												   R"({"Handle":"5004","Type":"Material","Path":"B.pxmat"},)"
+												   R"({"Handle":"5006","Type":"EnvironmentMap","Path":"Textures/Brick.png"}]})"));
+	REQUIRE(assets.LoadRegistry());
+	// Unchanged: the same cached asset, at the same Version.
+	CHECK(assets.GetAsset<MaterialAsset>(AssetHandle(5003)) == kept);
+	CHECK(kept->Version == 1);
+	// Dropped: no longer resolves.
+	CHECK_FALSE(assets.IsLoaded(AssetHandle(5005)));
+	{
+		Paralax::Testing::ScopedLogCapture log;
+		CHECK(assets.GetAsset(AssetHandle(5005)) == nullptr);
+	}
+	CHECK(assets.GetAssetType(AssetHandle(5005)) == AssetType::None);
+	// Another file: loaded from it, at a Version above the one cached before.
+	const Ref<MaterialAsset> remapped = assets.GetAsset<MaterialAsset>(AssetHandle(5004));
+	REQUIRE(remapped);
+	CHECK(remapped->RoughnessFactor == 0.2f);
+	CHECK(remapped->Version == remappedVersion + 1);
+	// Another type: loaded as that type.
+	Ref<Asset> environment;
+	{
+		Paralax::Testing::ScopedLogCapture log; // A PNG makes a clamped environment map, with a warning.
+		environment = assets.GetAsset(AssetHandle(5006));
+	}
+	REQUIRE(environment);
+	CHECK(environment != texture);
+	CHECK(environment->GetType() == AssetType::EnvironmentMap);
+	CHECK(environment->Version == texture->Version + 1);
+	// Never listed, so never unloaded.
+	CHECK(assets.GetAsset(AssetHandle(424242)) == memory);
+	CHECK(assets.GetAsset(AssetHandle(AssetManager::BuiltinCube)) == cube);
+
+	// Listed again, a dropped handle counts on from the Version it had, and so does one reloaded before its next use.
+	REQUIRE(WriteFileAtomically(registry, header + R"({"Handle":"5003","Type":"Material","Path":"Brick.pxmat"},)"
+												   R"({"Handle":"5004","Type":"Material","Path":"A.pxmat"},)"
+												   R"({"Handle":"5005","Type":"Material","Path":"C.pxmat"}]})"));
+	REQUIRE(assets.LoadRegistry());
+	const Ref<Asset> listedAgain = assets.GetAsset(AssetHandle(5005));
+	REQUIRE(listedAgain);
+	CHECK(listedAgain != dropped);
+	CHECK(listedAgain->Version == dropped->Version + 1);
+	REQUIRE(assets.ReloadAsset(AssetHandle(5004)));
+	const Ref<MaterialAsset> remappedBack = assets.GetAsset<MaterialAsset>(AssetHandle(5004));
+	REQUIRE(remappedBack);
+	CHECK(remappedBack->RoughnessFactor == 0.1f);
+	CHECK(remappedBack->Version == remappedVersion + 2);
+}
+
+TEST_CASE("AssetManager: a reloaded registry that unloads a model unloads its sub-assets too")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("AssetRegistryReloadEvictsModel");
+	nlohmann::json document = Paralax::Testing::MakeTriangleDocument(directory);
+	document["nodes"] = {{{"name", "Node"}, {"mesh", 0}}};
+	document["scenes"][0]["nodes"] = {0};
+	Paralax::Testing::WriteGltf(directory, document, "Model.gltf");
+	Paralax::Testing::WriteGltf(directory, document, "Copy.gltf");
+	AssetManager assets(directory);
+	const AssetHandle model = assets.ImportAsset("Model.gltf");
+	REQUIRE(model.IsValid());
+	AssetHandle nodeMesh = 0;
+	for (const AssetMetadata& metadata : assets.GetRegisteredAssets())
+	{
+		if (metadata.Parent == model && metadata.Type == AssetType::Mesh)
+			nodeMesh = metadata.Handle;
+	}
+	REQUIRE(nodeMesh.IsValid());
+	const Ref<Asset> before = assets.GetAsset(nodeMesh);
+	REQUIRE(before);
+
+	// A hand edit points the model at another file and leaves its sub-assets' entries as they were.
+	const std::filesystem::path registry = directory / AssetManager::RegistryFileName;
+	nlohmann::json edited = nlohmann::json::parse(Paralax::Testing::ReadFileText(registry));
+	for (nlohmann::json& entry : edited["Assets"])
+	{
+		if (entry["Handle"] == std::to_string(static_cast<uint64_t>(model)))
+			entry["Path"] = "Copy.gltf";
+	}
+	REQUIRE(WriteFileAtomically(registry, edited.dump()));
+	REQUIRE(assets.LoadRegistry());
+	CHECK_FALSE(assets.IsLoaded(model));
+	CHECK_FALSE(assets.IsLoaded(nodeMesh));
+	const Ref<Asset> after = assets.GetAsset(nodeMesh);
+	REQUIRE(after);
+	CHECK(after != before);
+	CHECK(after->Version == before->Version + 1);
+	CHECK(assets.GetAsset(model)->Version == 2);
 }
 
 TEST_CASE("AssetManager: a registry with entries it cannot read skips them, warns once with the count and stays read-only until fixed")

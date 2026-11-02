@@ -113,8 +113,10 @@ namespace Paralax {
 		// anew. The file is not locked, so a change made between the check and the write is still replaced.
 		bool SaveRegistry() const;
 		// Replaces the registry with the one on disk (a missing file yields an empty registry, as for a new project),
-		// and records what the file is, so SaveRegistry can tell whether it changes. Assets already loaded stay in the
-		// cache.
+		// and records what the file is, so SaveRegistry can tell whether it changes. A loaded asset whose entry the new
+		// registry drops, or gives another type, file or parent, leaves the cache: the next GetAsset loads it from its new
+		// entry, with a Version above the one it had, so caches keyed on (handle, Version) never serve the old one.
+		// Other loaded assets, memory assets and built-ins stay cached as they are.
 		//
 		// Returns false, with an error logged, if the file exists but cannot be read: too large, nested too deeply,
 		// malformed (merge-conflict markers, say), not an asset registry, of a version this build does not read (1 to
@@ -167,6 +169,11 @@ namespace Paralax {
 		static RegistryFileIdentity IdentifyRegistryText(std::string_view text);
 
 		Ref<Asset> LoadAsset(const AssetMetadata& metadata);
+		// Puts a file-backed asset in the cache under handle. One that replaces an asset LoadRegistry evicted gets a
+		// Version above the evicted one's.
+		void CacheAsset(AssetHandle handle, Ref<Asset> asset);
+		// Replaces m_Registry and the save guard with what the registry file holds (the body of LoadRegistry).
+		bool ReadRegistryFile();
 		Ref<Asset> CreateBuiltin(AssetHandle handle) const;
 		// Takes an asset and its sub-assets out of the registry and the cache (without saving), returning them so a
 		// failed save can put them back.
@@ -188,6 +195,8 @@ namespace Paralax {
 		mutable std::optional<RegistryFileIdentity> m_RegistryIdentity;
 		std::unordered_map<uint64_t, AssetMetadata> m_Registry;
 		std::unordered_map<uint64_t, Ref<Asset>> m_Loaded;
+		// The Version each asset LoadRegistry evicted had, until its handle is loaded again (CacheAsset).
+		std::unordered_map<uint64_t, uint32_t> m_EvictedVersions;
 		// Handles that are unknown or failed to load, reported once (cleared by imports, reloads and registry loads).
 		std::unordered_set<uint64_t> m_Failed;
 		// Sub-assets produced by the most recent mesh load (handle, type), used to rebuild registry entries.

@@ -453,8 +453,8 @@ namespace Paralax::Editor {
 						   "(asset.import, material.create, a first scene.save, ...) refuse to save over a registry that changed on disk since it was read or last "
 						   "saved, by a version-control checkout or merge or another editor, that could not be read (malformed, or of a newer version), or that had "
 						   "entries this build skipped (readOnly in the result and in asset.list, with skipped counting them); once the file is as it should be, "
-						   "reload it with this. Assets already loaded stay loaded. A file that cannot be read fails the reload and leaves nothing registered until "
-						   "a reload succeeds.",
+						   "reload it with this. A loaded asset whose entry the file dropped or changed is unloaded, and its next use loads the new entry; the "
+						   "rest stay loaded. A file that cannot be read fails the reload and leaves nothing registered until a reload succeeds.",
 						   {},
 						   false,
 						   [](EditorContext& context, const json&) {

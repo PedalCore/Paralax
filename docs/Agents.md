@@ -143,9 +143,10 @@ windowed one.
   read-only too, since saving would drop them for good; the editor warns once with their count, and `asset.list`
   reports `readOnly` and `skipped`. Such a command fails (a `scene.save` still writes the scene, and says under
   `warnings` that it is not registered), the file is left as it is, and the log says why (`console.get`). Once the
-  file is as it should be, `asset.reload_registry` reads it again (not while playing; assets already loaded stay
-  loaded): its result counts the `assets` registered and the entries `skipped`, and `readOnly` stays true while any
-  are. Then the next command saves. A reload of a file that still cannot be read fails and leaves nothing registered
+  file is as it should be, `asset.reload_registry` reads it again (not while playing). A loaded asset whose entry the
+  file dropped, or gave another type, file or parent, is unloaded, and its next use loads what the entry now names;
+  the rest stay loaded. The result counts the `assets` registered and the entries `skipped`, and `readOnly` stays
+  true while any are. Then the next command saves. A reload of a file that still cannot be read fails and leaves nothing registered
   until one succeeds. A hand-edited registry may list one file under several handles: all are kept, and a path
   names the lowest.
 
