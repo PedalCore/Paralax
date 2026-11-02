@@ -18,11 +18,14 @@
 #include <deque>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace Paralax::Editor {
+
+	class ConsoleSink;
 
 	// All editor state that is independent of the UI: project, open scene, selection, play mode and undo history.
 	// The UI panels, the command registry and the agent server all operate on this. Main-thread-only.
@@ -209,5 +212,8 @@ namespace Paralax::Editor {
 	// Registers the input commands (input.key, input.mouse_button, input.mouse_move, input.scroll, input.release_all,
 	// input.state): synthetic input for playtesting.
 	void RegisterInputCommands(CommandRegistry& registry);
+	// Registers console.get and console.clear, which read and clear the log kept by sink (the editor's console). The
+	// editor application owns the sink and calls this; the commands keep it alive. Verifies sink is set.
+	void RegisterConsoleCommands(CommandRegistry& registry, std::shared_ptr<ConsoleSink> sink);
 
 }

@@ -18,8 +18,9 @@ namespace Paralax::Editor {
 	{
 		ImGui::Begin("Console");
 
+		// Through the command, as agents clear it.
 		if (ImGui::Button("Clear"))
-			m_Sink->Clear();
+			context.Execute("console.clear");
 		ImGui::SameLine();
 		ImGui::Checkbox("Verbose", &m_ShowTrace);
 		ImGui::SameLine();

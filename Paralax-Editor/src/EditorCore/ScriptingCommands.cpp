@@ -164,7 +164,7 @@ return {name}
 								   return CommandResult::Fail("Could not write the script file");
 							   const AssetHandle handle = context.GetAssets().ImportAsset(*path);
 							   if (!handle.IsValid())
-								   return CommandResult::Fail("Import failed (see the log for details)");
+								   return CommandResult::Fail("Import failed (see the log for details: console.get)");
 							   return CommandResult::Ok({{"handle", IdString(handle)}, {"path", context.GetAssets().GetMetadata(handle)->FilePath.generic_string()}});
 						   }});
 
@@ -176,7 +176,7 @@ return {name}
 							   // From the file, not the asset cache: while playing, an update waits there to be reloaded.
 							   Ref<ScriptAsset> script = ScriptAsset::LoadFromFile(found->second);
 							   if (!script)
-								   return CommandResult::Fail("The script could not be read (see the log for details)");
+								   return CommandResult::Fail("The script could not be read (see the log for details: console.get)");
 							   return CommandResult::Ok({{"handle", IdString(found->first)}, {"path", context.GetAssets().GetMetadata(found->first)->FilePath.generic_string()}, {"source", script->Source}});
 						   }});
 
@@ -239,7 +239,7 @@ return {name}
 								   return CommandResult::Fail("Could not write the prefab file");
 							   const AssetHandle handle = context.GetAssets().ImportAsset(*path);
 							   if (!handle.IsValid())
-								   return CommandResult::Fail("Import failed (see the log for details)");
+								   return CommandResult::Fail("Import failed (see the log for details: console.get)");
 							   return CommandResult::Ok({{"handle", IdString(handle)}, {"entities", prefab->GetEntityCount()}});
 						   }});
 
@@ -323,7 +323,7 @@ return {name}
 								   return CommandResult::Fail("Could not write the prefab file");
 							   const AssetHandle prefabHandle = assets.ImportAsset(*path);
 							   if (!prefabHandle.IsValid())
-								   return CommandResult::Fail("Import failed (see the log for details)");
+								   return CommandResult::Fail("Import failed (see the log for details: console.get)");
 
 							   size_t meshes = 0, cameras = 0, lights = 0;
 							   for (const ImportedNode& node : model.Nodes)

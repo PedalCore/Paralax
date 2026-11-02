@@ -129,7 +129,7 @@ namespace Paralax::Editor {
 
 		registry.Register({"scene.open", "Opens a .pxscene file (relative to the project's Assets folder; absolute paths must lie inside it).", {{"path", "string", "Scene file.", true}}, false, [](EditorContext& context, const json& params) {
 							   if (!context.OpenScene(params["path"].get<std::string>()))
-								   return CommandResult::Fail("Could not open the scene (see the log for details)");
+								   return CommandResult::Fail("Could not open the scene (see the log for details: console.get)");
 							   return CommandResult::Ok({{"entities", context.GetEditorScene().GetEntityCount()}});
 						   }});
 
@@ -375,7 +375,7 @@ namespace Paralax::Editor {
 								   return CommandResult::Fail("No project is open");
 							   const AssetHandle handle = context.GetAssets().ImportAsset(params["path"].get<std::string>());
 							   if (!handle.IsValid())
-								   return CommandResult::Fail("Import failed (see the log for details)");
+								   return CommandResult::Fail("Import failed (see the log for details: console.get)");
 							   return CommandResult::Ok({{"handle", IdString(handle)}});
 						   }});
 

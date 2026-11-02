@@ -21,7 +21,18 @@ def check(condition: bool, message: str) -> None:
 
 def exercise_rpc(editor: AgentClient, output: Path) -> None:
     commands = {c["name"] for c in editor.call("help")["commands"]}
-    check({"entity.create", "component.set", "render.capture", "editor.quit"} <= commands, f"missing commands: {commands}")
+    check({"entity.create", "component.set", "render.capture", "editor.quit", "console.get", "console.clear"} <= commands,
+          f"missing commands: {commands}")
+
+    # A failure that points at the log can be explained from it.
+    revision = editor.call("console.get", limit=1)["revision"]
+    try:
+        editor.call("scene.open", path="Missing.pxscene")
+        raise AssertionError("expected a missing scene to fail")
+    except AgentError as error:
+        check("console.get" in error.message, f"the error does not point at the log: {error.message}")
+    log = editor.call("console.get", sinceRevision=revision, minLevel="error")["messages"]
+    check(any("Missing.pxscene" in message["text"] for message in log), f"the log does not say why: {log}")
 
     editor.call("scene.new", name="AgentScene")
     ground = editor.call("entity.create", name="Ground", components={
