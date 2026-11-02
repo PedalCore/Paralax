@@ -142,6 +142,9 @@ namespace Paralax {
 				{
 					if (!value.is_number_integer())
 						return fail("an integer");
+					// An unsigned value above INT64_MAX would wrap when read as signed (UINT64_MAX would become -1).
+					if (value.is_number_unsigned() && value.get<uint64_t>() > static_cast<uint64_t>(INT32_MAX))
+						return fail(field.Min < field.Max ? fmt::format("an integer in [{}, {}]", field.Min, field.Max).c_str() : "a 32-bit integer");
 					const int64_t number = value.get<int64_t>();
 					if (number < INT32_MIN || number > INT32_MAX || !InRange(field, static_cast<double>(number)))
 						return fail(field.Min < field.Max ? fmt::format("an integer in [{}, {}]", field.Min, field.Max).c_str() : "a 32-bit integer");
@@ -153,10 +156,13 @@ namespace Paralax {
 				{
 					if (!value.is_number() || !std::isfinite(value.get<double>()) || std::abs(value.get<double>()) > static_cast<double>(FLT_MAX))
 						return fail("a finite number");
-					const double number = value.get<double>();
-					if (!InRange(field, number))
+					// The range applies to the float that is stored, not to the incoming double. Near a small bound,
+					// narrowing moves a value by more than the range's slack, and a value checked before narrowing
+					// would be accepted now and refused when the scene is loaded again.
+					const float number = static_cast<float>(value.get<double>());
+					if (!InRange(field, static_cast<double>(number)))
 						return fail(fmt::format("a number in [{}, {}]", field.Min, field.Max).c_str());
-					*static_cast<float*>(pointer) = static_cast<float>(number);
+					*static_cast<float*>(pointer) = number;
 					return true;
 				}
 

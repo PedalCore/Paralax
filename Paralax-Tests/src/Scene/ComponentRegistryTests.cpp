@@ -2,9 +2,13 @@
 
 #include <Paralax/Scene/ComponentRegistry.h>
 #include <Paralax/Scene/Entity.h>
+#include <Paralax/Scene/SceneSerializer.h>
 
 #include <cfloat>
+#include <cmath>
+#include <cstdint>
 #include <set>
+#include <vector>
 
 using namespace Paralax;
 using json = nlohmann::json;
@@ -160,6 +164,77 @@ TEST_CASE("ComponentRegistry: numbers beyond float range are rejected")
 
 	CameraComponent camera;
 	CHECK_FALSE(ComponentRegistry::SetField(*ComponentRegistry::Find("Camera")->FindField("OrthographicNear"), &camera, -1e300, error));
+}
+
+TEST_CASE("ComponentRegistry: values at the edge of every range are refused or survive a reload unchanged")
+{
+	// A value accepted by SetField but refused when its scene is loaded again would be dropped by the next save and
+	// open, undo or redo. Near a small bound, narrowing to float moves a value by more than the range's slack.
+	size_t accepted = 0;
+	size_t refused = 0;
+	for (const ComponentInfo& info : ComponentRegistry::GetAll())
+	{
+		for (const FieldInfo& field : info.Fields)
+		{
+			const bool vector = field.Type == FieldType::Vec2 || field.Type == FieldType::Vec3 || field.Type == FieldType::Vec4;
+			if ((field.Type != FieldType::Float && !vector) || !(field.Min < field.Max))
+				continue;
+			const double min = static_cast<double>(field.Min);
+			const double max = static_cast<double>(field.Max);
+			for (double candidate : {min - 1e-6, max + 1e-6, std::nextafter(min - 1e-6, -1e30), std::nextafter(max + 1e-6, 1e30), min, max, 0.009999, 0.000099})
+			{
+				CAPTURE(info.Name);
+				CAPTURE(field.Name);
+				CAPTURE(candidate);
+				Scene scene;
+				Entity entity = scene.CreateEntity("Probe");
+				void* component = info.Add(scene.GetRegistry(), entity.GetHandle());
+				const size_t components = field.Type == FieldType::Vec2 ? 2 : field.Type == FieldType::Vec3 ? 3
+																											: 4;
+				const json value = vector ? json(std::vector<double>(components, candidate)) : json(candidate);
+				std::string error;
+				if (!ComponentRegistry::SetField(field, component, value, error))
+				{
+					refused++;
+					continue;
+				}
+				accepted++;
+				const json stored = ComponentRegistry::GetField(field, component);
+				Scene loaded;
+				std::vector<std::string> warnings;
+				REQUIRE(SceneSerializer::Deserialize(loaded, SceneSerializer::Serialize(scene), error, &warnings));
+				CHECK(warnings.empty());
+				Entity reloaded = loaded.GetEntityByUUID(entity.GetUUID());
+				CHECK(ComponentRegistry::GetField(field, info.Get(loaded.GetRegistry(), reloaded.GetHandle())) == stored);
+			}
+		}
+	}
+	CHECK(accepted > 0);
+	CHECK(refused > 0);
+}
+
+namespace {
+
+	struct IntHolder
+	{
+		int Value = 7;
+	};
+
+}
+
+TEST_CASE("ComponentRegistry: an unsigned value too large for an int field is refused, not wrapped")
+{
+	// Without a range only the 32-bit bound applies, so a wrapped value (UINT64_MAX read as signed is -1) would pass.
+	const FieldInfo field = Reflection::MakeField<&IntHolder::Value>("Value");
+	IntHolder holder;
+	std::string error;
+	CHECK_FALSE(ComponentRegistry::SetField(field, &holder, json(UINT64_MAX), error));
+	CHECK_FALSE(ComponentRegistry::SetField(field, &holder, json(uint64_t(1) << 32), error));
+	CHECK(holder.Value == 7);
+	CHECK(ComponentRegistry::SetField(field, &holder, json(uint64_t(INT32_MAX)), error));
+	CHECK(holder.Value == INT32_MAX);
+	CHECK(ComponentRegistry::SetField(field, &holder, json(int64_t(INT32_MIN)), error));
+	CHECK(holder.Value == INT32_MIN);
 }
 
 TEST_CASE("ComponentRegistry: orthographic clip planes have a range like the perspective ones")
