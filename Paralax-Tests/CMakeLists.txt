@@ -2,7 +2,7 @@ file(GLOB_RECURSE PX_TEST_SOURCES CONFIGURE_DEPENDS
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/*.h")
 # Editor tests only exist when the editor is built.
-if(NOT TARGET Paralax-EditorCore)
+if(NOT TARGET Paralax-EditorUI)
 	list(FILTER PX_TEST_SOURCES EXCLUDE REGEX "/src/Editor/")
 endif()
 
@@ -11,8 +11,8 @@ source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/src" FILES ${PX_TEST_SOURCES})
 
 target_include_directories(Paralax-Tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(Paralax-Tests PRIVATE Paralax::Paralax doctest::doctest nvrhi)
-if(TARGET Paralax-EditorCore)
-	target_link_libraries(Paralax-Tests PRIVATE Paralax-EditorCore)
+if(TARGET Paralax-EditorUI)
+	target_link_libraries(Paralax-Tests PRIVATE Paralax-EditorUI)
 	# project.export copies the runtime from beside the running executable.
 	add_dependencies(Paralax-Tests Paralax-Runtime)
 endif()

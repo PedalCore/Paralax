@@ -89,7 +89,11 @@ windowed one.
      come back oldest first, and `omitted` counts older ones left out. `complete` is false when some of what was
      logged after `sinceRevision` is gone: the log keeps its latest 2000 messages, and `console.clear` empties it.
    - `render.capture { path }` saves what the camera sees (a project-relative path; MCP returns the image).
-   - `audio.status` and `input.state` show what is playing and what is held.
+     `render.stats` says what the renderer drew in its latest frame (draw calls, triangles, culled submeshes,
+     lights). The viewport renders every editor frame too, so to read a capture's own statistics send
+     `render.capture` and `render.stats` in one JSON-RPC batch, which runs with no frame in between.
+   - `audio.status` and `input.state` show what is playing and what is held, and `editor.gizmo.get` the viewport's
+     gizmo (operation and space, as `editor.gizmo.set` takes them).
 5. **Iterate.** `play.stop` returns to the edited scene unchanged. Change scripts with `script.update` (while
    playing, the change waits for the next `play.start`). Change components with `component.set`. When it refuses a
    value, the error names the field and what it expects and shows the value briefly, with its JSON type: a long one

@@ -24,8 +24,12 @@
 
 #include <glm/gtc/type_ptr.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iterator>
+#include <string_view>
+#include <utility>
 
 namespace Paralax::Editor {
 
@@ -76,6 +80,15 @@ namespace Paralax::Editor {
 			}
 			return tMin;
 		}
+
+		// The gizmo operations as editor.gizmo.get reports them and editor.gizmo.set takes them; 0 shows no gizmo.
+		// These are the only values the editor's toolbar, shortcuts and commands set.
+		constexpr std::pair<std::string_view, int> GizmoOperations[] = {
+			{"none", 0},
+			{"translate", ImGuizmo::TRANSLATE},
+			{"rotate", ImGuizmo::ROTATE},
+			{"scale", ImGuizmo::SCALE},
+		};
 
 	}
 
@@ -158,21 +171,27 @@ namespace Paralax::Editor {
 							   return CommandResult::Ok(describeCamera());
 						   }});
 
-		commands.Register({"editor.gizmo.set", "Sets the viewport gizmo: operation \"none\", \"translate\", \"rotate\" or \"scale\"; space \"local\" or \"world\".", {{"operation", "string", "Gizmo operation.", false}, {"space", "string", "Manipulation space.", false}}, false, [this](EditorContext&, const json& params) {
+		auto describeGizmo = [this] {
+			std::string_view operation = "none";
+			for (const auto& [name, value] : GizmoOperations)
+			{
+				if (value == m_GizmoOperation)
+					operation = name;
+			}
+			return json{{"operation", operation}, {"space", m_GizmoWorldSpace ? "world" : "local"}};
+		};
+
+		commands.Register({"editor.gizmo.get", "The viewport gizmo: operation \"none\", \"translate\", \"rotate\" or \"scale\", and space \"local\" or \"world\".", {}, false, [describeGizmo](EditorContext&, const json&) { return CommandResult::Ok(describeGizmo()); }});
+
+		commands.Register({"editor.gizmo.set", "Sets the viewport gizmo: operation \"none\", \"translate\", \"rotate\" or \"scale\"; space \"local\" or \"world\". Returns the gizmo as editor.gizmo.get does.", {{"operation", "string", "Gizmo operation.", false}, {"space", "string", "Manipulation space.", false}}, false, [this, describeGizmo](EditorContext&, const json& params) {
 							   int operation = m_GizmoOperation;
 							   if (params.contains("operation"))
 							   {
 								   const std::string& name = params["operation"].get_ref<const std::string&>();
-								   if (name == "none")
-									   operation = 0;
-								   else if (name == "translate")
-									   operation = ImGuizmo::TRANSLATE;
-								   else if (name == "rotate")
-									   operation = ImGuizmo::ROTATE;
-								   else if (name == "scale")
-									   operation = ImGuizmo::SCALE;
-								   else
+								   const auto* found = std::find_if(std::begin(GizmoOperations), std::end(GizmoOperations), [&](const auto& entry) { return entry.first == name; });
+								   if (found == std::end(GizmoOperations))
 									   return CommandResult::Fail("operation must be none, translate, rotate or scale");
+								   operation = found->second;
 							   }
 							   bool world = m_GizmoWorldSpace;
 							   if (params.contains("space"))
@@ -184,7 +203,7 @@ namespace Paralax::Editor {
 							   }
 							   m_GizmoOperation = operation;
 							   m_GizmoWorldSpace = world;
-							   return CommandResult::Ok();
+							   return CommandResult::Ok(describeGizmo());
 						   }});
 
 		commands.Register({"render.settings.get", "The renderer settings (exposure, tonemapper, shadows, sky intensity, debug view).", {}, false, [this](EditorContext&, const json&) {
@@ -202,6 +221,21 @@ namespace Paralax::Editor {
 								   return CommandResult::Fail(error);
 							   m_Renderer->GetSettings() = edited;
 							   return CommandResult::Ok(Reflection::ToJson(SceneRendererSettings::GetFields(), &edited));
+						   }});
+
+		// What the Statistics panel shows. The renderer resets its statistics at the start of every frame it renders,
+		// and both the viewport (every editor frame) and render.capture render through it.
+		commands.Register({"render.stats", "Statistics of the renderer's latest frame (the viewport's, or a render.capture made since): draw calls, shadow-map draw calls, triangles, culled submeshes, text glyphs, point and spot lights, and environment-lighting regenerations.", {}, false, [this](EditorContext&, const json&) {
+							   if (!m_Renderer)
+								   return CommandResult::Fail("The renderer is not available");
+							   const SceneRenderStats& stats = m_Renderer->GetStats();
+							   return CommandResult::Ok({{"drawCalls", stats.DrawCalls},
+														 {"shadowDrawCalls", stats.ShadowDrawCalls},
+														 {"triangles", stats.Triangles},
+														 {"culledSubmeshes", stats.CulledSubmeshes},
+														 {"textGlyphs", stats.TextGlyphs},
+														 {"lights", stats.Lights},
+														 {"staticLightingGenerations", stats.StaticLightingGenerations}});
 						   }});
 	}
 
