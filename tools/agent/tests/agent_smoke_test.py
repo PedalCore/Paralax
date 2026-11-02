@@ -211,11 +211,16 @@ def exercise_mcp(info_file: Path, output: Path) -> None:
 
 
 def main() -> int:
-    executable, output = Path(sys.argv[1]), Path(sys.argv[2])
+    # Absolute, because the editor runs in the output directory (where its log goes) and takes these paths there.
+    executable, output = Path(sys.argv[1]).absolute(), Path(sys.argv[2]).absolute()
     output.mkdir(parents=True, exist_ok=True)
+    # Each editor session runs in a directory of its own, so the second does not truncate the first's Logs/Editor.log.
+    sessions = {name: output / name for name in ("RpcSession", "ProjectSession")}
+    for directory in sessions.values():
+        directory.mkdir(exist_ok=True)
     editor = None
     try:
-        editor = EditorSession.launch(executable, ["--headless", "--validation"], cwd=output)
+        editor = EditorSession.launch(executable, ["--headless", "--validation"], cwd=sessions["RpcSession"])
         exercise_rpc(editor, output)
         info = output / "AgentServer.json"
         info.write_text(json.dumps({"port": editor.port, "token": editor.token}), encoding="utf-8")
@@ -234,7 +239,7 @@ def main() -> int:
     shutil.rmtree(project, ignore_errors=True)
     editor = None
     try:
-        editor = EditorSession.launch(executable, ["--headless", "--validation", "--new-project", str(project)], cwd=output)
+        editor = EditorSession.launch(executable, ["--headless", "--validation", "--new-project", str(project)], cwd=sessions["ProjectSession"])
         exercise_project(editor, project)
     except BaseException:
         if editor is not None:
