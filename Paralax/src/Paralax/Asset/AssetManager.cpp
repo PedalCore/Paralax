@@ -610,14 +610,22 @@ namespace Paralax {
 		// Once the file is gone (removed by the user, or by a checkout), a save loses nothing: it creates the file anew.
 		if (!exists)
 			return true;
-		if (m_RegistryUnreadable)
+		switch (m_RegistryGuard)
 		{
-			// Writing now would replace every entry of the file that failed to load with only those registered since,
-			// and every handle the project's scenes use would be lost.
-			PX_CORE_ERROR("Not saving the asset registry: '{}' could not be read, and saving would replace all it lists. Repair or restore the file, then reload the "
-						  "registry (asset.reload_registry in the editor) or reopen the project.",
-						  ToUtf8(path));
-			return false;
+			case RegistryGuard::Unreadable:
+				// Writing now would replace every entry of the file that failed to load with only those registered since,
+				// and every handle the project's scenes use would be lost.
+				PX_CORE_ERROR("Not saving the asset registry: '{}' could not be read, and saving would replace all it lists. Repair or restore the file, then reload "
+							  "the registry (asset.reload_registry in the editor) or reopen the project.",
+							  ToUtf8(path));
+				return false;
+			case RegistryGuard::SkippedEntries:
+				// The entries a newer engine or a hand edit wrote, which this build cannot represent, would be gone.
+				PX_CORE_ERROR("Not saving the asset registry: {} {} in '{}' could not be read when it was loaded, and saving would drop {}. Fix the file, then reload "
+							  "the registry (asset.reload_registry in the editor) or reopen the project.",
+							  m_SkippedEntries, m_SkippedEntries == 1 ? "entry" : "entries", ToUtf8(path), m_SkippedEntries == 1 ? "it" : "them");
+				return false;
+			case RegistryGuard::None: break;
 		}
 
 		// Any other file than the one last read or written was put there by someone else (a version-control checkout or
@@ -663,13 +671,13 @@ namespace Paralax {
 			assets.push_back(std::move(entry));
 		}
 
-		json document = {{"Paralax", {{"Type", "AssetRegistry"}, {"Version", 1}}}, {"Assets", std::move(assets)}};
+		json document = {{"Paralax", {{"Type", "AssetRegistry"}, {"Version", CurrentRegistryVersion}}}, {"Assets", std::move(assets)}};
 		const std::string text = FormatJsonDocument(document);
 		if (!WriteFileAtomically(path, text, m_MaxRegistryBytes))
 			return false;
-		// The file on disk is now one this manager wrote (after an unreadable one was removed, the save that creates it
+		// The file on disk is now one this manager wrote (after a guarded one was removed, the save that creates it
 		// anew), so later saves may replace it as long as it stays as written.
-		m_RegistryUnreadable = false;
+		m_RegistryGuard = RegistryGuard::None;
 		m_RegistryIdentity = IdentifyRegistryText(text);
 		return true;
 	}
@@ -678,13 +686,14 @@ namespace Paralax {
 	{
 		m_Registry.clear();
 		m_Failed.clear();
-		m_RegistryUnreadable = false;
+		m_RegistryGuard = RegistryGuard::None;
+		m_SkippedEntries = 0;
 		m_RegistryIdentity.reset();
 		const std::filesystem::path path = m_AssetDirectory / RegistryFileName;
 		// A registry that exists but cannot be read stays as it is on disk: SaveRegistry refuses until one loads.
 		auto unreadable = [&](const std::string& reason) {
 			PX_CORE_ERROR("Asset registry '{}' {}; nothing is registered, and the file is left untouched until it can be read", ToUtf8(path), reason);
-			m_RegistryUnreadable = true;
+			m_RegistryGuard = RegistryGuard::Unreadable;
 			return false;
 		};
 		std::error_code error;
@@ -704,58 +713,108 @@ namespace Paralax {
 		const json document = json::parse(text, nullptr, false);
 		if (document.is_discarded() || !document.is_object() || !document.contains("Assets") || !document["Assets"].is_array())
 			return unreadable("is malformed");
+		// A newer engine's registry can hold what this build cannot represent (asset types, fields), and rewriting it
+		// would lose that, so a version outside the ones this build reads is refused whole.
+		const json* header = document.contains("Paralax") ? &document["Paralax"] : nullptr;
+		if (!header || !header->is_object() || !header->contains("Type") || !(*header)["Type"].is_string() || (*header)["Type"].get_ref<const std::string&>() != "AssetRegistry")
+			return unreadable("is not a Paralax asset registry (missing \"Paralax\": { \"Type\": \"AssetRegistry\" })");
+		std::string foundVersion;
+		if (!ReadDocumentVersion(*header, CurrentRegistryVersion, foundVersion))
+			return unreadable(fmt::format("has an unsupported version: expected 1-{}, got {}", CurrentRegistryVersion, foundVersion));
 
 		auto stringField = [](const json& entry, const char* name) -> std::string {
 			const auto it = entry.find(name);
 			return it != entry.end() && it->is_string() ? it->get<std::string>() : std::string();
 		};
+		// An entry that cannot be read is skipped, and the registry becomes read-only, since the next save would drop it
+		// for good. The first few are named (a hostile file can hold millions), and one warning counts them all.
+		constexpr size_t MaxNamedSkips = 10;
+		size_t skipped = 0;
+		auto skip = [&](const std::string& entry) {
+			if (++skipped <= MaxNamedSkips)
+				PX_CORE_WARN("Asset registry '{}': skipping {}", ToUtf8(path), entry);
+		};
 
-		for (const json& entry : document["Assets"])
+		const json& entries = document["Assets"];
+		for (size_t index = 0; index < entries.size(); index++)
 		{
+			const json& entry = entries[index];
 			AssetMetadata metadata;
 			if (!entry.is_object() || !entry.contains("Handle") || !ParseHandle(entry["Handle"], metadata.Handle) || !metadata.Handle.IsValid())
 			{
-				PX_CORE_WARN("Asset registry: skipping entry without a valid handle");
+				skip(fmt::format("entry #{}, which has no valid handle", index));
 				continue;
 			}
-			if (static_cast<uint64_t>(metadata.Handle) < FirstUserHandle)
+			const uint64_t handle = metadata.Handle;
+			if (handle < FirstUserHandle)
 			{
 				// Built-ins own this range and GetAsset resolves them first; a registry entry there would be a
 				// different asset depending on which API is asked.
-				PX_CORE_WARN("Asset registry: skipping entry {} in the reserved built-in range", static_cast<uint64_t>(metadata.Handle));
+				skip(fmt::format("entry {}, in the range reserved for built-in assets", handle));
 				continue;
 			}
 			metadata.Type = AssetTypeFromString(stringField(entry, "Type"));
+			if (metadata.Type == AssetType::None)
+			{
+				skip(fmt::format("entry {}, whose type this build does not know", handle));
+				continue;
+			}
+			// Kept as a file asset, a sub-asset whose parent is unreadable would load its parent's file as itself.
 			if (entry.contains("Parent") && !ParseHandle(entry["Parent"], metadata.Parent))
-				PX_CORE_WARN("Asset registry: invalid parent for {}", static_cast<uint64_t>(metadata.Handle));
+			{
+				skip(fmt::format("entry {}, whose parent is not a handle", handle));
+				continue;
+			}
 
 			// Registry paths must be relative and stay inside the asset directory.
 			const std::filesystem::path declared = FromUtf8(stringField(entry, "Path"));
 			const std::optional<std::filesystem::path> contained = declared.empty() || declared.is_absolute() ? std::nullopt : ToRegistryPath(declared);
-			if (metadata.Type == AssetType::None || !contained)
+			if (!contained)
 			{
-				PX_CORE_WARN("Asset registry: skipping malformed or out-of-project entry {}", static_cast<uint64_t>(metadata.Handle));
+				skip(fmt::format("entry {}, whose path is missing or outside the asset directory", handle));
 				continue;
 			}
 			metadata.FilePath = *contained;
-			m_Registry[metadata.Handle] = std::move(metadata);
+			if (const auto existing = m_Registry.find(handle); existing != m_Registry.end())
+			{
+				// The same entry twice loses nothing when saved once; two different ones cannot both be kept.
+				const AssetMetadata& first = existing->second;
+				if (first.Type != metadata.Type || first.FilePath != metadata.FilePath || first.Parent != metadata.Parent)
+					skip(fmt::format("entry {}, a second entry for that handle that differs from the first", handle));
+				continue;
+			}
+			m_Registry[handle] = std::move(metadata);
 		}
 
 		// Sub-assets are one level deep: a parent is a registered file asset with no parent of its own. An entry that
-		// is its own parent, a cycle or a longer chain would recurse in GetAsset, so such entries are dropped here.
+		// is its own parent, a cycle or a longer chain would recurse in GetAsset, so such entries are dropped here (in
+		// handle order, so the warnings are the same on every platform).
 		std::unordered_set<AssetHandle> fileAssets;
 		for (const auto& [handle, metadata] : m_Registry)
 			if (!metadata.Parent.IsValid())
 				fileAssets.insert(handle);
-		for (auto it = m_Registry.begin(); it != m_Registry.end();)
+		std::vector<uint64_t> orphans;
+		for (const auto& [handle, metadata] : m_Registry)
 		{
-			if (!it->second.Parent.IsValid() || fileAssets.contains(it->second.Parent))
-				++it;
-			else
-			{
-				PX_CORE_WARN("Asset registry: skipping {} whose parent {} is not a registered file asset", static_cast<uint64_t>(it->first), static_cast<uint64_t>(it->second.Parent));
-				it = m_Registry.erase(it);
-			}
+			if (metadata.Parent.IsValid() && !fileAssets.contains(metadata.Parent))
+				orphans.push_back(handle);
+		}
+		std::sort(orphans.begin(), orphans.end());
+		for (uint64_t handle : orphans)
+		{
+			skip(fmt::format("entry {}, whose parent {} is not a registered file asset", handle, static_cast<uint64_t>(m_Registry[handle].Parent)));
+			m_Registry.erase(handle);
+		}
+
+		m_SkippedEntries = skipped;
+		if (skipped > 0)
+		{
+			m_RegistryGuard = RegistryGuard::SkippedEntries;
+			const bool one = skipped == 1;
+			PX_CORE_WARN("Asset registry '{}': skipped {} {} this build cannot read{}. The registry is read-only until the file is fixed and reloaded, since saving "
+						 "would drop {}.",
+						 ToUtf8(path), skipped, one ? "entry" : "entries", skipped > MaxNamedSkips ? fmt::format(" (the first {} are named above)", MaxNamedSkips) : "",
+						 one ? "it" : "them");
 		}
 
 		// Several entries for one file are all kept, since scenes may use any of their handles, and saved back as they

@@ -45,6 +45,8 @@ namespace Paralax {
 		static std::span<const BuiltinAssetInfo> GetBuiltinAssets();
 
 		static constexpr const char* RegistryFileName = "AssetRegistry.json";
+		// The registry format SaveRegistry writes, and the newest LoadRegistry reads.
+		static constexpr int CurrentRegistryVersion = 1;
 		// The largest registry file LoadRegistry reads and SaveRegistry writes, so a saved registry always loads.
 		static constexpr size_t MaxRegistryBytes = MaxTextFileBytes;
 
@@ -102,23 +104,39 @@ namespace Paralax {
 		bool ReloadAsset(AssetHandle handle);
 
 		// Writes AssetRegistry.json atomically. Returns false (with an error logged), leaving the file on disk as it was,
-		// if the registry is larger than LoadRegistry reads (MaxRegistryBytes), while a file that LoadRegistry could not
-		// read is still in place, or if the file has changed on disk since this manager loaded or last saved it (a
-		// version-control checkout or merge, or another editor): saving would replace that change with this registry.
-		// The file is compared by size and a hash of its bytes, not by modification time, which a checkout can leave
-		// as it was. To recover from a change, call LoadRegistry (the editor's asset.reload_registry) or reopen the
-		// project, then save again. A missing file is never refused: it is created anew. The file is not locked, so a
-		// change made between the check and the write is still replaced.
+		// if the registry is larger than LoadRegistry reads (MaxRegistryBytes), while the registry is read-only (see
+		// IsRegistryReadOnly) and its file is still in place, or if the file has changed on disk since this manager
+		// loaded or last saved it (a version-control checkout or merge, or another editor): saving would replace that
+		// change with this registry. The file is compared by size and a hash of its bytes, not by modification time,
+		// which a checkout can leave as it was. To recover from a change, call LoadRegistry (the editor's
+		// asset.reload_registry) or reopen the project, then save again. A missing file is never refused: it is created
+		// anew. The file is not locked, so a change made between the check and the write is still replaced.
 		bool SaveRegistry() const;
 		// Replaces the registry with the one on disk (a missing file yields an empty registry, as for a new project),
 		// and records what the file is, so SaveRegistry can tell whether it changes. Assets already loaded stay in the
-		// cache. Returns false, with an error logged, if the file exists but cannot be read: too large, nested too
-		// deeply, malformed (merge-conflict markers, say) or unreadable. Nothing is registered then, and SaveRegistry
-		// refuses until a LoadRegistry succeeds, so imports, removals and reloads fail instead of replacing the file,
-		// and every handle it lists, with only what was registered since. To recover, repair the file or restore it
-		// (from version control, say), then reopen the project or call LoadRegistry. (Deleting the file gives up what
-		// it listed; saves then create a new one.)
+		// cache.
+		//
+		// Returns false, with an error logged, if the file exists but cannot be read: too large, nested too deeply,
+		// malformed (merge-conflict markers, say), not an asset registry, of a version this build does not read (1 to
+		// CurrentRegistryVersion: a newer engine's registry, say) or unreadable. Nothing is registered then, and the
+		// registry is read-only until a LoadRegistry succeeds, so imports, removals and reloads fail instead of replacing
+		// the file, and every handle it lists, with only what was registered since.
+		//
+		// Entries it cannot read (an asset type this build does not know, a handle that is not one or is reserved, a
+		// path outside the asset directory, a parent that is not a registered file asset, a second, different entry
+		// for a handle) are skipped, with one warning that counts them; the rest are registered and true is returned.
+		// The registry is then read-only too, since a save would drop the skipped entries for good.
+		//
+		// To recover, repair the file or restore it (from version control, say), then reopen the project or call
+		// LoadRegistry (the editor's asset.reload_registry). Deleting the file gives up what it listed; saves then
+		// create a new one.
 		bool LoadRegistry();
+		// True while SaveRegistry refuses to replace the file because of what the last LoadRegistry found: a file it
+		// could not read, or entries it skipped. A LoadRegistry that reads every entry clears it, and so does a save
+		// once the file is gone (it is then created anew).
+		bool IsRegistryReadOnly() const { return m_RegistryGuard != RegistryGuard::None; }
+		// How many entries the last LoadRegistry skipped because it could not read them.
+		size_t GetSkippedRegistryEntryCount() const { return m_SkippedEntries; }
 
 		// Converts between absolute paths and registry paths (relative, '/' separators). Returns nullopt for
 		// paths outside the asset directory, and for names that are not well-formed UTF-8 (the registry and scenes
@@ -128,6 +146,14 @@ namespace Paralax {
 		std::filesystem::path ToAbsolutePath(const std::filesystem::path& registryPath) const;
 
 	private:
+		// Why SaveRegistry must not replace the registry file while it is in place.
+		enum class RegistryGuard : uint8_t
+		{
+			None,
+			Unreadable,     // The last LoadRegistry could not read the file: saving would replace every entry.
+			SkippedEntries, // The last LoadRegistry skipped entries it could not read: saving would drop them.
+		};
+
 		// What a registry file holds, to tell it from another: its size and an FNV-1a hash of its bytes. This detects
 		// accidental changes (a checkout, another editor), not forgeries.
 		struct RegistryFileIdentity
@@ -152,10 +178,11 @@ namespace Paralax {
 	private:
 		std::filesystem::path m_AssetDirectory;
 		size_t m_MaxRegistryBytes = MaxRegistryBytes;
-		// The file on disk could not be read by the last LoadRegistry, and has not been replaced by a save since. Mutable
-		// because SaveRegistry, which is const (it changes nothing that is registered), clears it once it has written
-		// the file anew: from then on the file is one this manager wrote.
-		mutable bool m_RegistryUnreadable = false;
+		// Set by LoadRegistry, and kept until a save replaces the file. Mutable because SaveRegistry, which is const (it
+		// changes nothing that is registered), clears it once it has written the file anew: from then on the file is one
+		// this manager wrote.
+		mutable RegistryGuard m_RegistryGuard = RegistryGuard::None;
+		size_t m_SkippedEntries = 0;
 		// The registry file as the last LoadRegistry read it or the last SaveRegistry wrote it; nullopt if there was
 		// none (or it could not be read). Mutable for the same reason.
 		mutable std::optional<RegistryFileIdentity> m_RegistryIdentity;

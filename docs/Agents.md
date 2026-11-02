@@ -137,10 +137,14 @@ windowed one.
 - The asset registry, `Assets/AssetRegistry.json`, lists every imported file under its handle. Commands that register
   a file (`asset.import`, `material.create`, `script.create`, `prefab.create`, `model.create_prefab`, a scene's first
   `scene.save`) save it, but never over a file that has changed on disk since the editor read or last wrote it (a
-  version-control checkout or merge, another editor), nor over one it could not read. Such a command fails (a
-  `scene.save` still writes the scene, and says under `warnings` that it is not registered), the file is left as it
-  is, and the log says why (`console.get`). Once the file is as it should be, `asset.reload_registry` reads it again
-  (not while playing; assets already loaded stay loaded), and the next command saves.
+  version-control checkout or merge, another editor), nor over one it could not read: malformed (merge-conflict
+  markers, say) or of a newer `Version` than this build reads. A registry with entries the editor had to skip (an
+  asset type it does not know, a path outside `Assets/`, a broken parent) is read-only too, since saving would drop
+  them for good; the editor warns once with their count. Such a command fails (a `scene.save` still writes the scene,
+  and says under `warnings` that it is not registered), the file is left as it is, and the log says why
+  (`console.get`). Once the file is as it should be, `asset.reload_registry` reads it again (not while playing;
+  assets already loaded stay loaded): its result counts the `assets` registered and the entries `skipped`, and
+  `readOnly` stays true while any are. Then the next command saves.
 
 ## Command reference
 
@@ -207,8 +211,10 @@ editor's commands, names and parameters both, so an entry cannot go missing or s
   as their `parent`), and the built-in ones, each `{ handle, type, name }`: `{ assets, builtins }`.
 - `asset.import { path: string }`: registers a file inside `Assets/` (relative to it, or absolute): `{ handle }`.
 - `asset.reload_registry`: reads `Assets/AssetRegistry.json` again, replacing the registry in memory, after a
-  checkout or merge changed it or once a file that could not be read is fixed (see the asset registry above): `{
-  assets }`, the number registered. It is refused while playing, and fails if the file cannot be read.
+  checkout or merge changed it or once a file that could not be read, or had entries skipped, is fixed (see the
+  asset registry above): `{ assets, skipped, readOnly, warnings? }`, the numbers of entries registered and skipped,
+  and whether saves stay refused because some were. It is refused while playing, and fails if the file cannot be
+  read.
 - `material.create { path: string, fields?: object }`: writes a new `.pxmat` (failing if the file exists) with these
   fields, as in `{"BaseColor": [1, 0, 0, 1], "Roughness": 0.4}`, and imports it: `{ handle }`.
 - `material.set { handle: string, fields: object }`: changes material fields; a material file is saved, while a

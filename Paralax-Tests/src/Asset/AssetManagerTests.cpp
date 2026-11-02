@@ -333,6 +333,8 @@ TEST_CASE("AssetManager: malformed and out-of-project registry entries are skipp
 
 	Paralax::Testing::ScopedLogCapture capture;
 	AssetManager assets(directory);
+	CHECK(assets.GetSkippedRegistryEntryCount() == 9);
+	CHECK(assets.IsRegistryReadOnly());
 	CHECK_FALSE(assets.IsRegistered(AssetHandle(5000)));
 	CHECK_FALSE(assets.IsRegistered(AssetHandle(5001)));
 	CHECK_FALSE(assets.IsRegistered(AssetHandle(5002)));
@@ -579,6 +581,147 @@ TEST_CASE("AssetManager: a registry changed on disk since it was loaded or saved
 	AssetManager last(directory);
 	CHECK(last.IsRegistered(texture));
 	CHECK_FALSE(last.IsRegistered(recreated));
+}
+
+TEST_CASE("AssetManager: a registry with entries it cannot read skips them, warns once with the count and stays read-only until fixed")
+{
+	const std::filesystem::path directory = MakeProject("AssetRegistrySkipped");
+	const std::filesystem::path registry = directory / AssetManager::RegistryFileName;
+	const std::string header = R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[)";
+	const std::string valid = R"({"Handle":"5003","Type":"Material","Path":"Brick.pxmat"})";
+	// What a newer engine or a hand edit can leave. Each is skipped, and a save would drop it for good.
+	const std::string unreadable[] = {
+		R"({"Handle":"5010","Type":"Shader","Path":"Shaders/Water.pxshader"})", // A type this build does not know.
+		R"({"Handle":"x5011","Type":"Material","Path":"Brick.pxmat"})",
+		R"({"Type":"Material","Path":"Brick.pxmat"})",
+		R"("5012")",
+		R"({"Handle":"20","Type":"Material","Path":"Brick.pxmat"})",
+		R"({"Handle":"5013","Type":"Material","Path":"../Outside.pxmat"})",
+		R"({"Handle":"5014","Type":"Material","Path":"Brick.pxmat","Parent":7})",
+		R"({"Handle":"5015","Type":"Material","Path":"Brick.pxmat","Parent":"4999"})",
+		R"({"Handle":"5003","Type":"Texture","Path":"Textures/Brick.png"})", // A second, different entry for a handle.
+	};
+	std::string listed = header + valid;
+	for (const std::string& entry : unreadable)
+		listed += "," + entry;
+	listed += "," + valid + "]}"; // The same entry twice loses nothing when saved once, so it is not counted.
+	REQUIRE(WriteFileAtomically(registry, listed));
+
+	Paralax::Testing::ScopedLogCapture log;
+	AssetManager assets(directory);
+	CHECK(assets.GetRegisteredAssets().size() == 1);
+	REQUIRE(assets.GetMetadata(AssetHandle(5003)));
+	CHECK(assets.GetMetadata(AssetHandle(5003))->Type == AssetType::Material); // The first entry for a handle is kept.
+	CHECK(assets.GetSkippedRegistryEntryCount() == std::size(unreadable));
+	CHECK(assets.IsRegistryReadOnly());
+	CHECK(log.Count(spdlog::level::warn, "skipped 9 entries this build cannot read. The registry is read-only until the file is fixed and reloaded") == 1);
+	CHECK(log.Count(spdlog::level::warn, "': skipping entry") == 9);
+	CHECK(log.Contains(spdlog::level::warn, "skipping entry 5010, whose type this build does not know"));
+
+	// Whatever would save fails and is undone, and the file keeps every entry.
+	CHECK_FALSE(assets.ImportAsset("Textures/Brick.png").IsValid());
+	CHECK_FALSE(assets.RemoveAsset(AssetHandle(5003)));
+	CHECK(assets.IsRegistered(AssetHandle(5003)));
+	CHECK_FALSE(assets.SaveRegistry());
+	const std::string named = "'" + ToUtf8(assets.GetAssetDirectory() / AssetManager::RegistryFileName) + "'";
+	CHECK(log.Contains(spdlog::level::err, "9 entries in " + named + " could not be read when it was loaded, and saving would drop them"));
+	CHECK(Paralax::Testing::ReadFileText(registry) == listed);
+
+	// Fixed and reloaded, it saves again.
+	REQUIRE(WriteFileAtomically(registry, header + valid + "]}"));
+	REQUIRE(assets.LoadRegistry());
+	CHECK_FALSE(assets.IsRegistryReadOnly());
+	CHECK(assets.GetSkippedRegistryEntryCount() == 0);
+	const AssetHandle texture = assets.ImportAsset("Textures/Brick.png");
+	REQUIRE(texture.IsValid());
+	{
+		AssetManager reopened(directory);
+		CHECK(reopened.IsRegistered(AssetHandle(5003)));
+		CHECK(reopened.IsRegistered(texture));
+		CHECK_FALSE(reopened.IsRegistryReadOnly());
+	}
+
+	// Deleting the file instead gives up the skipped entry: a save then creates the file anew.
+	REQUIRE(WriteFileAtomically(registry, header + valid + "," + unreadable[0] + "]}"));
+	AssetManager single(directory);
+	CHECK(single.GetSkippedRegistryEntryCount() == 1);
+	CHECK_FALSE(single.SaveRegistry());
+	CHECK(log.Contains(spdlog::level::err, "1 entry in " + named + " could not be read when it was loaded, and saving would drop it"));
+	std::filesystem::remove(registry);
+	CHECK(single.SaveRegistry());
+	CHECK_FALSE(single.IsRegistryReadOnly());
+	CHECK(AssetManager(directory).IsRegistered(AssetHandle(5003)));
+}
+
+TEST_CASE("AssetManager: however many registry entries are skipped, a few are named and one warning counts them")
+{
+	const std::filesystem::path directory = MakeProject("AssetRegistryManySkipped");
+	std::string listed = R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[{"Handle":"5003","Type":"Material","Path":"Brick.pxmat"})";
+	for (int handle = 6000; handle < 6025; handle++)
+		listed += fmt::format(R"(,{{"Handle":"{}","Type":"Hologram","Path":"Brick.pxmat"}})", handle);
+	REQUIRE(WriteFileAtomically(directory / AssetManager::RegistryFileName, listed + "]}"));
+	Paralax::Testing::ScopedLogCapture log;
+	AssetManager assets(directory);
+	CHECK(assets.IsRegistered(AssetHandle(5003)));
+	CHECK(assets.GetSkippedRegistryEntryCount() == 25);
+	CHECK(log.Count(spdlog::level::warn, "': skipping entry") == 10);
+	CHECK(log.Count(spdlog::level::warn, "skipped 25 entries this build cannot read (the first 10 are named above)") == 1);
+}
+
+TEST_CASE("AssetManager: a registry of a newer, wrapping or malformed Version is refused whole and never saved over")
+{
+	const std::filesystem::path directory = MakeProject("AssetRegistryVersions");
+	const std::filesystem::path registry = directory / AssetManager::RegistryFileName;
+	const std::string entries = R"("Assets":[{"Handle":"5003","Type":"Material","Path":"Brick.pxmat"}])";
+	// 4294967297 and -4294967295 read as 1 through get<int>(), which keeps only the low 32 bits.
+	const std::pair<const char*, const char*> versions[] = {
+		{"2", "2 (number)"},
+		{"4294967297", "4294967297 (number)"},
+		{"-4294967295", "-4294967295 (number)"},
+		{"-1", "-1 (number)"},
+		{"0", "0 (number)"},
+		{"1.5", "1.5 (number)"},
+		{"\"1\"", "\"1\" (string)"},
+		{"null", "null"},
+	};
+	for (const auto& [version, shown] : versions)
+	{
+		const std::string shownVersion = version; // doctest shows a const char* as its address.
+		CAPTURE(shownVersion);
+		const std::string text = fmt::format(R"({{"Paralax":{{"Type":"AssetRegistry","Version":{}}},{}}})", version, entries);
+		REQUIRE(WriteFileAtomically(registry, text));
+		Paralax::Testing::ScopedLogCapture log;
+		AssetManager assets(directory);
+		CHECK_FALSE(assets.LoadRegistry());
+		CHECK(log.Contains(spdlog::level::err, fmt::format("has an unsupported version: expected 1-{}, got {}; nothing is registered", AssetManager::CurrentRegistryVersion, shown)));
+		CHECK_FALSE(assets.IsRegistered(AssetHandle(5003)));
+		CHECK(assets.IsRegistryReadOnly());
+		CHECK_FALSE(assets.ImportAsset("Textures/Brick.png").IsValid());
+		CHECK(log.Contains(spdlog::level::err, "could not be read, and saving would replace all it lists"));
+		CHECK(Paralax::Testing::ReadFileText(registry) == text);
+	}
+
+	// Without a header saying what it is, the file is not taken for a registry either.
+	for (const std::string& text : {"{" + entries + "}", R"({"Paralax":{"Type":"Scene","Version":1},)" + entries + "}", R"({"Paralax":"AssetRegistry",)" + entries + "}"})
+	{
+		CAPTURE(text);
+		REQUIRE(WriteFileAtomically(registry, text));
+		Paralax::Testing::ScopedLogCapture log;
+		AssetManager assets(directory);
+		CHECK(log.Contains(spdlog::level::err, "is not a Paralax asset registry"));
+		CHECK_FALSE(assets.IsRegistered(AssetHandle(5003)));
+		CHECK_FALSE(assets.SaveRegistry());
+		CHECK(Paralax::Testing::ReadFileText(registry) == text);
+	}
+
+	// The version this build writes loads, and saving writes it.
+	REQUIRE(WriteFileAtomically(registry, fmt::format(R"({{"Paralax":{{"Type":"AssetRegistry","Version":{}}},{}}})", AssetManager::CurrentRegistryVersion, entries)));
+	AssetManager assets(directory);
+	CHECK(assets.IsRegistered(AssetHandle(5003)));
+	CHECK_FALSE(assets.IsRegistryReadOnly());
+	REQUIRE(assets.SaveRegistry());
+	const nlohmann::json saved = nlohmann::json::parse(Paralax::Testing::ReadFileText(registry));
+	CHECK(saved["Paralax"]["Version"] == AssetManager::CurrentRegistryVersion);
 }
 
 TEST_CASE("AssetManager: one registry byte limit governs loading and saving, and an import past it is undone")

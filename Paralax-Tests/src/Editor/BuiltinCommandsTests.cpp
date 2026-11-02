@@ -393,6 +393,9 @@ TEST_CASE("BuiltinCommands: asset.reload_registry takes in a registry changed on
 	const CommandResult reloaded = context.Execute("asset.reload_registry");
 	REQUIRE_MESSAGE(reloaded.Success, reloaded.Error);
 	CHECK(reloaded.Result["assets"] == 1);
+	CHECK(reloaded.Result["skipped"] == 0);
+	CHECK(reloaded.Result["readOnly"] == false);
+	CHECK_FALSE(reloaded.Result.contains("warnings"));
 	CHECK(context.GetAssets().IsRegistered(AssetHandle(5003)));
 	REQUIRE(context.Execute("material.create", {{"path", "N.pxmat"}}).Success);
 	{
@@ -400,6 +403,24 @@ TEST_CASE("BuiltinCommands: asset.reload_registry takes in a registry changed on
 		CHECK(reopened.IsRegistered(AssetHandle(5003)));
 		CHECK(reopened.GetHandleForPath("N.pxmat").IsValid());
 		CHECK_FALSE(reopened.GetHandleForPath("M.pxmat").IsValid());
+	}
+
+	// Entries this build cannot read (here, a newer engine's asset type) leave the registry read-only, and say so.
+	const std::string newer = R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[{"Handle":"5003","Type":"Material","Path":"Other.pxmat"},)"
+							  R"({"Handle":"5006","Type":"Hologram","Path":"H.pxholo"}]})";
+	REQUIRE(WriteFileAtomically(registry, newer));
+	{
+		Paralax::Testing::ScopedLogCapture capture;
+		const CommandResult partial = context.Execute("asset.reload_registry");
+		REQUIRE_MESSAGE(partial.Success, partial.Error);
+		CHECK(partial.Result["assets"] == 1);
+		CHECK(partial.Result["skipped"] == 1);
+		CHECK(partial.Result["readOnly"] == true);
+		REQUIRE(partial.Result.contains("warnings"));
+		CHECK(partial.Result["warnings"][0].get<std::string>().find("1 registry entry could not be read and was skipped") != std::string::npos);
+		CHECK_FALSE(context.Execute("material.create", {{"path", "Q.pxmat"}}).Success);
+		CHECK(capture.Contains(spdlog::level::err, "saving would drop it"));
+		CHECK(Paralax::Testing::ReadFileText(registry) == newer);
 	}
 
 	// A file that cannot be read fails the reload, and stays as it is.
