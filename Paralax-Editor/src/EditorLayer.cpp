@@ -37,6 +37,14 @@ namespace Paralax::Editor {
 
 	namespace {
 
+		json RenderStatsJson(const SceneRenderStats& stats)
+		{
+			json ids = json::array();
+			for (uint64_t id : stats.ShadowedLocalLightIDs)
+				ids.push_back(std::to_string(id));
+			return {{"drawCalls", stats.DrawCalls}, {"shadowDrawCalls", stats.ShadowDrawCalls}, {"triangles", stats.Triangles}, {"culledSubmeshes", stats.CulledSubmeshes}, {"textGlyphs", stats.TextGlyphs}, {"lights", stats.Lights}, {"staticLightingGenerations", stats.StaticLightingGenerations}, {"requestedLocalShadows", stats.RequestedLocalShadows}, {"shadowedLocalLights", stats.ShadowedLocalLights}, {"localShadowLayers", stats.LocalShadowLayers}, {"localShadowCapacity", stats.LocalShadowCapacity}, {"localShadowDrawCalls", stats.LocalShadowDrawCalls}, {"localShadowAllocationAttempts", stats.LocalShadowAllocationAttempts}, {"shadowedLocalLightIDs", std::move(ids)}};
+		}
+
 		std::string IdString(UUID id)
 		{
 			return std::to_string(static_cast<uint64_t>(id));
@@ -229,13 +237,7 @@ namespace Paralax::Editor {
 							   if (!m_Renderer)
 								   return CommandResult::Fail("The renderer is not available");
 							   const SceneRenderStats& stats = m_Renderer->GetStats();
-							   return CommandResult::Ok({{"drawCalls", stats.DrawCalls},
-														 {"shadowDrawCalls", stats.ShadowDrawCalls},
-														 {"triangles", stats.Triangles},
-														 {"culledSubmeshes", stats.CulledSubmeshes},
-														 {"textGlyphs", stats.TextGlyphs},
-														 {"lights", stats.Lights},
-														 {"staticLightingGenerations", stats.StaticLightingGenerations}});
+							   return CommandResult::Ok(RenderStatsJson(stats));
 						   }});
 
 		auto giState = [this] {
@@ -266,7 +268,7 @@ namespace Paralax::Editor {
 							   const float aspect = static_cast<float>(m_ViewportWidth) / static_cast<float>(m_ViewportHeight);
 							   for (uint32_t frame = 0; frame < frames; ++frame)
 							   {
-								   m_Renderer->Render(context.GetActiveScene(), GetViewportCamera(aspect), m_ViewportFramebuffer);
+								   m_Renderer->Render(context.GetActiveScene(), GetViewportCamera(aspect), m_ViewportFramebuffer, &m_ShadowHistory);
 								   auto& graphics = Application::Get().GetGraphicsDevice();
 								   graphics.WaitForIdle();
 								   graphics.CollectGarbage();
@@ -371,7 +373,7 @@ namespace Paralax::Editor {
 		if (!m_Renderer || m_ViewportWidth == 0 || m_ViewportHeight == 0 || !m_ViewportFramebuffer)
 			return;
 		const float aspect = static_cast<float>(m_ViewportWidth) / static_cast<float>(m_ViewportHeight);
-		m_Renderer->Render(m_Context.GetActiveScene(), GetViewportCamera(aspect), m_ViewportFramebuffer);
+		m_Renderer->Render(m_Context.GetActiveScene(), GetViewportCamera(aspect), m_ViewportFramebuffer, &m_ShadowHistory);
 	}
 
 	void EditorLayer::OnEvent(Event& event)
@@ -455,7 +457,7 @@ namespace Paralax::Editor {
 		std::filesystem::create_directories(path->parent_path(), error);
 		if (image.IsEmpty() || !image.SavePNG(*path))
 			return CommandResult::Fail("Could not render or write the image");
-		return CommandResult::Ok({{"path", ToUtf8(*path)}, {"width", width}, {"height", height}});
+		return CommandResult::Ok({{"path", ToUtf8(*path)}, {"width", width}, {"height", height}, {"stats", RenderStatsJson(m_Renderer->GetStats())}});
 	}
 
 	void EditorLayer::OnImGuiRender()

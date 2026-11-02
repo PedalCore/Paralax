@@ -25,11 +25,14 @@ namespace Paralax {
 		static const std::vector<FieldInfo> s_Fields = {
 			MakeField<&SceneRendererSettings::Exposure>("Exposure", FieldOptions().Range(0.05f, 8.0f).Describe("Exposure multiplier applied before tonemapping.")),
 			MakeField<&SceneRendererSettings::Tonemapper>("Tonemapper", FieldOptions().Enum({"AgX", "ACES", "None"})),
-			MakeField<&SceneRendererSettings::Shadows>("Shadows", FieldOptions().Describe("Directional light shadows.")),
+			MakeField<&SceneRendererSettings::Shadows>("Shadows", FieldOptions().Describe("Directional and local-light shadows; GI tracing remains independent.")),
 			MakeField<&SceneRendererSettings::ShadowResolution>("ShadowResolution", FieldOptions().Enum({"Low", "Medium", "High"}).Describe("Shadow map size per cascade: 1024, 2048 or 4096.")),
 			MakeField<&SceneRendererSettings::ShadowDistance>("ShadowDistance", FieldOptions().Range(5.0f, 500.0f).Describe("Distance covered by the shadow cascades, in meters.")),
 			MakeField<&SceneRendererSettings::ShadowSoftness>("ShadowSoftness", FieldOptions().Range(0.0f, 0.5f).Describe("Penumbra size in meters.")),
 			MakeField<&SceneRendererSettings::ShadowCascadeBlend>("ShadowCascadeBlend", FieldOptions().Range(0.0f, 0.3f).Describe("Fraction of each shadow cascade blended into the next; zero disables blending.")),
+			MakeField<&SceneRendererSettings::LocalShadowResolution>("LocalShadowResolution", FieldOptions().Enum({"Low", "Medium", "High"}).Describe("Local shadow face size: 512, 1024 or 2048; depth memory is capped at 256 MiB.")),
+			MakeField<&SceneRendererSettings::MaxShadowedLocalLights>("MaxShadowedLocalLights", FieldOptions().Range(0, 16).Describe("Maximum local shadow casters per view, subject to layer and memory budgets.")),
+			MakeField<&SceneRendererSettings::LocalShadowSoftness>("LocalShadowSoftness", FieldOptions().Range(0.0f, 0.5f).Describe("Local-light shadow filter radius in metres, capped at eight receiver texels.")),
 			MakeField<&SceneRendererSettings::DefaultEnvironmentIntensity>("SkyIntensity", FieldOptions().Range(0.0f, 3.0f).Describe("Environment intensity when the scene has no SkyLight.")),
 			MakeField<&SceneRendererSettings::GIEnabled>("GIEnabled", FieldOptions().Describe("Enable diffuse probe lighting in scenes with a GI volume.")),
 			MakeField<&SceneRendererSettings::GIFreeze>("GIFreeze", FieldOptions().Describe("Freeze probe history between explicitly queued updates; reset still refills once.")),
@@ -44,7 +47,7 @@ namespace Paralax {
 			MakeField<&SceneRendererSettings::GIHysteresis>("GIHysteresis", FieldOptions().Range(0.0f, 0.99f).Describe("Previous lighting retained on each probe update.")),
 			MakeField<&SceneRendererSettings::GINormalBias>("GINormalBias", FieldOptions().Range(0.0f, 0.05f).Describe("Receiver normal offset in metres.")),
 			MakeField<&SceneRendererSettings::GIViewBias>("GIViewBias", FieldOptions().Range(0.0f, 0.5f).Describe("Receiver view offset as a fraction of probe spacing, limited to half the available view-ray distance.")),
-			MakeField<&SceneRendererSettings::DebugView>("DebugView", FieldOptions().Enum({"Lit", "Normals", "BaseColor", "Indirect", "GICoverage", "DirectDiffuse", "DirectSpecular", "EnvironmentDiffuse", "EnvironmentSpecular", "Emissive", "IndirectDiffuse", "GIWeightSum", "GIValidNeighbours", "GIProbeWeight", "GIMeanDistance", "GISecondMoment", "GIVariance"})),
+			MakeField<&SceneRendererSettings::DebugView>("DebugView", FieldOptions().Enum({"Lit", "Normals", "BaseColor", "Indirect", "GICoverage", "DirectDiffuse", "DirectSpecular", "EnvironmentDiffuse", "EnvironmentSpecular", "Emissive", "IndirectDiffuse", "GIWeightSum", "GIValidNeighbours", "GIProbeWeight", "GIMeanDistance", "GISecondMoment", "GIVariance", "LocalShadow"})),
 		};
 		return s_Fields;
 	}
@@ -146,7 +149,7 @@ namespace Paralax {
 		return view;
 	}
 
-	SceneRenderer::SceneRenderer(GraphicsDevice& device, AssetManager& assets)
+	SceneRenderer::SceneRenderer(GraphicsDevice& device, AssetManager& assets, LocalShadowResourceFactory* shadowFactory)
 		: m_GraphicsDevice(device)
 		, m_Assets(assets)
 		, m_Device(device.GetDevice())
@@ -154,6 +157,8 @@ namespace Paralax {
 		, m_Environment(device.GetDevice())
 		, m_Text(device.GetDevice())
 		, m_ProbeGI(device.GetDevice(), device.GetInfo().Limits)
+		, m_LocalShadowMaps(device.GetDevice(), device.GetInfo().Limits, shadowFactory)
+		, m_ShadowFactory(shadowFactory)
 	{
 	}
 
@@ -179,6 +184,8 @@ namespace Paralax {
 		shadow.setAllFilters(true).setAllAddressModes(nvrhi::SamplerAddressMode::Border).setBorderColor(nvrhi::Color(1.0f));
 		shadow.setReductionType(nvrhi::SamplerReductionType::Comparison);
 		m_ShadowSampler = m_Device->createSampler(shadow);
+		shadow.setAllAddressModes(nvrhi::SamplerAddressMode::Clamp);
+		m_LocalShadowSampler = m_Device->createSampler(shadow);
 
 		m_ViewConstants = m_Device->createBuffer(nvrhi::BufferDesc()
 													 .setByteSize(sizeof(GPU::ViewConstants))
@@ -193,14 +200,24 @@ namespace Paralax {
 												   .setKeepInitialState(true)
 												   .setDebugName("Lights"));
 
+		m_LocalShadowBuffer = m_Device->createBuffer(nvrhi::BufferDesc()
+														 .setByteSize(sizeof(GPU::LocalShadowSlot) * 16)
+														 .setStructStride(sizeof(GPU::LocalShadowSlot))
+														 .setInitialState(nvrhi::ResourceStates::ShaderResource)
+														 .setKeepInitialState(true)
+														 .setDebugName("LocalShadowSlots"));
+		if (!m_CommandList || !m_ViewConstants || !m_LightBuffer || !m_LocalShadowBuffer || !m_LocalShadowSampler)
+			return false;
+
 		m_CommandList->open();
 		m_Resources.Initialize(m_CommandList);
 		const bool environmentReady = m_Environment.Initialize(m_CommandList);
 		const bool textReady = m_Text.Initialize(m_CommandList);
 		const bool probeReady = m_ProbeGI.Initialize(m_CommandList);
+		const bool shadowsReady = m_LocalShadowMaps.Initialize(m_CommandList);
 		m_CommandList->close();
 		m_Device->executeCommandList(m_CommandList);
-		if (!environmentReady || !textReady || !probeReady)
+		if (!environmentReady || !textReady || !probeReady || !shadowsReady)
 			return false;
 
 		if (!CreatePipelines())
@@ -215,12 +232,16 @@ namespace Paralax {
 		m_ForwardVS = ShaderLibrary::CreateShader(m_Device, "ForwardPBR", "MainVS", nvrhi::ShaderType::Vertex);
 		m_ForwardPS = ShaderLibrary::CreateShader(m_Device, "ForwardPBR", "MainPS", nvrhi::ShaderType::Pixel);
 		m_ShadowVS = ShaderLibrary::CreateShader(m_Device, "Shadow", "ShadowVS", nvrhi::ShaderType::Vertex);
+		m_LocalShadowVS = ShaderLibrary::CreateShader(m_Device, "Shadow", "LocalShadowVS", nvrhi::ShaderType::Vertex);
+		m_ShadowPS = ShaderLibrary::CreateShader(m_Device, "Shadow", "ShadowPS", nvrhi::ShaderType::Pixel);
+		m_LocalShadowPS = ShaderLibrary::CreateShader(m_Device, "Shadow", "LocalShadowPS", nvrhi::ShaderType::Pixel);
+		m_LocalShadowMaskPS = ShaderLibrary::CreateShader(m_Device, "Shadow", "LocalShadowMaskPS", nvrhi::ShaderType::Pixel);
 		m_ShadowMaskPS = ShaderLibrary::CreateShader(m_Device, "Shadow", "ShadowMaskPS", nvrhi::ShaderType::Pixel);
 		m_SkyVS = ShaderLibrary::CreateShader(m_Device, "Sky", "SkyVS", nvrhi::ShaderType::Vertex);
 		m_SkyPS = ShaderLibrary::CreateShader(m_Device, "Sky", "SkyPS", nvrhi::ShaderType::Pixel);
 		m_TonemapVS = ShaderLibrary::CreateShader(m_Device, "Tonemap", "TonemapVS", nvrhi::ShaderType::Vertex);
 		m_TonemapPS = ShaderLibrary::CreateShader(m_Device, "Tonemap", "TonemapPS", nvrhi::ShaderType::Pixel);
-		if (!m_ForwardVS || !m_ForwardPS || !m_ShadowVS || !m_ShadowMaskPS || !m_SkyVS || !m_SkyPS || !m_TonemapVS || !m_TonemapPS)
+		if (!m_ForwardVS || !m_ForwardPS || !m_ShadowVS || !m_LocalShadowVS || !m_ShadowPS || !m_ShadowMaskPS || !m_LocalShadowPS || !m_LocalShadowMaskPS || !m_SkyVS || !m_SkyPS || !m_TonemapVS || !m_TonemapPS)
 			return false;
 
 		const nvrhi::VertexAttributeDesc attributes[] = {
@@ -247,9 +268,12 @@ namespace Paralax {
 			nvrhi::BindingLayoutItem::Texture_SRV(3),
 			nvrhi::BindingLayoutItem::Texture_SRV(4),
 			nvrhi::BindingLayoutItem::Texture_SRV(5),
+			nvrhi::BindingLayoutItem::Texture_SRV(6),
+			nvrhi::BindingLayoutItem::StructuredBuffer_SRV(7),
 			nvrhi::BindingLayoutItem::Sampler(0),
 			nvrhi::BindingLayoutItem::Sampler(1),
 			nvrhi::BindingLayoutItem::Sampler(2),
+			nvrhi::BindingLayoutItem::Sampler(3),
 		};
 		m_ViewLayout = m_Device->createBindingLayout(view);
 
@@ -286,11 +310,15 @@ namespace Paralax {
 	{
 		const bool sizeChanged = width != m_Width || height != m_Height;
 		const bool shadowChanged = m_ShadowMapSize != m_Settings.GetShadowMapSize();
-		if (!sizeChanged && !shadowChanged && m_HDRTarget && m_ShadowMap)
+		const uint32_t localLights = m_Settings.Shadows ? static_cast<uint32_t>(std::clamp(m_Settings.MaxShadowedLocalLights, 0, 16)) : 0;
+		const bool localChanged = m_LocalShadowMaps.NeedsUpdate(m_Settings.GetLocalShadowMapSize(), localLights);
+		if (!sizeChanged && !shadowChanged && !localChanged && m_HDRTarget && m_ShadowMap && m_LocalShadowPipeline && m_LocalShadowMaskPipeline)
 			return;
 
 		m_GraphicsDevice.WaitForIdle();
 		m_StaticLightingDirty = true;
+		if (localChanged)
+			m_LocalShadowMaps.Ensure(m_Settings.GetLocalShadowMapSize(), localLights);
 
 		if (sizeChanged || !m_HDRTarget)
 		{
@@ -388,15 +416,35 @@ namespace Paralax {
 			nvrhi::GraphicsPipelineDesc shadow;
 			shadow.inputLayout = m_ShadowInputLayout;
 			shadow.VS = m_ShadowVS;
+			shadow.PS = m_ShadowPS;
 			shadow.bindingLayouts = {m_ShadowViewLayout, m_MaterialLayout};
-			shadow.renderState.rasterState.setCullNone().setDepthBias(1).setSlopeScaleDepthBias(1.5f);
-			shadow.renderState.rasterState.depthClipEnable = false; // Pancaking: casters behind the near plane still cast.
+			shadow.renderState.rasterState.setCullNone();
+			// Fragment depth preserves crossing triangles; the vertex shader only extends near coverage.
 			shadow.renderState.depthStencilState.enableDepthTest().enableDepthWrite().setDepthFunc(nvrhi::ComparisonFunc::LessOrEqual);
 			m_ShadowPipeline = m_Device->createGraphicsPipeline(shadow, m_ShadowFramebuffers[0]->getFramebufferInfo());
 
 			nvrhi::GraphicsPipelineDesc masked = shadow;
 			masked.PS = m_ShadowMaskPS;
 			m_ShadowMaskPipeline = m_Device->createGraphicsPipeline(masked, m_ShadowFramebuffers[0]->getFramebufferInfo());
+		}
+		if (!m_LocalShadowPipeline || !m_LocalShadowMaskPipeline)
+		{
+			nvrhi::GraphicsPipelineDesc shadow;
+			shadow.inputLayout = m_ShadowInputLayout;
+			shadow.VS = m_LocalShadowVS;
+			shadow.PS = m_LocalShadowPS;
+			shadow.bindingLayouts = {m_ShadowViewLayout, m_MaterialLayout};
+			shadow.renderState.rasterState.setCullNone();
+			shadow.renderState.depthStencilState.enableDepthTest().enableDepthWrite().setDepthFunc(nvrhi::ComparisonFunc::GreaterOrEqual);
+			if (!m_LocalShadowPipeline)
+				m_LocalShadowPipeline = m_ShadowFactory ? m_ShadowFactory->CreatePipeline(m_Device, shadow, m_LocalShadowMaps.GetFallbackFramebuffer()->getFramebufferInfo()) : m_Device->createGraphicsPipeline(shadow, m_LocalShadowMaps.GetFallbackFramebuffer()->getFramebufferInfo());
+			shadow.PS = m_LocalShadowMaskPS;
+			if (!m_LocalShadowMaskPipeline)
+				m_LocalShadowMaskPipeline = m_ShadowFactory ? m_ShadowFactory->CreatePipeline(m_Device, shadow, m_LocalShadowMaps.GetFallbackFramebuffer()->getFramebufferInfo()) : m_Device->createGraphicsPipeline(shadow, m_LocalShadowMaps.GetFallbackFramebuffer()->getFramebufferInfo());
+			const bool failed = !m_LocalShadowPipeline || !m_LocalShadowMaskPipeline;
+			if (failed && !m_ReportedLocalPipelineFailure)
+				PX_CORE_ERROR("Local shadow pipeline creation failed; retrying on the next frame");
+			m_ReportedLocalPipelineFailure = failed;
 		}
 	}
 
@@ -804,6 +852,142 @@ namespace Paralax {
 		}
 	}
 
+	void SceneRenderer::CollectLights(Scene& scene, const CameraView& camera, LocalShadowHistory* history)
+	{
+		struct SceneIdentity
+		{
+		};
+		auto* identity = scene.GetRegistry().ctx().find<Ref<const SceneIdentity>>();
+		if (!identity)
+			identity = &scene.GetRegistry().ctx().emplace<Ref<const SceneIdentity>>(CreateRef<SceneIdentity>());
+		std::vector<GPU::Light> lights;
+		std::vector<LocalShadowCandidate> candidates;
+		const auto cameraPlanes = ExtractFrustumPlanes(camera.Projection * camera.View);
+		auto finite = [](glm::vec3 v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); };
+		auto collect = [&](auto entities, bool spot) {
+			for (entt::entity handle : entities)
+			{
+				Entity entity(handle, &scene);
+				const glm::mat4 world = scene.GetWorldTransform(entity);
+				GPU::Light light{};
+				bool casts = false;
+				float outerAngle = 0.0f;
+				if (spot)
+				{
+					const auto& component = entity.GetComponent<SpotLightComponent>();
+					outerAngle = component.OuterConeAngle;
+					const glm::vec3 direction = -glm::vec3(world[2]);
+					const float directionLength = glm::length(direction);
+					if (!finite(direction) || !std::isfinite(directionLength) || directionLength < 1e-8f ||
+						!std::isfinite(outerAngle) || outerAngle <= 0 || outerAngle > glm::radians(89.0f) ||
+						!std::isfinite(component.InnerConeAngle) || component.InnerConeAngle < 0 || component.InnerConeAngle > glm::radians(89.0f) ||
+						!std::isfinite(component.Intensity) || component.Intensity < 0 || !finite(component.Color) || glm::any(glm::lessThan(component.Color, glm::vec3(0))))
+						continue;
+					light.PositionRange = {glm::vec3(world[3]), component.Range};
+					light.ColorIntensity = {component.Color * component.Intensity, 1.0f};
+					light.DirectionCos = {direction / directionLength, std::cos(outerAngle)};
+					light.Params.x = std::cos(std::clamp(component.InnerConeAngle, 0.0f, outerAngle));
+					casts = component.CastShadows;
+				}
+				else
+				{
+					const auto& component = entity.GetComponent<PointLightComponent>();
+					if (!std::isfinite(component.Intensity) || component.Intensity < 0 || !finite(component.Color) || glm::any(glm::lessThan(component.Color, glm::vec3(0))))
+						continue;
+					light.PositionRange = {glm::vec3(world[3]), component.Range};
+					light.ColorIntensity = {component.Color * component.Intensity, 0.0f};
+					casts = component.CastShadows;
+				}
+				if (!finite(glm::vec3(light.ColorIntensity)) || glm::compMax(glm::vec3(light.ColorIntensity)) <= 0)
+					continue;
+				light.Params.z = casts ? 1.0f : 0.0f;
+				light.Params.w = 0.05f;
+				const glm::vec3 position(light.PositionRange);
+				const float range = light.PositionRange.w;
+				const bool visible = IsVisible(cameraPlanes, AABB{position - glm::vec3(range), position + glm::vec3(range)});
+				candidates.push_back({uint64_t(entity.GetUUID()), position, range, spot && outerAngle <= glm::radians(75.0f) ? 1u : 6u, casts, visible, spot ? 1u : 0u});
+				lights.push_back(light);
+			}
+		};
+		collect(scene.GetAllEntitiesWith<PointLightComponent>(), false);
+		collect(scene.GetAllEntitiesWith<SpotLightComponent>(), true);
+		const uint32_t maxLights = m_Settings.Shadows ? static_cast<uint32_t>(std::clamp(m_Settings.MaxShadowedLocalLights, 0, 16)) : 0;
+		const uint32_t capacity = m_LocalShadowPipeline && m_LocalShadowMaskPipeline ? m_LocalShadowMaps.GetLayers() : 0;
+		const auto selection = SelectLocalShadows(candidates, camera.Position, maxLights, capacity, *identity, history);
+		m_LocalShadowSlots.clear();
+		const float inverseResolution = 1.0f / static_cast<float>(m_Settings.GetLocalShadowMapSize());
+		constexpr glm::vec3 directions[6] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+		for (const auto& assignment : selection.Shadows)
+		{
+			GPU::Light& light = lights[assignment.Candidate];
+			light.Params.y = static_cast<float>(m_LocalShadowSlots.size() + 1);
+			GPU::LocalShadowSlot slot{};
+			slot.PositionRange = light.PositionRange;
+			// A one-texel guard contains hardware PCF at cube seams; each world-space tap chooses its own face.
+			// Spots need the entire eight-texel filter plus the hardware footprint around the true cone.
+			const float tangent = assignment.Layers == 6 ? 1.0f + 2.0f * inverseResolution : std::sqrt(std::max(1.0f - light.DirectionCos.w * light.DirectionCos.w, 1e-12f)) / light.DirectionCos.w * (1.0f + 24.0f * inverseResolution);
+			slot.Atlas = {static_cast<float>(assignment.FirstLayer), static_cast<float>(assignment.Layers), inverseResolution, tangent};
+			slot.Bias = {light.Params.w, light.PositionRange.w, std::isfinite(m_Settings.LocalShadowSoftness) ? std::clamp(m_Settings.LocalShadowSoftness, 0.0f, 0.5f) : 0.0f, 1.0f};
+			const glm::mat4 projection = glm::perspectiveRH_ZO(2.0f * std::atan(tangent), 1.0f, light.PositionRange.w, light.Params.w);
+			const glm::vec3 position(light.PositionRange);
+			for (uint32_t face = 0; face < assignment.Layers; ++face)
+			{
+				const glm::vec3 direction = assignment.Layers == 6 ? directions[face] : glm::vec3(light.DirectionCos);
+				const glm::vec3 up = std::abs(direction.y) > 0.99f ? glm::vec3(0, 0, 1) : glm::vec3(0, 1, 0);
+				slot.ViewProjection[face] = projection * glm::lookAtRH(position, position + direction, up);
+			}
+			m_LocalShadowSlots.push_back(slot);
+			m_Stats.ShadowedLocalLightIDs.push_back(candidates[assignment.Candidate].ID);
+		}
+		m_Lights.clear();
+		for (uint32_t index : selection.DirectLights)
+			m_Lights.push_back(lights[index]);
+		m_Stats.Lights = static_cast<uint32_t>(m_Lights.size());
+		m_Stats.RequestedLocalShadows = selection.Requested;
+		m_Stats.ShadowedLocalLights = static_cast<uint32_t>(selection.Shadows.size());
+		m_Stats.LocalShadowLayers = selection.LayersUsed;
+		m_Stats.LocalShadowCapacity = capacity;
+		m_Stats.LocalShadowAllocationAttempts = m_LocalShadowMaps.GetAllocationAttempts();
+		const bool capacityExceeded = maxLights > 0 && capacity > 0 && selection.Shadows.size() < std::min(maxLights, selection.Requested);
+		if (capacityExceeded && !m_ReportedLocalCapacity)
+			PX_CORE_WARN("Local shadow layer budget cannot fit all requested lights; see render.stats for the selected set");
+		m_ReportedLocalCapacity = capacityExceeded;
+	}
+
+	void SceneRenderer::RenderLocalShadows()
+	{
+		for (const auto& slot : m_LocalShadowSlots)
+			for (uint32_t face = 0; face < static_cast<uint32_t>(slot.Atlas.y); ++face)
+			{
+				const uint32_t layer = static_cast<uint32_t>(slot.Atlas.x) + face;
+				m_CommandList->clearDepthStencilTexture(m_LocalShadowMaps.GetTexture(), nvrhi::TextureSubresourceSet(0, 1, layer, 1), true, 0.0f, false, 0);
+				const auto planes = ExtractFrustumPlanes(slot.ViewProjection[face]);
+				for (const DrawItem& draw : m_Draws)
+				{
+					// Reversed-Z near plane is index 5. Depth clamping retains casters closer than 5 cm;
+					// the side planes still reject geometry behind the light.
+					const glm::vec3 nearest = glm::clamp(glm::vec3(slot.PositionRange), draw.Bounds.Min, draw.Bounds.Max);
+					const glm::vec3 delta = nearest - glm::vec3(slot.PositionRange);
+					if (!draw.CastShadows || (draw.Bounds.IsValid() && glm::dot(delta, delta) > slot.PositionRange.w * slot.PositionRange.w) || !IsVisible(planes, draw.Bounds, 5))
+						continue;
+					nvrhi::GraphicsState state;
+					state.pipeline = draw.AlphaMask ? m_LocalShadowMaskPipeline : m_LocalShadowPipeline;
+					state.framebuffer = m_LocalShadowMaps.GetFramebuffer(layer);
+					state.bindings = {m_ShadowViewBindings, draw.Material};
+					state.vertexBuffers = {nvrhi::VertexBufferBinding().setBuffer(draw.Mesh->VertexBuffer)};
+					state.indexBuffer = nvrhi::IndexBufferBinding().setBuffer(draw.Mesh->IndexBuffer).setFormat(nvrhi::Format::R32_UINT);
+					const float size = static_cast<float>(m_LocalShadowMaps.GetResolution());
+					state.viewport.addViewportAndScissorRect(nvrhi::Viewport(size, size));
+					m_CommandList->setGraphicsState(state);
+					const glm::mat4 matrix = slot.ViewProjection[face] * draw.World;
+					m_CommandList->setPushConstants(&matrix, sizeof(matrix));
+					m_CommandList->drawIndexed(nvrhi::DrawArguments().setVertexCount(draw.IndexCount).setStartIndexLocation(draw.IndexOffset).setStartVertexLocation(draw.VertexOffset));
+					++m_Stats.ShadowDrawCalls;
+					++m_Stats.LocalShadowDrawCalls;
+				}
+			}
+	}
+
 	void SceneRenderer::RenderForward(const GPU::ViewConstants& view)
 	{
 		m_CommandList->clearTextureFloat(m_HDRTarget, nvrhi::AllSubresources, nvrhi::Color(0.0f, 0.0f, 0.0f, 1.0f));
@@ -890,7 +1074,7 @@ namespace Paralax {
 		return true;
 	}
 
-	void SceneRenderer::Render(Scene& scene, const CameraView& camera, nvrhi::IFramebuffer* output)
+	void SceneRenderer::Render(Scene& scene, const CameraView& camera, nvrhi::IFramebuffer* output, LocalShadowHistory* shadowHistory)
 	{
 		PX_CORE_VERIFY(m_Initialized, "SceneRenderer::Render called before a successful Initialize");
 		PX_CORE_VERIFY(output, "SceneRenderer::Render requires an output framebuffer");
@@ -936,37 +1120,11 @@ namespace Paralax {
 			sunShadows = light.CastShadows && m_Settings.Shadows;
 		}
 
-		m_Lights.clear();
-		auto addLights = [&](auto view, bool spot) {
-			for (entt::entity handle : view)
-			{
-				if (m_Lights.size() >= GPU::MaxLights)
-					return;
-				Entity entity(handle, &scene);
-				const glm::mat4 world = scene.GetWorldTransform(entity);
-				GPU::Light light{};
-				if (spot)
-				{
-					const auto& component = entity.GetComponent<SpotLightComponent>();
-					light.PositionRange = glm::vec4(glm::vec3(world[3]), component.Range);
-					light.ColorIntensity = glm::vec4(component.Color * component.Intensity, 1.0f);
-					light.DirectionCos = glm::vec4(glm::normalize(glm::vec3(world * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f))), std::cos(component.OuterConeAngle));
-					light.Params = glm::vec4(std::cos(std::min(component.InnerConeAngle, component.OuterConeAngle - 0.001f)), 0.0f, 0.0f, 0.0f);
-				}
-				else
-				{
-					const auto& component = entity.GetComponent<PointLightComponent>();
-					light.PositionRange = glm::vec4(glm::vec3(world[3]), component.Range);
-					light.ColorIntensity = glm::vec4(component.Color * component.Intensity, 0.0f);
-				}
-				m_Lights.push_back(light);
-			}
-		};
-		addLights(scene.GetAllEntitiesWith<PointLightComponent>(), false);
-		addLights(scene.GetAllEntitiesWith<SpotLightComponent>(), true);
-		m_Stats.Lights = static_cast<uint32_t>(m_Lights.size());
+		CollectLights(scene, camera, shadowHistory);
 		if (!m_Lights.empty())
 			m_CommandList->writeBuffer(m_LightBuffer, m_Lights.data(), m_Lights.size() * sizeof(GPU::Light));
+		if (!m_LocalShadowSlots.empty())
+			m_CommandList->writeBuffer(m_LocalShadowBuffer, m_LocalShadowSlots.data(), m_LocalShadowSlots.size() * sizeof(GPU::LocalShadowSlot));
 
 		UpdateEnvironment(scene, hasSun ? sunDirection : glm::vec3(0.0f), sunColor);
 		CollectDraws(scene, camera);
@@ -1046,7 +1204,12 @@ namespace Paralax {
 			m_ProbeGI.Disable(m_CommandList);
 		}
 
-		if (!m_ViewBindings || m_ViewBindings->getDesc()->bindings[3].resourceHandle != m_ShadowMap.Get() || m_ViewBindings->getDesc()->bindings[4].resourceHandle != m_EnvironmentMaps.Specular.Get())
+		const std::array<nvrhi::IResource*, 6> viewTextures{m_ShadowMap, m_EnvironmentMaps.Specular, m_EnvironmentMaps.Diffuse, m_Environment.GetBRDFLut(), m_EnvironmentMaps.Radiance, m_LocalShadowMaps.GetTexture()};
+		bool bindingsChanged = !m_ViewBindings;
+		if (m_ViewBindings)
+			for (size_t i = 0; i < viewTextures.size(); ++i)
+				bindingsChanged |= m_ViewBindings->getDesc()->bindings[3 + i].resourceHandle != viewTextures[i];
+		if (bindingsChanged)
 		{
 			nvrhi::BindingSetDesc set;
 			set.bindings = {
@@ -1058,15 +1221,19 @@ namespace Paralax {
 				nvrhi::BindingSetItem::Texture_SRV(3, m_EnvironmentMaps.Diffuse),
 				nvrhi::BindingSetItem::Texture_SRV(4, m_Environment.GetBRDFLut()),
 				nvrhi::BindingSetItem::Texture_SRV(5, m_EnvironmentMaps.Radiance),
+				nvrhi::BindingSetItem::Texture_SRV(6, m_LocalShadowMaps.GetTexture()),
+				nvrhi::BindingSetItem::StructuredBuffer_SRV(7, m_LocalShadowBuffer),
 				nvrhi::BindingSetItem::Sampler(0, m_LinearWrap),
 				nvrhi::BindingSetItem::Sampler(1, m_LinearClamp),
 				nvrhi::BindingSetItem::Sampler(2, m_ShadowSampler),
+				nvrhi::BindingSetItem::Sampler(3, m_LocalShadowSampler),
 			};
 			m_ViewBindings = m_Device->createBindingSet(set, m_ViewLayout);
 		}
 
 		if (sunShadows)
 			RenderShadows(view);
+		RenderLocalShadows();
 		RenderForward(view);
 
 		// Tone map into the output.
@@ -1085,7 +1252,7 @@ namespace Paralax {
 		m_CommandList->setGraphicsState(tonemap);
 		GPU::TonemapConstants tonemapConstants{};
 		const bool rawDiagnostic = static_cast<uint32_t>(m_Settings.DebugView) >= 3;
-		tonemapConstants.Exposure = rawDiagnostic ? m_Settings.GIDebugScale : m_Settings.Exposure;
+		tonemapConstants.Exposure = m_Settings.DebugView == RenderDebugView::LocalShadow ? 1.0f : (rawDiagnostic ? m_Settings.GIDebugScale : m_Settings.Exposure);
 		tonemapConstants.Operator = rawDiagnostic ? 3u : static_cast<uint32_t>(m_Settings.Tonemapper);
 		m_CommandList->setPushConstants(&tonemapConstants, sizeof(tonemapConstants));
 		m_CommandList->draw(nvrhi::DrawArguments().setVertexCount(3));

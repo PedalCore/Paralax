@@ -131,7 +131,7 @@ TEST_CASE("EditorLayer: render.stats reports the statistics of the latest frame 
 	EditorContext& context = editor.Context;
 
 	// Nothing has been rendered yet.
-	const json empty = {{"drawCalls", 0}, {"shadowDrawCalls", 0}, {"triangles", 0}, {"culledSubmeshes", 0}, {"textGlyphs", 0}, {"lights", 0}, {"staticLightingGenerations", 0}};
+	const json empty = {{"drawCalls", 0}, {"shadowDrawCalls", 0}, {"triangles", 0}, {"culledSubmeshes", 0}, {"textGlyphs", 0}, {"lights", 0}, {"staticLightingGenerations", 0}, {"requestedLocalShadows", 0}, {"shadowedLocalLights", 0}, {"localShadowLayers", 0}, {"localShadowCapacity", 0}, {"localShadowDrawCalls", 0}, {"localShadowAllocationAttempts", 0}, {"shadowedLocalLightIDs", json::array()}};
 	CHECK(Run(context, "render.stats") == empty);
 
 	// A cube in view, one behind the camera (culled, but still drawn into the shadow map), a sun and a point light,
@@ -143,11 +143,12 @@ TEST_CASE("EditorLayer: render.stats reports the statistics of the latest frame 
 	Run(context, "entity.create", {{"name", "Lamp"}, {"components", {{"PointLight", json::object()}, {"Transform", {{"Translation", {0, 2, 0}}}}}}});
 	Run(context, "editor.camera.set", {{"position", {0, 1, 4}}, {"target", {0, 0, 0}}});
 	const std::filesystem::path image = Paralax::Testing::GetTestOutputDirectory() / "EditorLayerStats.png";
-	Run(context, "render.capture", {{"path", ToUtf8(image)}, {"width", 64}, {"height", 64}, {"camera", "editor"}});
+	const json capture = Run(context, "render.capture", {{"path", ToUtf8(image)}, {"width", 64}, {"height", 64}, {"camera", "editor"}});
 
 	Ref<MeshAsset> mesh = context.GetAssets().GetAsset<MeshAsset>(AssetHandle(AssetManager::BuiltinCube));
 	REQUIRE(mesh);
 	const json stats = Run(context, "render.stats");
+	CHECK(capture["stats"] == stats);
 	CHECK(stats["drawCalls"] == 1);
 	CHECK(stats["triangles"] == mesh->Indices.size() / 3);
 	CHECK(stats["culledSubmeshes"] == 1);

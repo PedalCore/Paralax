@@ -38,7 +38,7 @@ namespace {
 		commands->copyTexture(staging, nvrhi::TextureSlice(), texture, nvrhi::TextureSlice().setMipLevel(mip).setArraySlice(face));
 		commands->close();
 		device->executeCommandList(commands);
-		device->waitForIdle();
+		REQUIRE(device->waitForIdle());
 		size_t pitch = 0;
 		const auto* mapped = static_cast<const uint8_t*>(device->mapStagingTexture(staging, nvrhi::TextureSlice(), nvrhi::CpuAccessMode::Read, &pitch));
 		REQUIRE(mapped);
@@ -191,6 +191,109 @@ TEST_CASE("EnvironmentLighting: packaged HDR environments generate finite radian
 					INFO("face RGB energies: ", faceEnergies[0], ", ", faceEnergies[1], ", ", faceEnergies[2], ", ", faceEnergies[3], ", ", faceEnergies[4], ", ", faceEnergies[5]);
 					CHECK(totalEnergy > 0.01);
 				}
+			}
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == initialErrors);
+}
+
+TEST_CASE("EnvironmentLighting: filtered HDR maps survive later radiance readback allocations")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto initialErrors = graphics.GetValidationErrorCount();
+	INFO("adapter: ", graphics.GetInfo().AdapterName, ", driver: ", graphics.GetInfo().DriverName);
+	{
+		auto* device = graphics.GetDevice();
+		AssetManager assets;
+		GPUResourceCache resources(device);
+		EnvironmentLighting lighting(device);
+		auto commands = device->createCommandList();
+		auto checkpoint = device->createCommandList();
+		REQUIRE(commands);
+		REQUIRE(checkpoint);
+		commands->open();
+		REQUIRE(lighting.Initialize(commands));
+		commands->close();
+		device->executeCommandList(commands);
+		struct Snapshot
+		{
+			nvrhi::StagingTextureHandle Early, AfterRadiance;
+			uint32_t Map = 0, Mip = 0, Face = 0, Size = 0;
+		};
+		std::vector<Snapshot> snapshots;
+		// Allocate both checkpoints before generation. Mapping them after the ordinary readbacks
+		// distinguishes loss of stored lighting from new staging allocations/copies returning zero.
+		for (uint32_t map = 0; map < 2; ++map)
+			for (uint32_t mip = 0; mip < (map == 0 ? 1 : EnvironmentLighting::SpecularMips); ++mip)
+				for (uint32_t face = 0; face < 6; ++face)
+				{
+					nvrhi::TextureDesc desc;
+					desc.width = desc.height = (map == 0 ? EnvironmentLighting::DiffuseSize : EnvironmentLighting::SpecularSize) >> mip;
+					desc.format = nvrhi::Format::RGBA16_FLOAT;
+					desc.initialState = nvrhi::ResourceStates::CopyDest;
+					desc.keepInitialState = true;
+					auto early = device->createStagingTexture(desc, nvrhi::CpuAccessMode::Read);
+					auto late = device->createStagingTexture(desc, nvrhi::CpuAccessMode::Read);
+					REQUIRE(early);
+					REQUIRE(late);
+					snapshots.push_back({early, late, map, mip, face, desc.width});
+				}
+		const auto source = assets.GetAsset<TextureAsset>(AssetHandle(AssetManager::BuiltinSkyEnvironment));
+		REQUIRE(source);
+		EnvironmentMaps maps;
+		commands->open();
+		auto* uploaded = resources.GetTexture(*source, commands);
+		REQUIRE(uploaded);
+		lighting.GenerateFromEquirect(commands, maps, uploaded, 1.0f);
+		auto copy = [&](nvrhi::ICommandList* list, bool early) {
+			for (const auto& snapshot : snapshots)
+				list->copyTexture(early ? snapshot.Early : snapshot.AfterRadiance, {}, snapshot.Map == 0 ? maps.Diffuse : maps.Specular,
+								  nvrhi::TextureSlice().setMipLevel(snapshot.Mip).setArraySlice(snapshot.Face));
+		};
+		copy(commands, true);
+		commands->close();
+		device->executeCommandList(commands);
+		for (uint32_t mip = 0; mip < maps.Radiance->getDesc().mipLevels; ++mip)
+			for (uint32_t face = 0; face < 6; ++face)
+				REQUIRE_FALSE(ReadHalfTexture(device, maps.Radiance, mip, face, 4).empty());
+		checkpoint->open();
+		copy(checkpoint, false);
+		checkpoint->close();
+		device->executeCommandList(checkpoint);
+		REQUIRE(device->waitForIdle());
+		for (const auto& snapshot : snapshots)
+		{
+			CAPTURE(snapshot.Map);
+			CAPTURE(snapshot.Mip);
+			CAPTURE(snapshot.Face);
+			const auto ordinary = ReadHalfTexture(device, snapshot.Map == 0 ? maps.Diffuse : maps.Specular, snapshot.Mip, snapshot.Face, 4);
+			for (const auto& staging : {snapshot.Early, snapshot.AfterRadiance})
+			{
+				INFO((staging == snapshot.Early ? "immediate snapshot" : "snapshot after radiance reads"));
+				size_t pitch = 0;
+				const auto* mapped = static_cast<const uint8_t*>(device->mapStagingTexture(staging, {}, nvrhi::CpuAccessMode::Read, &pitch));
+				REQUIRE(mapped);
+				size_t mismatch = 0, invalidAlpha = 0;
+				double energy = 0;
+				for (uint32_t y = 0; y < snapshot.Size; ++y)
+					for (uint32_t x = 0; x < snapshot.Size * 4; ++x)
+					{
+						uint16_t bits;
+						std::memcpy(&bits, mapped + y * pitch + x * sizeof(bits), sizeof(bits));
+						const float value = glm::unpackHalf1x16(bits);
+						mismatch += value != ordinary[static_cast<size_t>(y) * snapshot.Size * 4 + x] ? 1u : 0u;
+						if (x % 4 == 3)
+							invalidAlpha += value != 1.0f ? 1u : 0u;
+						else
+							energy += static_cast<double>(value);
+					}
+				device->unmapStagingTexture(staging);
+				INFO("snapshot RGB energy: ", energy, ", invalid alpha: ", invalidAlpha, ", mismatches with ordinary readback: ", mismatch);
+				CHECK(invalidAlpha == 0);
+				CHECK(energy > 0.0);
+				CHECK(mismatch == 0);
 			}
 		}
 	}

@@ -344,7 +344,7 @@
 		{
 			"Components": {
 				"PointLight": {
-					"CastShadows": false,
+					"CastShadows": true,
 					"Color": [
 						1.0,
 						0.550000011920929,
@@ -382,7 +382,7 @@
 		{
 			"Components": {
 				"SpotLight": {
-					"CastShadows": false,
+					"CastShadows": true,
 					"Color": [
 						1.0,
 						1.0,

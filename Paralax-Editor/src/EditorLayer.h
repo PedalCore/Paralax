@@ -58,6 +58,7 @@ namespace Paralax::Editor {
 		EditorContext& m_Context;
 		std::shared_ptr<ConsoleSink> m_ConsoleSink;
 		Scope<SceneRenderer> m_Renderer;
+		LocalShadowHistory m_ShadowHistory;
 		EditorCamera m_Camera;
 
 		SceneHierarchyPanel m_Hierarchy;

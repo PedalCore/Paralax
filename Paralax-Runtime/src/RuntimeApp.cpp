@@ -92,7 +92,7 @@ namespace Paralax {
 					}
 					view = CameraView::LookAt(glm::vec3(0.0f, 2.0f, 8.0f), glm::vec3(0.0f), glm::radians(50.0f), aspect);
 				}
-				m_Renderer->Render(scene, *view, swapchain.GetCurrentFramebuffer());
+				m_Renderer->Render(scene, *view, swapchain.GetCurrentFramebuffer(), &m_ShadowHistory);
 			}
 
 		private:
@@ -101,6 +101,7 @@ namespace Paralax {
 			Scope<GameSession> m_Game;
 			bool m_FailOnScriptError = false;
 			Scope<SceneRenderer> m_Renderer;
+			LocalShadowHistory m_ShadowHistory;
 			bool m_WarnedNoCamera = false;
 		};
 
