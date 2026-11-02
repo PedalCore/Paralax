@@ -36,7 +36,8 @@ namespace Paralax {
 		static void AddSink(const spdlog::sink_ptr& sink);
 		static void RemoveSink(const spdlog::sink_ptr& sink);
 
-		// Opens (truncating) a log file and attaches it as a sink. Missing parent directories are created.
+		// Opens (truncating) a log file and attaches it as a sink. Missing parent directories are created. The path may
+		// hold any characters the file system allows (on Windows, those outside the ANSI code page too).
 		// Returns the sink so it can be removed later, or nullptr if logging is not initialised or the file cannot be
 		// opened (an error is logged).
 		static spdlog::sink_ptr AddFileSink(const std::filesystem::path& path);

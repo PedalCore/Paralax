@@ -43,15 +43,24 @@ CPMAddPackage(
 		"GLM_ENABLE_CXX_20 ON")
 
 # --- spdlog (logging) ---------------------------------------------------------------------------
+# On Windows, SPDLOG_WCHAR_FILENAMES makes spdlog take file names as std::wstring and open them with the wide C runtime
+# functions, so a log file can be at any path (the narrow ones take the ANSI code page). Log::AddFileSink passes
+# path::native() and checks the type at compile time. The option adds no wide logging API, so messages stay UTF-8. It
+# is set on Windows only: elsewhere file names are bytes, and CPM's options are plain variables, which spdlog's forcing
+# the option off in its cache would not override.
+set(PX_SPDLOG_OPTIONS
+	"SPDLOG_BUILD_EXAMPLE OFF"
+	"SPDLOG_BUILD_TESTS OFF"
+	"SPDLOG_INSTALL OFF"
+	"SPDLOG_FMT_EXTERNAL OFF")
+if(WIN32)
+	list(APPEND PX_SPDLOG_OPTIONS "SPDLOG_WCHAR_FILENAMES ON")
+endif()
 CPMAddPackage(
 	NAME spdlog
 	GITHUB_REPOSITORY gabime/spdlog
 	VERSION 1.15.3
-	OPTIONS
-		"SPDLOG_BUILD_EXAMPLE OFF"
-		"SPDLOG_BUILD_TESTS OFF"
-		"SPDLOG_INSTALL OFF"
-		"SPDLOG_FMT_EXTERNAL OFF")
+	OPTIONS ${PX_SPDLOG_OPTIONS})
 
 # --- Vulkan-Headers (Vulkan API headers incl. vulkan.hpp) -------------------------------------
 # The Vulkan loader is not linked: NVRHI and Paralax load it at runtime, so no SDK is needed to build.

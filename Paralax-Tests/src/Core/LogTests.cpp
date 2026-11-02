@@ -3,6 +3,7 @@
 #include "TestUtilities.h"
 
 #include <Paralax/Core/Log.h>
+#include <Paralax/Core/PathEncoding.h>
 
 #include <spdlog/sinks/ringbuffer_sink.h>
 
@@ -153,6 +154,29 @@ TEST_CASE("Log: AddFileSink returns a removable sink and reports unopenable path
 	// A path whose parent is a regular file can never be opened.
 	CHECK(Log::AddFileSink(path / "child.log") == nullptr);
 	CHECK(capture.Contains(spdlog::level::err, "Failed to open log file"));
+
+	std::error_code error;
+	std::filesystem::remove_all(directory, error);
+}
+
+TEST_CASE("Log: AddFileSink opens a file at a path outside the ANSI code page, creating its directories")
+{
+	// "Protokoll-é-日本-Ω/Журнал.log" as UTF-8 bytes. No ANSI code page holds all of these characters, so on Windows
+	// only a wide file name can open it: path::string(), which converts to the code page, throws for it.
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("NonAsciiLogFile");
+	const std::filesystem::path path = directory / FromUtf8("Protokoll-\xC3\xA9-\xE6\x97\xA5\xE6\x9C\xAC-\xCE\xA9") / FromUtf8("\xD0\x96\xD1\x83\xD1\x80\xD0\xBD\xD0\xB0\xD0\xBB.log");
+	{
+		ScopedLogCapture capture;
+		spdlog::sink_ptr sink = Log::AddFileSink(path);
+		REQUIRE(sink);
+		CHECK_FALSE(capture.Contains(spdlog::level::err, "Failed to open log file"));
+		PX_CORE_WARN("written to a non-ASCII path");
+		Log::RemoveSink(sink);
+		sink->flush();
+	}
+
+	CHECK(std::filesystem::is_regular_file(path));
+	CHECK(Paralax::Testing::ReadFileText(path).find("written to a non-ASCII path") != std::string::npos);
 
 	std::error_code error;
 	std::filesystem::remove_all(directory, error);

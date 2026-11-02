@@ -6,6 +6,7 @@
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 
+#include <type_traits>
 #include <vector>
 
 namespace Paralax {
@@ -54,14 +55,16 @@ namespace Paralax {
 		if (!IsInitialized())
 			return nullptr;
 
-		// spdlog opens the file through the C runtime, which takes the native narrow string, so path::string() is right
-		// here (not ToUtf8). It throws on Windows for a name the code page cannot represent, and spdlog throws on
-		// failure; both stay at this boundary.
+		// spdlog takes the file name in the native encoding: wide on Windows (SPDLOG_WCHAR_FILENAMES, set in
+		// cmake/Dependencies.cmake), bytes elsewhere. The native string reaches the file system unchanged, whatever
+		// characters it holds; path::string() would be the ANSI code page on Windows, and throw for a character outside
+		// it. spdlog throws if it cannot open the file, which stays at this boundary.
+		static_assert(std::is_same_v<spdlog::filename_t, std::filesystem::path::string_type>, "spdlog must take file names in the native path encoding (see SPDLOG_WCHAR_FILENAMES in cmake/Dependencies.cmake)");
 		spdlog::sink_ptr sink;
 		std::string error;
 		try
 		{
-			sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(path.string(), true);
+			sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(path.native(), true);
 			sink->set_pattern("[%Y-%m-%d %T.%e] [%l] %n: %v");
 		}
 		catch (const std::exception& e)
