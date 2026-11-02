@@ -351,15 +351,29 @@ namespace Paralax {
 			return sol::property([](const V& v) { return v[Index]; }, [](V& v, float value) { v[Index] = value; });
 		}
 
+		// The most of a raised error's own text that an error report keeps. The report (see ReportError) is capped at
+		// MaxMessageBytes in all, and also holds the traceback, which luaL_traceback limits to 22 levels (with chunk
+		// names of at most LUA_IDSIZE bytes, so usually a kilobyte or two), and the context of the call that failed:
+		// the rest of MaxMessageBytes leaves room for both, so a long message is cut here and its traceback is kept.
+		constexpr size_t MaxRaisedMessageBytes = MaxMessageBytes - 4 * 1024;
+
 		int Traceback(lua_State* L)
 		{
-			const char* message = lua_tostring(L, 1);
+			size_t length = 0;
+			const char* message = lua_tolstring(L, 1, &length);
 			if (!message)
 			{
 				// Non-string error objects: describe them with tostring (via __tostring when present).
-				message = luaL_tolstring(L, 1, nullptr);
+				message = luaL_tolstring(L, 1, &length);
 			}
-			luaL_traceback(L, L, message, 1);
+			if (length <= MaxRaisedMessageBytes)
+			{
+				luaL_traceback(L, L, message, 1);
+				return 1;
+			}
+			// Lua is built as C++, so an error raised in luaL_traceback unwinds through this frame and frees the copy.
+			const std::string capped = CapMessage(std::string_view(message, length), MaxRaisedMessageBytes);
+			luaL_traceback(L, L, capped.c_str(), 1);
 			return 1;
 		}
 

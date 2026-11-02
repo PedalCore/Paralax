@@ -1406,7 +1406,8 @@ TEST_CASE("ScriptSystem: print, Log and errors keep at most MaxMessageBytes of t
 	const std::string& error = fixture.System->GetErrors()[0];
 	CHECK(error.find("OnCreate: ") != std::string::npos);
 	CHECK(error.size() <= MaxMessageBytes + 32);
-	CHECK(error.ends_with(" bytes)"));
+	CHECK(error.find(std::string(1000, 'a') + "... (1677") != std::string::npos); // The message, cut.
+	CHECK(error.find("stack traceback:") != std::string::npos);                   // Its traceback, kept.
 	CHECK(log.Contains(spdlog::level::err, "Script error: " + error));
 
 	// Evaluated code's errors are returned cut too; a long require path is named briefly.
@@ -1414,8 +1415,27 @@ TEST_CASE("ScriptSystem: print, Log and errors keep at most MaxMessageBytes of t
 	CHECK_FALSE(fixture.System->Evaluate("error(string.rep('b', 16 * 1024 * 1024))", failure));
 	CHECK(failure.size() <= MaxMessageBytes + 32);
 	CHECK(failure.find(std::string(1000, 'b')) != std::string::npos);
+	CHECK(failure.find("stack traceback:") != std::string::npos);
 	CHECK_FALSE(fixture.System->Evaluate("require(string.rep('c', 16 * 1024 * 1024))", failure));
 	CHECK(failure.find("require: no script 'ccc") != std::string::npos);
 	CHECK(failure.find("...' (16777220 bytes) in the project") != std::string::npos);
 	CHECK(failure.size() < 1024);
+}
+
+TEST_CASE("ScriptSystem: an error too long to keep whole is cut before its traceback, which is kept")
+{
+	ScriptFixture fixture;
+	fixture.CreateScripted("local Long = {} function Long:OnCreate() error(string.rep('x', 20000)) end return Long");
+	Paralax::Testing::ScopedLogCapture log;
+	fixture.Start();
+	fixture.Update();
+	REQUIRE(fixture.System->GetErrors().size() == 1);
+	const std::string& error = fixture.System->GetErrors()[0];
+	CHECK(error.find(std::string(1000, 'x') + "... (200") != std::string::npos);
+	CHECK(error.find("stack traceback:") != std::string::npos);
+	CHECK(error.size() <= MaxMessageBytes);
+	// An error that fits is kept whole, as before.
+	std::string failure;
+	CHECK_FALSE(fixture.System->Evaluate("error(string.rep('y', 1000))", failure));
+	CHECK(failure.find(std::string(1000, 'y') + "\nstack traceback:") != std::string::npos);
 }
