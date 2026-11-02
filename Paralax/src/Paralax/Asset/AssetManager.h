@@ -105,12 +105,13 @@ namespace Paralax {
 
 		// Writes AssetRegistry.json atomically. Returns false (with an error logged), leaving the file on disk as it was,
 		// if the registry is larger than LoadRegistry reads (MaxRegistryBytes), while the registry is read-only (see
-		// IsRegistryReadOnly) and its file is still in place, or if the file has changed on disk since this manager
-		// loaded or last saved it (a version-control checkout or merge, or another editor): saving would replace that
-		// change with this registry. The file is compared by size and a hash of its bytes, not by modification time,
-		// which a checkout can leave as it was. To recover from a change, call LoadRegistry (the editor's
-		// asset.reload_registry) or reopen the project, then save again. A missing file is never refused: it is created
-		// anew. The file is not locked, so a change made between the check and the write is still replaced.
+		// IsRegistryReadOnly) and its file is still in place, if the file has changed on disk since this manager loaded
+		// or last saved it (a version-control checkout or merge, or another editor; see HasRegistryChangedOnDisk):
+		// saving would replace that change with this registry, or if something is in the file's place that cannot be
+		// checked (a folder, or a file that cannot be read). The file is compared by size and a hash of its bytes, not
+		// by modification time, which a checkout can leave as it was. To recover from a change, call LoadRegistry (the
+		// editor's asset.reload_registry) or reopen the project, then save again. A missing file is never refused: it is
+		// created anew. The file is not locked, so a change made between the check and the write is still replaced.
 		bool SaveRegistry() const;
 		// Replaces the registry with the one on disk (a missing file yields an empty registry, as for a new project),
 		// and records what the file is, so SaveRegistry can tell whether it changes. A loaded asset whose entry the new
