@@ -1,7 +1,6 @@
 #include <doctest/doctest.h>
 
 #include "GPUTestContext.h"
-#include "TestUtilities.h"
 
 #include <EditorCore/ConsoleSink.h>
 #include <EditorCore/EditorContext.h>

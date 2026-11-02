@@ -1,5 +1,6 @@
-#include "EditorCore/ConsoleSink.h"
 #include "EditorCore/EditorContext.h"
+
+#include "EditorCore/ConsoleSink.h"
 
 #include <Paralax/Core/Application.h>
 

@@ -159,7 +159,7 @@ editor's commands, names and parameters both, so an entry cannot go missing or s
 - `scene.open { path: string }`: opens a `.pxscene` (relative to `Assets/`; an absolute path must lie inside it),
   stopping play mode and clearing the history: `{ entities }`. When it fails, the log says why.
 - `scene.save { path?: string }`: saves the scene to `path` (relative to `Assets/` and inside it; `.pxscene` is added
-  if missing), which is required the first time; refused while playing: `{ path, warnings? }`.
+  if missing), which is required the first time: `{ path, warnings? }`. It is refused while playing.
 - `scene.list`: every entity in hierarchy order: `{ entities }`, each `{ id, name, tag, parent, children,
   components }` with the component names.
 - `scene.find { name?: string, tag?: string }`: the entities whose name and tag are exactly these: `{ ids }`.
@@ -177,7 +177,7 @@ editor's commands, names and parameters both, so an entry cannot go missing or s
 - `entity.set_parent { id: any, parent?: any }` (undoable): moves it under `parent` (null or left out: to the root),
   keeping its world transform.
 - `component.set { id: any, components: object }` (undoable): sets fields, adding components the entity lacks, as in
-  `{"Transform": {"Translation": [0, 1, 0]}}`; fields left out keep their values.
+  `{"Transform": {"Translation": [0, 1, 0]}}`; fields left out keep their values: `{ id }`.
 - `component.remove { id: any, component: string }` (undoable): removes a component (`component.types` says which
   can be removed).
 
@@ -185,9 +185,9 @@ editor's commands, names and parameters both, so an entry cannot go missing or s
 
 - `selection.get`: the selected entities, the primary one last: `{ ids }`.
 - `selection.set { ids: array }`: selects these entities; unknown ids are ignored: `{ count }`.
-- `edit.undo`: undoes the last scene change, refused while playing: `{ undone, warnings? }`, `undone` naming the
-  change.
-- `edit.redo`: redoes the last undone change, refused while playing: `{ redone, warnings? }`.
+- `edit.undo`: undoes the last scene change: `{ undone, warnings? }`, `undone` naming the change. It is refused
+  while playing.
+- `edit.redo`: redoes the last undone change: `{ redone, warnings? }`. It is refused while playing.
 
 ### Assets, materials and prefabs
 
@@ -204,8 +204,8 @@ editor's commands, names and parameters both, so an entry cannot go missing or s
   path) under `parent`, at the local `position` `[x, y, z]`: `{ id }`, the instance's root.
 - `model.create_prefab { model: string, path?: string, name?: string }`: makes a prefab of a glTF model's objects
   (see step 1), importing the model first if needed; `path` defaults to `Prefabs/<model name>.pxprefab` and `name`,
-  the root entity's, to the model's file name. Refused while playing: `{ handle, model, entities, meshes, cameras,
-  lights, animations, warnings }`.
+  the root entity's, to the model's file name: `{ handle, model, entities, meshes, cameras, lights, animations,
+  warnings }`. It is refused while playing.
 
 ### Scripts
 
@@ -264,7 +264,8 @@ editor's commands, names and parameters both, so an entry cannot go missing or s
 - `editor.camera.get`: the editor camera: `{ position, target, verticalFov }`, the field of view in degrees.
 - `editor.camera.set { position: array, target: array }`: places the editor camera at `position` (`[x, y, z]` in
   meters) looking at `target`, returning it as `editor.camera.get` does.
-- `editor.camera.focus { id: any }`: frames an entity and everything below it in the editor camera, as F does.
+- `editor.camera.focus { id: any }`: frames an entity and everything below it in the editor camera, as F does,
+  returning the camera as `editor.camera.get` does.
 - `editor.gizmo.get`: the viewport gizmo: `{ operation, space }`, the operation `none`, `translate`, `rotate` or
   `scale` and the space `local` or `world`.
 - `editor.gizmo.set { operation?: string, space?: string }`: changes either or both, returning the gizmo as
