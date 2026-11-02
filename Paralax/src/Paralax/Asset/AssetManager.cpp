@@ -362,12 +362,34 @@ namespace Paralax {
 				return nullptr;
 			}
 			// Loading the parent registers its sub-assets in the cache.
+			const bool parentWasCached = m_Loaded.contains(parent);
 			if (!GetAsset(parent))
 			{
 				m_Failed.insert(handle);
 				return nullptr;
 			}
 			auto it = m_Loaded.find(handle);
+			if (it == m_Loaded.end() && parentWasCached)
+			{
+				// A registry reload dropped this sub-asset (taking it out of the cache) but kept its parent, and a later
+				// one listed it again: only loading the parent's file again brings it back. Its other sub-assets go with
+				// it, so the model's objects all come from the same read of the file.
+				std::vector<uint64_t> siblings;
+				for (const auto& [subHandle, subMetadata] : m_Registry)
+				{
+					if (subMetadata.Parent == parent)
+						siblings.push_back(subHandle);
+				}
+				for (uint64_t sibling : siblings)
+					UncacheAsset(sibling);
+				UncacheAsset(parent);
+				if (!GetAsset(parent))
+				{
+					m_Failed.insert(handle);
+					return nullptr;
+				}
+				it = m_Loaded.find(handle);
+			}
 			if (it == m_Loaded.end())
 			{
 				PX_CORE_ERROR("Asset {} is no longer produced by its source file", static_cast<uint64_t>(handle));

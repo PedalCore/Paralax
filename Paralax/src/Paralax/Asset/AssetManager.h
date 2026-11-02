@@ -92,7 +92,9 @@ namespace Paralax {
 
 		// Returns the asset, loading it on first use. Returns nullptr if the handle is unknown or loading fails; the
 		// error is logged once per handle and the failure is remembered (no retry) until the asset is imported or
-		// reloaded or the registry is reloaded. Typed overload returns nullptr if the asset is of a different type.
+		// reloaded or the registry is reloaded. A sub-asset its cached parent does not hold (one a registry reload
+		// dropped and a later one listed again, say) has the parent's file loaded again, once, before it fails. Typed
+		// overload returns nullptr if the asset is of a different type.
 		Ref<Asset> GetAsset(AssetHandle handle);
 		template<typename T>
 		Ref<T> GetAsset(AssetHandle handle)

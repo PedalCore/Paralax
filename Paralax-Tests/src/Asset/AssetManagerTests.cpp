@@ -774,6 +774,60 @@ TEST_CASE("AssetManager: a reloaded registry that unloads a model unloads its su
 	CHECK(assets.GetAsset(model)->Version == 2);
 }
 
+TEST_CASE("AssetManager: a sub-asset one registry reload drops and the next restores resolves again, at a higher Version")
+{
+	// Checking out an older registry and then the newer one again, while the model stays as it was.
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("AssetRegistrySubAssetRestored");
+	nlohmann::json document = Paralax::Testing::MakeTriangleDocument(directory);
+	document["nodes"] = {{{"name", "Node"}, {"mesh", 0}}};
+	document["scenes"][0]["nodes"] = {0};
+	Paralax::Testing::WriteGltf(directory, document, "Model.gltf");
+	AssetManager assets(directory);
+	const AssetHandle model = assets.ImportAsset("Model.gltf");
+	REQUIRE(model.IsValid());
+	AssetHandle nodeMesh = 0;
+	size_t subAssets = 0;
+	for (const AssetMetadata& metadata : assets.GetRegisteredAssets())
+	{
+		if (metadata.Parent == model)
+			subAssets++;
+		if (metadata.Parent == model && metadata.Type == AssetType::Mesh)
+			nodeMesh = metadata.Handle;
+	}
+	REQUIRE(nodeMesh.IsValid());
+	REQUIRE(subAssets >= 2); // The node mesh and the model's material at least.
+	const Ref<Asset> before = assets.GetAsset(nodeMesh);
+	REQUIRE(before);
+	const Ref<Asset> modelBefore = assets.GetAsset(model);
+	REQUIRE(modelBefore);
+
+	const std::filesystem::path registry = directory / AssetManager::RegistryFileName;
+	const std::string newer = Paralax::Testing::ReadFileText(registry);
+	nlohmann::json older = nlohmann::json::parse(newer);
+	nlohmann::json& entries = older["Assets"];
+	entries.erase(std::remove_if(entries.begin(), entries.end(), [&](const nlohmann::json& entry) { return entry["Handle"] == std::to_string(static_cast<uint64_t>(nodeMesh)); }),
+				  entries.end());
+	REQUIRE(WriteFileAtomically(registry, older.dump()));
+	REQUIRE(assets.LoadRegistry());
+	CHECK_FALSE(assets.IsLoaded(nodeMesh));
+	CHECK(assets.GetAsset(model) == modelBefore); // Its entry is unchanged, so the model stays cached.
+
+	REQUIRE(WriteFileAtomically(registry, newer));
+	REQUIRE(assets.LoadRegistry());
+	const Ref<Asset> after = assets.GetAsset(nodeMesh);
+	REQUIRE(after);
+	CHECK(after != before);
+	CHECK(after->Version == before->Version + 1);
+	// The model was read again for it, and its other sub-assets with it, so all come from one read of the file.
+	const Ref<Asset> modelAfter = assets.GetAsset(model);
+	REQUIRE(modelAfter);
+	CHECK(modelAfter != modelBefore);
+	CHECK(modelAfter->Version == modelBefore->Version + 1);
+	// Asked for again, nothing is reloaded.
+	CHECK(assets.GetAsset(nodeMesh) == after);
+	CHECK(assets.GetAsset(model) == modelAfter);
+}
+
 TEST_CASE("AssetManager: a node mesh that a re-export drops and a later one restores counts on from its old Version")
 {
 	// GPU copies are keyed on (handle, Version) and never dropped: a restored mesh at its old Version would be drawn
