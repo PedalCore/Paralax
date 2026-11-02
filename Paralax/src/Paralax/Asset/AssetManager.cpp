@@ -711,28 +711,32 @@ namespace Paralax {
 		if (JsonExceedsDepth(text, MaxJsonDepth))
 			return unreadable("nests too deeply");
 		const json document = json::parse(text, nullptr, false);
-		if (document.is_discarded() || !document.is_object() || !document.contains("Assets") || !document["Assets"].is_array())
+		if (document.is_discarded() || !document.is_object())
 			return unreadable("is malformed");
-		// A newer engine's registry can hold what this build cannot represent (asset types, fields), and rewriting it
-		// would lose that, so a version outside the ones this build reads is refused whole.
+		// A newer engine's registry can hold what this build cannot represent (asset types, fields, another layout), and
+		// rewriting it would lose that, so a version outside the ones this build reads is refused whole, before its
+		// layout is looked at.
 		const json* header = document.contains("Paralax") ? &document["Paralax"] : nullptr;
 		if (!header || !header->is_object() || !header->contains("Type") || !(*header)["Type"].is_string() || (*header)["Type"].get_ref<const std::string&>() != "AssetRegistry")
 			return unreadable("is not a Paralax asset registry (missing \"Paralax\": { \"Type\": \"AssetRegistry\" })");
 		std::string foundVersion;
 		if (!ReadDocumentVersion(*header, CurrentRegistryVersion, foundVersion))
 			return unreadable(fmt::format("has an unsupported version: expected 1-{}, got {}", CurrentRegistryVersion, foundVersion));
+		if (!document.contains("Assets") || !document["Assets"].is_array())
+			return unreadable("is malformed (no \"Assets\" array)");
 
 		auto stringField = [](const json& entry, const char* name) -> std::string {
 			const auto it = entry.find(name);
 			return it != entry.end() && it->is_string() ? it->get<std::string>() : std::string();
 		};
 		// An entry that cannot be read is skipped, and the registry becomes read-only, since the next save would drop it
-		// for good. The first few are named (a hostile file can hold millions), and one warning counts them all.
+		// for good. The first few are named (a hostile file can hold millions, so the rest are not even described), and
+		// one warning counts them all.
 		constexpr size_t MaxNamedSkips = 10;
 		size_t skipped = 0;
-		auto skip = [&](const std::string& entry) {
+		auto skip = [&](auto&& describe) {
 			if (++skipped <= MaxNamedSkips)
-				PX_CORE_WARN("Asset registry '{}': skipping {}", ToUtf8(path), entry);
+				PX_CORE_WARN("Asset registry '{}': skipping {}", ToUtf8(path), describe());
 		};
 
 		const json& entries = document["Assets"];
@@ -742,7 +746,8 @@ namespace Paralax {
 			AssetMetadata metadata;
 			if (!entry.is_object() || !entry.contains("Handle") || !ParseHandle(entry["Handle"], metadata.Handle) || !metadata.Handle.IsValid())
 			{
-				skip(fmt::format("entry #{}, which has no valid handle", index));
+				// Counted from 1, as someone reading the file counts.
+				skip([&] { return fmt::format("entry #{}, which has no valid handle", index + 1); });
 				continue;
 			}
 			const uint64_t handle = metadata.Handle;
@@ -750,19 +755,19 @@ namespace Paralax {
 			{
 				// Built-ins own this range and GetAsset resolves them first; a registry entry there would be a
 				// different asset depending on which API is asked.
-				skip(fmt::format("entry {}, in the range reserved for built-in assets", handle));
+				skip([&] { return fmt::format("entry {}, in the range reserved for built-in assets", handle); });
 				continue;
 			}
 			metadata.Type = AssetTypeFromString(stringField(entry, "Type"));
 			if (metadata.Type == AssetType::None)
 			{
-				skip(fmt::format("entry {}, whose type this build does not know", handle));
+				skip([&] { return fmt::format("entry {}, whose type this build does not know", handle); });
 				continue;
 			}
 			// Kept as a file asset, a sub-asset whose parent is unreadable would load its parent's file as itself.
 			if (entry.contains("Parent") && !ParseHandle(entry["Parent"], metadata.Parent))
 			{
-				skip(fmt::format("entry {}, whose parent is not a handle", handle));
+				skip([&] { return fmt::format("entry {}, whose parent is not a handle", handle); });
 				continue;
 			}
 
@@ -771,7 +776,7 @@ namespace Paralax {
 			const std::optional<std::filesystem::path> contained = declared.empty() || declared.is_absolute() ? std::nullopt : ToRegistryPath(declared);
 			if (!contained)
 			{
-				skip(fmt::format("entry {}, whose path is missing or outside the asset directory", handle));
+				skip([&] { return fmt::format("entry {}, whose path is missing or outside the asset directory", handle); });
 				continue;
 			}
 			metadata.FilePath = *contained;
@@ -780,7 +785,7 @@ namespace Paralax {
 				// The same entry twice loses nothing when saved once; two different ones cannot both be kept.
 				const AssetMetadata& first = existing->second;
 				if (first.Type != metadata.Type || first.FilePath != metadata.FilePath || first.Parent != metadata.Parent)
-					skip(fmt::format("entry {}, a second entry for that handle that differs from the first", handle));
+					skip([&] { return fmt::format("entry {}, a second entry for that handle that differs from the first", handle); });
 				continue;
 			}
 			m_Registry[handle] = std::move(metadata);
@@ -802,7 +807,8 @@ namespace Paralax {
 		std::sort(orphans.begin(), orphans.end());
 		for (uint64_t handle : orphans)
 		{
-			skip(fmt::format("entry {}, whose parent {} is not a registered file asset", handle, static_cast<uint64_t>(m_Registry[handle].Parent)));
+			const uint64_t parent = m_Registry[handle].Parent;
+			skip([&] { return fmt::format("entry {}, whose parent {} is not a registered file asset", handle, parent); });
 			m_Registry.erase(handle);
 		}
 
@@ -818,28 +824,40 @@ namespace Paralax {
 		}
 
 		// Several entries for one file are all kept, since scenes may use any of their handles, and saved back as they
-		// are. Lookups by path give the lowest (see GetHandleForPath); each such path is reported once.
-		std::map<std::filesystem::path, std::vector<uint64_t>> handlesByPath;
+		// are. Lookups by path give the lowest (see GetHandleForPath); each such path is reported once, in the order of
+		// the UTF-8 text the file stores, so the warnings read the same on every platform.
+		std::vector<std::pair<std::string, uint64_t>> fileEntries;
 		for (const auto& [handle, metadata] : m_Registry)
 		{
 			if (!metadata.Parent.IsValid())
-				handlesByPath[metadata.FilePath].push_back(handle);
+				fileEntries.emplace_back(ToUtf8(metadata.FilePath), handle);
 		}
-		for (auto& [registryPath, handles] : handlesByPath)
+		std::sort(fileEntries.begin(), fileEntries.end());
+		// A hostile file could list a million paths twice, or one path a million times: a few paths are named, each
+		// with a few of its handles, and the rest are counted.
+		constexpr size_t MaxNamedPaths = 10;
+		constexpr size_t MaxListedHandles = 4;
+		size_t duplicatedPaths = 0;
+		for (size_t first = 0, end = 0; first < fileEntries.size(); first = end)
 		{
-			if (handles.size() < 2)
+			end = first + 1;
+			while (end < fileEntries.size() && fileEntries[end].first == fileEntries[first].first)
+				end++;
+			const size_t count = end - first;
+			if (count < 2 || ++duplicatedPaths > MaxNamedPaths)
 				continue;
-			std::sort(handles.begin(), handles.end());
-			// A hostile file could list one path a million times: the message names a few handles and counts the rest.
-			constexpr size_t MaxListed = 4;
 			std::string others;
-			for (size_t i = 1; i < handles.size() && i <= MaxListed; i++)
-				others += fmt::format("{}{}", i > 1 ? ", " : "", handles[i]);
-			if (handles.size() - 1 > MaxListed)
-				others += fmt::format(" and {} more", handles.size() - 1 - MaxListed);
-			PX_CORE_WARN("Asset registry '{}' lists '{}' {} times; looking it up by path gives the lowest handle, {}, not {}", ToUtf8(path), ToUtf8(registryPath), handles.size(),
-						 handles.front(), others);
+			for (size_t i = 1; i < count && i <= MaxListedHandles; i++)
+				others += fmt::format("{}{}", i > 1 ? ", " : "", fileEntries[first + i].second);
+			if (count - 1 > MaxListedHandles)
+				others += fmt::format(" and {} more", count - 1 - MaxListedHandles);
+			// The path comes from the file: quoted, so it cannot break the log line, and cut short if it is long.
+			PX_CORE_WARN("Asset registry '{}' lists {} {} times; looking it up by path gives the lowest handle, {}, not {} (reloads and edits by path reach only "
+						 "that one)",
+						 ToUtf8(path), QuoteText(fileEntries[first].first), count, fileEntries[first].second, others);
 		}
+		if (duplicatedPaths > MaxNamedPaths)
+			PX_CORE_WARN("Asset registry '{}' lists {} more paths under several handles", ToUtf8(path), duplicatedPaths - MaxNamedPaths);
 		return true;
 	}
 

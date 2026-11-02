@@ -78,7 +78,7 @@ namespace Paralax {
 		const AssetMetadata* GetMetadata(AssetHandle handle) const;
 		// The handle of the file asset at path (absolute, or relative to the asset directory), or 0 if none is
 		// registered there. Where a hand-edited registry lists the file under several handles, the lowest, on every
-		// platform.
+		// platform; what is done through the path (a reload, an edit) then reaches only that handle's cached asset.
 		AssetHandle GetHandleForPath(const std::filesystem::path& path) const;
 		// The asset's type, from metadata, the cache or the built-in table; None if unknown.
 		AssetType GetAssetType(AssetHandle handle) const;

@@ -135,16 +135,19 @@ windowed one.
   or digit, a space, `_` or `-`; the folders above it may use anything.)
 - Commands that edit the scene are undoable, and they are rolled back if they fail partway.
 - The asset registry, `Assets/AssetRegistry.json`, lists every imported file under its handle. Commands that register
-  a file (`asset.import`, `material.create`, `script.create`, `prefab.create`, `model.create_prefab`, a scene's first
-  `scene.save`) save it, but never over a file that has changed on disk since the editor read or last wrote it (a
-  version-control checkout or merge, another editor), nor over one it could not read: malformed (merge-conflict
-  markers, say) or of a newer `Version` than this build reads. A registry with entries the editor had to skip (an
-  asset type it does not know, a path outside `Assets/`, a broken parent) is read-only too, since saving would drop
-  them for good; the editor warns once with their count. Such a command fails (a `scene.save` still writes the scene,
-  and says under `warnings` that it is not registered), the file is left as it is, and the log says why
-  (`console.get`). Once the file is as it should be, `asset.reload_registry` reads it again (not while playing;
-  assets already loaded stay loaded): its result counts the `assets` registered and the entries `skipped`, and
-  `readOnly` stays true while any are. Then the next command saves.
+  a file (`asset.import`, `material.create`, `script.create`, `prefab.create`, `model.create_prefab`,
+  `project.set_start_scene`, a scene's first `scene.save`) save it, but never over a file that has changed on disk
+  since the editor read or last wrote it (a version-control checkout or merge, another editor), nor over one it could
+  not read: malformed (merge-conflict markers, say) or of a newer `Version` than this build reads. A registry with
+  entries the editor had to skip (an asset type it does not know, a path outside `Assets/`, a broken parent) is
+  read-only too, since saving would drop them for good; the editor warns once with their count, and `asset.list`
+  reports `readOnly` and `skipped`. Such a command fails (a `scene.save` still writes the scene, and says under
+  `warnings` that it is not registered), the file is left as it is, and the log says why (`console.get`). Once the
+  file is as it should be, `asset.reload_registry` reads it again (not while playing; assets already loaded stay
+  loaded): its result counts the `assets` registered and the entries `skipped`, and `readOnly` stays true while any
+  are. Then the next command saves. A reload of a file that still cannot be read fails and leaves nothing registered
+  until one succeeds. A hand-edited registry may list one file under several handles: all are kept, and a path
+  names the lowest.
 
 ## Command reference
 
@@ -208,7 +211,9 @@ editor's commands, names and parameters both, so an entry cannot go missing or s
 ### Assets, materials and prefabs
 
 - `asset.list`: the project's registered assets, each `{ handle, type, path, parent }` (a model's sub-assets name it
-  as their `parent`), and the built-in ones, each `{ handle, type, name }`: `{ assets, builtins }`.
+  as their `parent`), and the built-in ones, each `{ handle, type, name }`, with whether the registry is read-only
+  and how many entries its last load skipped (see the asset registry above): `{ assets, builtins, readOnly, skipped
+  }`.
 - `asset.import { path: string }`: registers a file inside `Assets/` (relative to it, or absolute): `{ handle }`.
 - `asset.reload_registry`: reads `Assets/AssetRegistry.json` again, replacing the registry in memory, after a
   checkout or merge changed it or once a file that could not be read, or had entries skipped, is fixed (see the

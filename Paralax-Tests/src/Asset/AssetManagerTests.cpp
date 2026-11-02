@@ -421,6 +421,43 @@ TEST_CASE("AssetManager: a path the registry lists under several handles resolve
 	CHECK(log.Count(spdlog::level::warn, "lists 'Brick.pxmat' 7 times; looking it up by path gives the lowest handle, 5001, not 5002, 5003, 5004, 5005 and 2 more") == 1);
 }
 
+TEST_CASE("AssetManager: duplicated registry paths are reported quoted, and only a few of them by name")
+{
+	const std::filesystem::path directory = MakeProject("AssetRegistryManyDuplicatePaths");
+	const std::filesystem::path registry = directory / AssetManager::RegistryFileName;
+	// 13 paths listed twice each (the files need not exist), named in UTF-8 order: Path00 ... Path12.
+	std::string listed;
+	for (int index = 0; index < 13; index++)
+	{
+		for (int copy = 0; copy < 2; copy++)
+			listed += fmt::format(R"({}{{"Handle":"{}","Type":"Material","Path":"Path{:02}.pxmat"}})", listed.empty() ? "" : ",", 6000 + index * 2 + copy, index);
+	}
+	REQUIRE(WriteFileAtomically(registry, R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[)" + listed + "]}"));
+	{
+		Paralax::Testing::ScopedLogCapture log;
+		AssetManager assets(directory);
+		CHECK(assets.GetRegisteredAssets().size() == 26);
+		CHECK_FALSE(assets.IsRegistryReadOnly());
+		CHECK(log.Count(spdlog::level::warn, " times; looking it up by path") == 10);
+		CHECK(log.Contains(spdlog::level::warn, "lists 'Path09.pxmat' 2 times"));
+		CHECK_FALSE(log.Contains(spdlog::level::warn, "lists 'Path10.pxmat'"));
+		CHECK(log.Count(spdlog::level::warn, "lists 3 more paths under several handles") == 1);
+		CHECK(assets.GetHandleForPath("Path12.pxmat") == AssetHandle(6024));
+	}
+
+	// A path from the file is shown escaped: here a right-to-left override, which would display the rest reversed.
+	const std::string reversing = "Rev\xE2\x80\xAEtxt.pxmat";
+	REQUIRE(WriteFileAtomically(registry, fmt::format(R"({{"Paralax":{{"Type":"AssetRegistry","Version":1}},"Assets":[{{"Handle":"5001","Type":"Material","Path":"{0}"}},)"
+													  R"({{"Handle":"5002","Type":"Material","Path":"{0}"}}]}})",
+													  reversing)));
+	Paralax::Testing::ScopedLogCapture log;
+	AssetManager assets(directory);
+	CHECK(assets.GetHandleForPath(FromUtf8(reversing)) == AssetHandle(5001));
+	CHECK(log.Contains(spdlog::level::warn, "lists 'Rev\\u202etxt.pxmat' 2 times"));
+	for (const auto& entry : log.GetEntries())
+		CHECK(entry.Message.find("\xE2\x80\xAE") == std::string::npos);
+}
+
 TEST_CASE("AssetManager: an oversized registry is refused before reading, and registers nothing")
 {
 	// A valid registry, padded with whitespace past the cap: read in full, it would register its entry.
@@ -507,6 +544,7 @@ TEST_CASE("AssetManager: a registry changed on disk since it was loaded or saved
 	AssetManager assets(directory);
 	const AssetHandle material = assets.ImportAsset("Brick.pxmat");
 	REQUIRE(material.IsValid());
+	REQUIRE(assets.GetAsset<MaterialAsset>(material));
 	const std::string checkedOut = R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[{"Handle":"5003","Type":"Material","Path":"Brick.pxmat"},)"
 								   R"({"Handle":"5004","Type":"Texture","Path":"Textures/Brick.png"}]})";
 	REQUIRE(WriteFileAtomically(registry, checkedOut));
@@ -524,10 +562,22 @@ TEST_CASE("AssetManager: a registry changed on disk since it was loaded or saved
 		CHECK(Paralax::Testing::ReadFileText(registry) == checkedOut);
 	}
 
-	// Reloaded, the registry is the checkout's, and saves go through again.
+	// Reloaded, the registry is the checkout's, and saves go through again. What was loaded stays in the cache.
 	REQUIRE(assets.LoadRegistry());
 	CHECK_FALSE(assets.IsRegistered(material));
+	CHECK(assets.IsLoaded(material));
 	CHECK(assets.GetHandleForPath("Textures/Brick.png") == AssetHandle(5004));
+	CHECK(assets.SaveRegistry());
+
+	// Whatever stands in the file's place but cannot be compared (here a folder) is not replaced either.
+	std::filesystem::remove(registry);
+	std::filesystem::create_directories(registry);
+	{
+		Paralax::Testing::ScopedLogCapture log;
+		CHECK_FALSE(assets.SaveRegistry());
+		CHECK(log.Contains(spdlog::level::err, "'" + ToUtf8(assets.GetAssetDirectory() / AssetManager::RegistryFileName) + "' cannot be checked"));
+	}
+	std::filesystem::remove_all(registry);
 	CHECK(assets.SaveRegistry());
 
 	// A rewrite of the same size differs in its bytes: the hash tells it apart.
@@ -617,6 +667,9 @@ TEST_CASE("AssetManager: a registry with entries it cannot read skips them, warn
 	CHECK(log.Count(spdlog::level::warn, "skipped 9 entries this build cannot read. The registry is read-only until the file is fixed and reloaded") == 1);
 	CHECK(log.Count(spdlog::level::warn, "': skipping entry") == 9);
 	CHECK(log.Contains(spdlog::level::warn, "skipping entry 5010, whose type this build does not know"));
+	// Entries without a handle are named by their place in the list, counted from 1 as a reader counts.
+	CHECK(log.Contains(spdlog::level::warn, "skipping entry #5, which has no valid handle"));
+	CHECK_FALSE(log.Contains(spdlog::level::warn, "skipping entry #2,")); // The second entry has a handle.
 
 	// Whatever would save fails and is undone, and the file keeps every entry.
 	CHECK_FALSE(assets.ImportAsset("Textures/Brick.png").IsValid());
@@ -698,6 +751,18 @@ TEST_CASE("AssetManager: a registry of a newer, wrapping or malformed Version is
 		CHECK(assets.IsRegistryReadOnly());
 		CHECK_FALSE(assets.ImportAsset("Textures/Brick.png").IsValid());
 		CHECK(log.Contains(spdlog::level::err, "could not be read, and saving would replace all it lists"));
+		CHECK(Paralax::Testing::ReadFileText(registry) == text);
+	}
+
+	// A newer version is told by its header even when its layout is not this build's.
+	{
+		const std::string text = R"({"Paralax":{"Type":"AssetRegistry","Version":2},"Assets":{"5003":{"Type":"Material"}}})";
+		REQUIRE(WriteFileAtomically(registry, text));
+		Paralax::Testing::ScopedLogCapture log;
+		AssetManager assets(directory);
+		CHECK(log.Contains(spdlog::level::err, "has an unsupported version: expected 1-1, got 2 (number)"));
+		CHECK_FALSE(log.Contains(spdlog::level::err, "is malformed"));
+		CHECK_FALSE(assets.SaveRegistry());
 		CHECK(Paralax::Testing::ReadFileText(registry) == text);
 	}
 

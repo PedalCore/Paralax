@@ -396,6 +396,7 @@ TEST_CASE("BuiltinCommands: asset.reload_registry takes in a registry changed on
 	CHECK(reloaded.Result["skipped"] == 0);
 	CHECK(reloaded.Result["readOnly"] == false);
 	CHECK_FALSE(reloaded.Result.contains("warnings"));
+	CHECK(context.Execute("asset.list").Result["readOnly"] == false);
 	CHECK(context.GetAssets().IsRegistered(AssetHandle(5003)));
 	REQUIRE(context.Execute("material.create", {{"path", "N.pxmat"}}).Success);
 	{
@@ -418,6 +419,10 @@ TEST_CASE("BuiltinCommands: asset.reload_registry takes in a registry changed on
 		CHECK(partial.Result["readOnly"] == true);
 		REQUIRE(partial.Result.contains("warnings"));
 		CHECK(partial.Result["warnings"][0].get<std::string>().find("1 registry entry could not be read and was skipped") != std::string::npos);
+		const CommandResult listed = context.Execute("asset.list");
+		REQUIRE(listed.Success);
+		CHECK(listed.Result["readOnly"] == true);
+		CHECK(listed.Result["skipped"] == 1);
 		CHECK_FALSE(context.Execute("material.create", {{"path", "Q.pxmat"}}).Success);
 		CHECK(capture.Contains(spdlog::level::err, "saving would drop it"));
 		CHECK(Paralax::Testing::ReadFileText(registry) == newer);

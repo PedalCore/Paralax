@@ -421,7 +421,7 @@ namespace Paralax::Editor {
 						   }});
 
 		// --- Assets ----------------------------------------------------------------------------------
-		registry.Register({"asset.list", "Lists registered assets (handle, type, path, parent) and the built-in assets.", {}, false, [](EditorContext& context, const json&) {
+		registry.Register({"asset.list", "Lists registered assets (handle, type, path, parent) and the built-in assets, and whether the registry is read-only (readOnly; skipped counts the entries the last load could not read).", {}, false, [](EditorContext& context, const json&) {
 							   json assets = json::array();
 							   for (const AssetMetadata& metadata : context.GetAssets().GetRegisteredAssets())
 							   {
@@ -430,7 +430,11 @@ namespace Paralax::Editor {
 							   json builtins = json::array();
 							   for (const BuiltinAssetInfo& info : AssetManager::GetBuiltinAssets())
 								   builtins.push_back({{"handle", IdString(AssetHandle(info.Handle))}, {"type", std::string(AssetTypeToString(info.Type))}, {"name", info.Name}});
-							   return CommandResult::Ok({{"assets", assets}, {"builtins", builtins}});
+							   // Whether commands that register files can save the registry at all (see asset.reload_registry).
+							   return CommandResult::Ok({{"assets", assets},
+														 {"builtins", builtins},
+														 {"readOnly", context.GetAssets().IsRegistryReadOnly()},
+														 {"skipped", context.GetAssets().GetSkippedRegistryEntryCount()}});
 						   }});
 
 		registry.Register({"asset.import", "Registers a file inside the project's Assets folder (path relative to Assets, or absolute).", {{"path", "string", "File to import.", true}}, false, [](EditorContext& context, const json& params) {
@@ -446,10 +450,11 @@ namespace Paralax::Editor {
 		// merge under a running editor survives; this is how an agent takes the new file in.
 		registry.Register({"asset.reload_registry",
 						   "Reads Assets/AssetRegistry.json from disk again, replacing the registry in memory (not while playing). Commands that register files "
-						   "(asset.import, material.create, a first scene.save, ...) refuse to save over a registry that changed on disk since it was read, by a "
-						   "version-control checkout or merge or another editor, that could not be read (malformed, or of a newer version), or that had entries "
-						   "this build skipped (readOnly in the result, with skipped counting them); once the file is as it should be, reload it with this. "
-						   "Assets already loaded stay loaded.",
+						   "(asset.import, material.create, a first scene.save, ...) refuse to save over a registry that changed on disk since it was read or last "
+						   "saved, by a version-control checkout or merge or another editor, that could not be read (malformed, or of a newer version), or that had "
+						   "entries this build skipped (readOnly in the result and in asset.list, with skipped counting them); once the file is as it should be, "
+						   "reload it with this. Assets already loaded stay loaded. A file that cannot be read fails the reload and leaves nothing registered until "
+						   "a reload succeeds.",
 						   {},
 						   false,
 						   [](EditorContext& context, const json&) {
