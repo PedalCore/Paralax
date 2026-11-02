@@ -48,6 +48,7 @@ cmake --preset debug && cmake --build build/debug && ctest --preset debug -j8
 - The local `dist` preset builds no tests, but CI builds and runs `Paralax-Tests` in Dist too (every CI configuration sets `PX_BUILD_TESTS=ON`), so Dist-only behaviour must pass its tests. To run them locally, configure Dist with tests as the `build-and-test` skill shows.
 - Warnings are errors (`PX_WARNINGS_AS_ERRORS=ON`) on every compiler. Fix warnings; never silence them with pragmas unless the warning comes from a third-party header, and comment why.
 - Headless runs need no display server: `Paralax-Editor --headless --frames 10`. Tests always use headless windows (GLFW null platform).
+- A CTest test that starts the editor or the runtime runs it in a working directory no other test uses, so tests running in parallel never truncate each other's `Logs/`. Normally that is `TestOutput/<name>` in the tests' build directory, made when the test starts (see `Paralax-Tests/CMakeLists.txt`), which CI uploads with the logs in it.
 - Before you commit, build and test at least `debug` (clang) and `asan` (gcc). CI covers MSVC and AppleClang; check CI after you push.
 - Never build on the user's Mac. Everything runs on the dev VM or in CI.
 

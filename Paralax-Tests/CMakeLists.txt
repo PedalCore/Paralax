@@ -44,6 +44,19 @@ doctest_discover_tests(Paralax-Tests
 	WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
 	ADD_LABELS 1)
 
+# Tests that run the editor or the runtime give each program a working directory no other test uses: the programs
+# write Logs/Editor.log or Logs/Runtime.log in their working directory (truncating it), so tests run in parallel from
+# one directory would cut each other's logs short. Here that is TestOutput/<name>, which CI uploads, so each test's
+# log is kept (the agent scripts run the editor in their own output directory there, and the non-ASCII tests in their
+# work directory). The directories are made when the test starts, by ExpectExitCode.cmake (CTest needs a
+# WORKING_DIRECTORY to exist already, and one made at configure time is gone once TestOutput is deleted), which also
+# checks the program's exit code. It stops a program after PX_PROGRAM_TIMEOUT seconds, before CTest's limit of
+# PX_PROGRAM_TEST_TIMEOUT stops the script, so a hung program's output is still printed.
+set(PX_TEST_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/TestOutput")
+set(PX_EXPECT_EXIT_CODE "${CMAKE_CURRENT_SOURCE_DIR}/scripts/ExpectExitCode.cmake")
+set(PX_PROGRAM_TEST_TIMEOUT 300)
+math(EXPR PX_PROGRAM_TIMEOUT "${PX_PROGRAM_TEST_TIMEOUT} - 30")
+
 # Windowed smoke test: real Vulkan swapchain presentation under a virtual X server, with validation enabled
 # (validation errors make the editor exit non-zero). Only registered where xvfb-run is available (Linux).
 find_program(PX_XVFB_RUN xvfb-run)
@@ -56,10 +69,12 @@ else()
 endif()
 if(PX_XVFB_RUN AND PX_REGISTER_WINDOWED_TESTS AND TARGET Paralax-Editor)
 	add_test(NAME "Smoke: windowed editor presents 120 frames under Xvfb with validation"
-		COMMAND "${PX_XVFB_RUN}" -a -s "-screen 0 1280x720x24" $<TARGET_FILE:Paralax-Editor> --frames 120 --validation
+		COMMAND "${CMAKE_COMMAND}" -DEXPECTED_EXIT_CODE=0 -DTIMEOUT_SECONDS=${PX_PROGRAM_TIMEOUT} "-DWORKING_DIRECTORY=${PX_TEST_OUTPUT}/WindowedEditor"
+			-P "${PX_EXPECT_EXIT_CODE}" --
+			"${PX_XVFB_RUN}" -a -s "-screen 0 1280x720x24" $<TARGET_FILE:Paralax-Editor> --frames 120 --validation
 		WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 	set_tests_properties("Smoke: windowed editor presents 120 frames under Xvfb with validation" PROPERTIES
-		TIMEOUT 300
+		TIMEOUT ${PX_PROGRAM_TEST_TIMEOUT}
 		LABELS "smoke;gpu"
 		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp")
 endif()
@@ -69,7 +84,7 @@ find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND AND TARGET Paralax-Editor)
 	add_test(NAME "Smoke: an agent drives the headless editor over JSON-RPC and MCP"
 		COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/agent/tests/agent_smoke_test.py"
-			$<TARGET_FILE:Paralax-Editor> "${CMAKE_CURRENT_BINARY_DIR}/TestOutput/Agent")
+			$<TARGET_FILE:Paralax-Editor> "${PX_TEST_OUTPUT}/Agent")
 	# PYTHONDONTWRITEBYTECODE keeps __pycache__ out of the source tree.
 	set_tests_properties("Smoke: an agent drives the headless editor over JSON-RPC and MCP" PROPERTIES
 		TIMEOUT 300
@@ -80,7 +95,7 @@ if(Python3_Interpreter_FOUND AND TARGET Paralax-Editor)
 	# exports it.
 	add_test(NAME "Smoke: an agent builds, playtests and exports a small game"
 		COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/agent/tests/agent_game_test.py"
-			$<TARGET_FILE:Paralax-Editor> "${CMAKE_CURRENT_BINARY_DIR}/TestOutput/AgentGame")
+			$<TARGET_FILE:Paralax-Editor> "${PX_TEST_OUTPUT}/AgentGame")
 	set_tests_properties("Smoke: an agent builds, playtests and exports a small game" PROPERTIES
 		TIMEOUT 600
 		LABELS "smoke;gpu"
@@ -89,7 +104,7 @@ if(Python3_Interpreter_FOUND AND TARGET Paralax-Editor)
 	# "Build me Tetris": tools/agent/examples/tetris built through commands alone, then played with injected input.
 	add_test(NAME "Smoke: an agent builds Tetris through commands and plays it"
 		COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/agent/tests/tetris_test.py"
-			$<TARGET_FILE:Paralax-Editor> "${CMAKE_CURRENT_BINARY_DIR}/TestOutput/Tetris")
+			$<TARGET_FILE:Paralax-Editor> "${PX_TEST_OUTPUT}/Tetris")
 	set_tests_properties("Smoke: an agent builds Tetris through commands and plays it" PROPERTIES
 		TIMEOUT 900
 		LABELS "smoke;gpu"
@@ -97,7 +112,7 @@ if(Python3_Interpreter_FOUND AND TARGET Paralax-Editor)
 	# Importing a multi-object glTF scene (as Blender exports one) as editable entities with model.create_prefab.
 	add_test(NAME "Smoke: an agent imports a glTF scene as entities and views it through its camera"
 		COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/agent/tests/model_import_test.py"
-			$<TARGET_FILE:Paralax-Editor> "${CMAKE_CURRENT_BINARY_DIR}/TestOutput/ModelImport")
+			$<TARGET_FILE:Paralax-Editor> "${PX_TEST_OUTPUT}/ModelImport")
 	set_tests_properties("Smoke: an agent imports a glTF scene as entities and views it through its camera" PROPERTIES
 		TIMEOUT 600
 		LABELS "smoke;gpu"
@@ -105,7 +120,7 @@ if(Python3_Interpreter_FOUND AND TARGET Paralax-Editor)
 	# The physics counterpart: tools/agent/examples/gem_roller (bodies, triggers, a moving platform, fixed-rate control).
 	add_test(NAME "Smoke: an agent builds the Gem Roller physics game through commands and plays it"
 		COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/agent/tests/gem_roller_test.py"
-			$<TARGET_FILE:Paralax-Editor> "${CMAKE_CURRENT_BINARY_DIR}/TestOutput/GemRoller")
+			$<TARGET_FILE:Paralax-Editor> "${PX_TEST_OUTPUT}/GemRoller")
 	set_tests_properties("Smoke: an agent builds the Gem Roller physics game through commands and plays it" PROPERTIES
 		TIMEOUT 900
 		LABELS "smoke;gpu"
@@ -116,22 +131,22 @@ endif()
 # and fails the run (exit code 4) on any script error.
 if(TARGET Paralax-Runtime)
 	add_test(NAME "FeatureTest: the runtime plays the feature scene headless without errors"
-		COMMAND $<TARGET_FILE:Paralax-Runtime> --project "${CMAKE_CURRENT_SOURCE_DIR}/FeatureTest" --headless --frames 60
-			--fixed-timestep 0.0166667 --validation --fail-on-script-error --screenshot "${CMAKE_CURRENT_BINARY_DIR}/TestOutput/FeatureTest.png"
+		COMMAND "${CMAKE_COMMAND}" -DEXPECTED_EXIT_CODE=0 -DTIMEOUT_SECONDS=${PX_PROGRAM_TIMEOUT} "-DWORKING_DIRECTORY=${PX_TEST_OUTPUT}/FeatureTest"
+			-P "${PX_EXPECT_EXIT_CODE}" --
+			$<TARGET_FILE:Paralax-Runtime> --project "${CMAKE_CURRENT_SOURCE_DIR}/FeatureTest" --headless --frames 60
+			--fixed-timestep 0.0166667 --validation --fail-on-script-error --screenshot "${PX_TEST_OUTPUT}/FeatureTest.png"
 		WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 	set_tests_properties("FeatureTest: the runtime plays the feature scene headless without errors" PROPERTIES
-		TIMEOUT 300
+		TIMEOUT ${PX_PROGRAM_TEST_TIMEOUT}
 		LABELS "smoke;gpu"
 		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp")
 
 	# The converse, which proves the check above can fail: cut short, the feature script's OnDestroy reports that it
-	# did not finish, and the run must exit with exactly the script error code (not merely fail, or crash). The runtime
-	# runs in its own directory (which the wrapper creates, so deleting TestOutput is harmless) so that its
-	# Logs/Runtime.log does not interleave with the other runtime tests' when run in parallel.
+	# did not finish, and the run must exit with exactly the script error code (not merely fail, or crash).
 	add_test(NAME "FeatureTest: a run too short to finish the feature scene exits with the script error code"
 		COMMAND "${CMAKE_COMMAND}" -DEXPECTED_EXIT_CODE=4 "-DEXPECTED_OUTPUT=did not run to completion" -DTIMEOUT_SECONDS=240
-			"-DWORKING_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/TestOutput/FeatureTestShortRun"
-			-P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/ExpectExitCode.cmake" --
+			"-DWORKING_DIRECTORY=${PX_TEST_OUTPUT}/FeatureTestShortRun"
+			-P "${PX_EXPECT_EXIT_CODE}" --
 			$<TARGET_FILE:Paralax-Runtime> --project "${CMAKE_CURRENT_SOURCE_DIR}/FeatureTest" --headless --frames 10
 			--fixed-timestep 0.0166667 --fail-on-script-error
 		WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
@@ -143,22 +158,27 @@ endif()
 
 # Export end to end: the editor exports the feature test as a standalone game (to a path relative to the working
 # directory, as a user would type it), which then runs from its own folder with no --project: it finds the bundled
-# project beside the executable. Each run replaces the previous export.
+# project beside the executable. Each run replaces the previous export. The path leads out of TestOutput, which CI
+# uploads, because an export holds the runtime and its resources.
 if(TARGET Paralax-Editor)
 	add_test(NAME "Export: the editor exports the feature test as a standalone game"
-		COMMAND $<TARGET_FILE:Paralax-Editor> --headless --project "${CMAKE_CURRENT_SOURCE_DIR}/FeatureTest" --export ExportedFeatureTest
+		COMMAND "${CMAKE_COMMAND}" -DEXPECTED_EXIT_CODE=0 -DTIMEOUT_SECONDS=${PX_PROGRAM_TIMEOUT} "-DWORKING_DIRECTORY=${PX_TEST_OUTPUT}/Export"
+			-P "${PX_EXPECT_EXIT_CODE}" --
+			$<TARGET_FILE:Paralax-Editor> --headless --project "${CMAKE_CURRENT_SOURCE_DIR}/FeatureTest" --export ../../ExportedFeatureTest
 		WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 	add_test(NAME "Export: the exported feature test plays from its own folder without errors"
-		COMMAND "${CMAKE_CURRENT_BINARY_DIR}/ExportedFeatureTest/FeatureTest$<TARGET_FILE_SUFFIX:Paralax-Runtime>" --headless --frames 60
+		COMMAND "${CMAKE_COMMAND}" -DEXPECTED_EXIT_CODE=0 -DTIMEOUT_SECONDS=${PX_PROGRAM_TIMEOUT} "-DWORKING_DIRECTORY=${PX_TEST_OUTPUT}/ExportedGame"
+			-P "${PX_EXPECT_EXIT_CODE}" --
+			"${CMAKE_CURRENT_BINARY_DIR}/ExportedFeatureTest/FeatureTest$<TARGET_FILE_SUFFIX:Paralax-Runtime>" --headless --frames 60
 			--fixed-timestep 0.0166667 --validation --fail-on-script-error
 		WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 	set_tests_properties("Export: the editor exports the feature test as a standalone game" PROPERTIES
-		TIMEOUT 300
+		TIMEOUT ${PX_PROGRAM_TEST_TIMEOUT}
 		LABELS "smoke;gpu"
 		FIXTURES_SETUP ExportedFeatureTest
 		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp")
 	set_tests_properties("Export: the exported feature test plays from its own folder without errors" PROPERTIES
-		TIMEOUT 300
+		TIMEOUT ${PX_PROGRAM_TEST_TIMEOUT}
 		LABELS "smoke;gpu"
 		FIXTURES_REQUIRED ExportedFeatureTest
 		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp")
@@ -197,13 +217,16 @@ if(TARGET Paralax-Editor)
 		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp")
 endif()
 
-# Without --project and with no game beside it (the build directory has none), the runtime refuses to start.
+# Without --project and with no game beside it (the build directory has none), the runtime refuses to start. Matching
+# the message as well as the exit code proves it failed for this reason.
 if(TARGET Paralax-Runtime)
 	add_test(NAME "Runtime: without a project beside it the runtime exits with an error"
-		COMMAND $<TARGET_FILE:Paralax-Runtime> --headless --frames 1)
-	# Matching the message (rather than any failure) proves it failed for this reason; that path exits non-zero.
+		COMMAND "${CMAKE_COMMAND}" -DEXPECTED_EXIT_CODE=1 "-DEXPECTED_OUTPUT=No game to run" -DTIMEOUT_SECONDS=50
+			"-DWORKING_DIRECTORY=${PX_TEST_OUTPUT}/RuntimeWithoutProject"
+			-P "${PX_EXPECT_EXIT_CODE}" --
+			$<TARGET_FILE:Paralax-Runtime> --headless --frames 1
+		WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 	set_tests_properties("Runtime: without a project beside it the runtime exits with an error" PROPERTIES
-		PASS_REGULAR_EXPRESSION "No game to run"
 		TIMEOUT 60
 		ENVIRONMENT "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan.supp")
 endif()

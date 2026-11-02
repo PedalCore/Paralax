@@ -108,11 +108,12 @@ def main() -> int:
     if len(sys.argv) != 3:
         print(__doc__)
         return 2
-    executable, output = Path(sys.argv[1]), Path(sys.argv[2])
+    # Absolute, because the editor runs in the output directory (where its log goes) and takes these paths there.
+    executable, output = Path(sys.argv[1]).absolute(), Path(sys.argv[2]).absolute()
     shutil.rmtree(output, ignore_errors=True)
     output.mkdir(parents=True)
     project = output / "Tetris"
-    with EditorSession.launch(executable, ["--headless", "--new-project", str(project)]) as editor:
+    with EditorSession.launch(executable, ["--headless", "--new-project", str(project)], cwd=output) as editor:
         build(editor)
         first = play(editor)
         check(play(editor) == first, "the piece sequence (seeded math.random) should repeat exactly")
