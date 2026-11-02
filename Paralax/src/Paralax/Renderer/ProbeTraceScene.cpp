@@ -52,6 +52,7 @@ namespace Paralax {
 			const Submesh* Part;
 			Ref<MaterialAsset> Material;
 			glm::mat4 World;
+			bool CastShadows;
 		};
 		// Body motion must not rebuild the static tracing scene each simulation step. Descendant meshes
 		// move with their body even when the Rigidbody lives on a separate parent entity.
@@ -85,6 +86,7 @@ namespace Paralax {
 			if (!mesh)
 				continue;
 			snapshot.push_back(entity.GetUUID());
+			snapshot.push_back(component.CastShadows ? 1 : 0);
 			remember(mesh);
 			const glm::mat4 world = scene.GetWorldTransform(entity);
 			for (int column = 0; column < 4; ++column)
@@ -104,7 +106,7 @@ namespace Paralax {
 				for (AssetHandle texture : {material->BaseColorTexture, material->EmissiveTexture, material->MetallicRoughnessTexture})
 					remember(texture.IsValid() ? assets.GetAsset<TextureAsset>(texture) : nullptr);
 				if (material->Alpha != AlphaMode::Blend)
-					instances.push_back({mesh, &part, material, world * part.Transform});
+					instances.push_back({mesh, &part, material, world * part.Transform, component.CastShadows});
 			}
 		}
 		if (snapshot == m_Snapshot)
@@ -246,6 +248,7 @@ namespace Paralax {
 				triangle.UV01 = {uv[0].x, uv[0].y, uv[1].x, uv[1].y};
 				triangle.UV2 = {uv[2].x, uv[2].y, 0.0f, 0.0f};
 				triangle.Material.x = materialIndex;
+				triangle.Material.y = instance.CastShadows ? 0 : 1;
 				triangles.push_back(triangle);
 			}
 			if (!valid)

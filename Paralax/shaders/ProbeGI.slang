@@ -86,7 +86,7 @@ struct TraceHit
 	float2 Barycentric;
 };
 
-TraceHit Trace(float3 origin, float3 direction, float maximum, bool anyHit, float3 originOffset = float3(0.0))
+TraceHit Trace(float3 origin, float3 direction, float maximum, bool shadowRay, float3 originOffset = float3(0.0))
 {
 	TraceHit hit;
 	hit.Distance = maximum;
@@ -105,6 +105,9 @@ TraceHit Trace(float3 origin, float3 direction, float maximum, bool anyHit, floa
 		{
 			uint index = node.Range.x + i;
 			TraceTriangle triangle = g_Triangles[index];
+			// Non-shadowing emissive proxies still participate in radiance, classification and visibility.
+			if (shadowRay && triangle.Material.y != 0)
+				continue;
 			float3 edge1 = triangle.Position[1].xyz - triangle.Position[0].xyz;
 			float3 edge2 = triangle.Position[2].xyz - triangle.Position[0].xyz;
 			float3 p = cross(direction, edge2);
@@ -128,7 +131,7 @@ TraceHit Trace(float3 origin, float3 direction, float maximum, bool anyHit, floa
 			hit.Distance = distance;
 			hit.Triangle = index;
 			hit.Barycentric = float2(u, v);
-			if (anyHit)
+			if (shadowRay)
 				return hit;
 		}
 		++nodeIndex;

@@ -231,6 +231,11 @@ The adapter's storage-buffer range and texture-array layer limits may impose sma
 than six compute storage-buffer descriptors retain normal forward rendering with GI unavailable. Probe sampling
 uses explicit bilinear loads, so optional 32-bit-float linear filtering is not required.
 
+At probe hits, GI always tests direct-light occlusion regardless of the **light's** `CastShadows` setting.
+A **mesh** with `CastShadows: false` is excluded from those direct-light shadow rays, matching raster shadow
+passes. It remains visible to radiance rays, probe classification and distance moments, so an emissive bulb
+proxy can emit without blocking its own point light, while remaining physical geometry for GI visibility.
+
 Within the volume, GI replaces environment diffuse. Outside it, the existing environment lighting remains.
 An interior with no valid visible probes stays dark. Environment specular is still separate and unoccluded;
 this is diffuse GI, not ray-traced reflections, SSAO, SSR or a visibility-buffer renderer. Hardware ray tracing

@@ -28,7 +28,7 @@ namespace Paralax {
 			glm::vec4 Normal[3]{};
 			glm::vec4 UV01{0.0f};
 			glm::vec4 UV2{0.0f};
-			glm::uvec4 Material{0};
+			glm::uvec4 Material{0}; // x: material index; y: exclude from direct-light shadow rays
 		};
 		struct ProbeTraceMaterial
 		{

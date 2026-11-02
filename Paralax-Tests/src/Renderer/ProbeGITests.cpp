@@ -373,8 +373,13 @@ TEST_CASE("ProbeGI: exact inspection distinguishes blocked neighbours and bias c
 	auto material = CreateRef<MaterialAsset>();
 	material->Handle = AssetHandle(60119);
 	bool maskedHole = false;
+	bool castShadows = true;
 	glm::vec3 translation(0.0f);
 	SUBCASE("opaque wall") {}
+	SUBCASE("non-shadowing wall still blocks probe visibility")
+	{
+		castShadows = false;
+	}
 	SUBCASE("large translation on an unrelated axis")
 	{
 		translation.z = 500000.0f;
@@ -386,7 +391,7 @@ TEST_CASE("ProbeGI: exact inspection distinguishes blocked neighbours and bias c
 		material->BaseColorFactor.a = 0.0f;
 	}
 	assets.AddMemoryAsset(material);
-	AddCube(scene, translation, {0.04f, 4.0f, 4.0f}, material->Handle);
+	AddCube(scene, translation, {0.04f, 4.0f, 4.0f}, material->Handle).GetComponent<MeshComponent>().CastShadows = castShadows;
 	ProbeFixture fixture(graphics.GetDevice());
 	fixture.Specification.Origin += translation;
 	fixture.Specification.NormalBias = 0.0f;
@@ -1277,6 +1282,12 @@ TEST_CASE("ProbeGI: closed double-sided solids reject embedded probes independen
 		return;
 	auto& graphics = *Testing::GetTestGraphicsDevice();
 	const uint32_t errors = graphics.GetValidationErrorCount();
+	bool castShadows = true;
+	SUBCASE("shadow-casting solid") {}
+	SUBCASE("non-shadowing solid")
+	{
+		castShadows = false;
+	}
 	for (bool doubleSided : {false, true})
 	{
 		AssetManager assets;
@@ -1285,7 +1296,7 @@ TEST_CASE("ProbeGI: closed double-sided solids reject embedded probes independen
 		material->DoubleSided = doubleSided;
 		assets.AddMemoryAsset(material);
 		Scene scene;
-		AddCube(scene, {}, glm::vec3(2.0f), material->Handle);
+		AddCube(scene, {}, glm::vec3(2.0f), material->Handle).GetComponent<MeshComponent>().CastShadows = castShadows;
 		ProbeFixture fixture(graphics.GetDevice());
 		REQUIRE(fixture.Update(scene, assets));
 		for (uint32_t probe = 0; probe < 8; ++probe)
@@ -1944,5 +1955,73 @@ TEST_CASE("ProbeGI: secondary rays retain close parallel and near-light blockers
 	for (const auto& pixel : ReadProbe(fixture.Device, fixture.GI.GetIrradiance()))
 		maximum = std::max(maximum, pixel.r);
 	CHECK(maximum > 0.01f);
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeTraceScene: mesh shadow edits invalidate triangles without changing their geometry")
+{
+	AssetManager assets;
+	Scene scene;
+	auto cube = AddCube(scene, {}, glm::vec3(1.0f));
+	ProbeTraceScene trace;
+	bool changed = false;
+	for (bool castShadows : {true, false, true})
+	{
+		cube.GetComponent<MeshComponent>().CastShadows = castShadows;
+		REQUIRE(trace.Update(scene, assets, changed));
+		CHECK(changed);
+		REQUIRE(trace.GetTriangles().size() == 12);
+		for (const auto& triangle : trace.GetTriangles())
+			CHECK(triangle.Material.y == (castShadows ? 0 : 1));
+		REQUIRE(trace.Update(scene, assets, changed));
+		CHECK_FALSE(changed);
+	}
+}
+
+TEST_CASE("ProbeGI: non-shadowing emissive proxies retain emission while releasing enclosed point lights")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	auto diffuse = CreateRef<MaterialAsset>();
+	diffuse->Handle = AssetHandle(60132);
+	diffuse->BaseColorFactor = glm::vec4(1.0f);
+	diffuse->MetallicFactor = 0.0f;
+	assets.AddMemoryAsset(diffuse);
+	auto emission = CreateRef<MaterialAsset>();
+	emission->Handle = AssetHandle(60133);
+	emission->BaseColorFactor = {0, 0, 0, 1};
+	emission->EmissiveFactor = {3, 0, 0};
+	assets.AddMemoryAsset(emission);
+	AddCube(scene, {0, -0.1f, 0}, {50, 0.2f, 50}, diffuse->Handle);
+	auto proxy = AddCube(scene, {0, 2, 0}, glm::vec3(0.8f), emission->Handle);
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.Origin = {0, 1, 0};
+	fixture.Specification.RaysPerProbe = 128;
+	fixture.Specification.BounceFeedback = false;
+	fixture.ViewData.EnvironmentParams.x = 0.0f;
+	GPU::Light light{};
+	light.PositionRange = {0, 2, 0, 100};
+	light.ColorIntensity = {0, 30, 0, 0};
+	fixture.LightData = {light};
+	for (bool castShadows : {true, false, true})
+	{
+		CAPTURE(castShadows);
+		proxy.GetComponent<MeshComponent>().CastShadows = castShadows;
+		fixture.GI.ResetHistory();
+		REQUIRE(fixture.Update(scene, assets));
+		glm::vec3 maximum(0.0f);
+		for (const auto& pixel : ReadProbe(fixture.Device, fixture.GI.GetIrradiance()))
+			maximum = glm::max(maximum, glm::vec3(pixel));
+		CHECK(maximum.r > 0.01f);
+		if (castShadows)
+			CHECK(maximum.g < 1e-6f);
+		else
+			CHECK(maximum.g > 0.01f);
+		CHECK(maximum.b < 1e-6f);
+	}
 	CHECK(graphics.GetValidationErrorCount() == errors);
 }
