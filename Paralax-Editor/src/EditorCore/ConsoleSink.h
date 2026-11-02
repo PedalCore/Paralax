@@ -66,13 +66,14 @@ namespace Paralax::Editor {
 			return snapshot;
 		}
 
-		void Clear()
+		// Returns the revision the clear made, read under the same lock (a message logged meanwhile comes after it).
+		uint64_t Clear()
 		{
 			std::scoped_lock lock(m_MessagesMutex);
 			if (!m_Messages.empty())
 				m_LastForgottenRevision = m_Messages.back().Revision;
 			m_Messages.clear();
-			m_Revision++;
+			return ++m_Revision;
 		}
 
 		// Increments whenever messages are added or cleared, so the UI can auto-scroll on change.

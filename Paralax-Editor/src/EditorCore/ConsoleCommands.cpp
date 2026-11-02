@@ -96,6 +96,10 @@ namespace Paralax::Editor {
 							   }
 
 							   ConsoleSink::Snapshot snapshot = sink->GetMessagesAfter(since);
+							   // Revisions only grow, so a later one comes from another log (an earlier editor session, say),
+							   // and answering "nothing since" would be a lie.
+							   if (since > snapshot.Revision)
+								   return CommandResult::Fail("'sinceRevision' is not a revision of this log; call console.get without sinceRevision");
 							   std::vector<ConsoleSink::Message>& messages = snapshot.Messages;
 							   std::erase_if(messages, [minLevel](const ConsoleSink::Message& message) { return message.Level < minLevel; });
 							   const size_t omitted = messages.size() > limit ? messages.size() - static_cast<size_t>(limit) : 0;
@@ -110,8 +114,7 @@ namespace Paralax::Editor {
 						   }});
 
 		registry.Register({"console.clear", "Empties the editor log shown by the Console panel and console.get.", {}, false, [sink](EditorContext&, const json&) {
-							   sink->Clear();
-							   return CommandResult::Ok({{"revision", sink->GetRevision()}});
+							   return CommandResult::Ok({{"revision", sink->Clear()}});
 						   }});
 	}
 

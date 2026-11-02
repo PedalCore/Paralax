@@ -97,6 +97,15 @@ TEST_CASE("ConsoleCommands: console.get rejects invalid parameters")
 		CHECK_FALSE(fixture.Context.Execute("console.get", params).Success);
 	}
 	CHECK(fixture.Context.Execute("console.get", {{"limit", 50}}).Success);
+
+	// A revision this log has not reached comes from another one (an earlier editor session): refused, not answered
+	// with "nothing since".
+	PX_CORE_INFO("one message");
+	const uint64_t current = fixture.Get()["revision"].get<uint64_t>();
+	CHECK(fixture.Context.Execute("console.get", {{"sinceRevision", current}}).Success);
+	const CommandResult foreign = fixture.Context.Execute("console.get", {{"sinceRevision", current + 1}});
+	CHECK_FALSE(foreign.Success);
+	CHECK(foreign.Error.find("not a revision of this log") != std::string::npos);
 }
 
 TEST_CASE("ConsoleCommands: the console keeps its most recent messages, and console.clear empties it")
@@ -120,6 +129,7 @@ TEST_CASE("ConsoleCommands: the console keeps its most recent messages, and cons
 	const CommandResult cleared = fixture.Context.Execute("console.clear");
 	REQUIRE(cleared.Success);
 	CHECK(cleared.Result["revision"].get<uint64_t>() > kept["revision"].get<uint64_t>());
+	CHECK(fixture.Get()["revision"] == cleared.Result["revision"]); // The clear's own revision, nothing after it.
 	CHECK(fixture.Get({{"minLevel", "trace"}})["messages"].empty());
 	CHECK(fixture.Sink->GetMessages().empty());
 	// Cleared messages are gone too; nothing after the clear is.
