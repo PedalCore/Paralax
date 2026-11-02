@@ -472,12 +472,21 @@ namespace Paralax {
 				std::memcpy(glm::value_ptr(transform), matrix->data(), sizeof(float) * 16);
 				if (!Math::DecomposeTransform(transform, record.Translation, record.Rotation, record.Scale))
 				{
-					// No scale to take apart (a node collapsed to a point): keep it collapsed where it is, as the
-					// combined mesh shows it.
-					record.Translation = glm::vec3(transform[3]);
-					record.Rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-					record.Scale = glm::vec3(0.0f);
-					usable = IsFinite(record.Translation);
+					// No scale to take apart because every axis has zero length (a node collapsed to a point): keep
+					// it collapsed where it is, as the combined mesh shows it. Any other matrix that cannot be taken
+					// apart (an axis longer than a float can hold, say) is unusable. Lengths in double, as the
+					// decomposition takes them, so a huge axis cannot pass for a zero one.
+					const bool collapsed = glm::length(glm::dvec3(transform[0])) < 1e-8 && glm::length(glm::dvec3(transform[1])) < 1e-8 &&
+										   glm::length(glm::dvec3(transform[2])) < 1e-8;
+					if (collapsed)
+					{
+						record.Translation = glm::vec3(transform[3]);
+						record.Rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+						record.Scale = glm::vec3(0.0f);
+						usable = IsFinite(record.Translation);
+					}
+					else
+						usable = false;
 				}
 			}
 			if (!usable || !IsFinite(record.Translation) || !IsFinite(record.Scale))

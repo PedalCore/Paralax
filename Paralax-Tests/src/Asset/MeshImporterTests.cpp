@@ -188,6 +188,8 @@ TEST_CASE("MeshImporter: hostile node, camera and light values are made safe")
 	document["nodes"][6]["matrix"] = json::array();          // A matrix of zeros: collapsed to a point.
 	for (int i = 0; i < 16; i++)
 		document["nodes"][6]["matrix"].push_back(0.0);
+	// Every entry a float, but an axis longer than a float can hold: not a collapse, an unusable transform.
+	document["nodes"][4]["matrix"] = {3e38, 3e38, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0};
 	document["nodes"][5]["name"] = std::string(255, 'x') + "\xC3\xA9" + std::string(10, 'y'); // A 2-byte character across byte 256.
 	document["cameras"][0]["perspective"]["yfov"] = 9.0;                                      // More than 179 degrees.
 	document["cameras"][1]["orthographic"]["znear"] = 60.0;                                   // Beyond far.
@@ -202,14 +204,14 @@ TEST_CASE("MeshImporter: hostile node, camera and light values are made safe")
 	std::string error;
 	REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1000), result, error), error);
 	REQUIRE(result.Nodes.size() == 7);
-	for (size_t i : {size_t(0), size_t(2)})
+	for (size_t i : {size_t(0), size_t(2), size_t(4)})
 	{
 		CAPTURE(i);
 		CHECK(result.Nodes[i].Translation == glm::vec3(0.0f));
 		CHECK(result.Nodes[i].Rotation == glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
 		CHECK(result.Nodes[i].Scale == glm::vec3(1.0f));
 	}
-	CHECK(std::count_if(result.Warnings.begin(), result.Warnings.end(), [](const std::string& w) { return w.find("unusable transform") != std::string::npos; }) == 2);
+	CHECK(std::count_if(result.Warnings.begin(), result.Warnings.end(), [](const std::string& w) { return w.find("unusable transform") != std::string::npos; }) == 3);
 	// The collapsed node stays collapsed, where the combined mesh shows it (nowhere).
 	CHECK(result.Nodes[6].Scale == glm::vec3(0.0f));
 	CHECK(result.Nodes[5].Name == std::string(255, 'x'));
