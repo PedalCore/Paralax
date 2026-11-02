@@ -107,6 +107,11 @@ namespace Paralax {
 		// false (with outError set) if the file cannot be parsed or contains no triangles. Unsupported features (other
 		// primitive types, missing images, skins, morph target weights) are skipped with warnings.
 		//
+		// The file is untrusted. External buffers (".bin" files) and images must lie inside the model's directory
+		// (no "../" or absolute paths, no other URI schemes); a buffer outside it fails the import, a missing or
+		// outside image is a warning. Buffers may hold at most MaxBufferBytes together, and each image at most
+		// TextureAsset::MaxEncodedBytes.
+		//
 		// Light intensities are divided by 683 lm/W, undoing the photometric conversion of Blender's exporter in its
 		// default ("Standard") lighting mode, so a Blender sun of strength 3 becomes a DirectionalLight of Intensity 3
 		// and a 1000 W point light (1000 / 4 pi before the conversion) one of about 80. A point or spot light without
@@ -123,6 +128,13 @@ namespace Paralax {
 		// meshes keep each entity's mesh. They are built whenever the file is loaded, which roughly doubles its
 		// CPU-side geometry while it is loaded.
 		static bool Import(const std::filesystem::path& path, AssetHandle meshHandle, MeshImportResult& outResult, std::string& outError);
+
+		// The most bytes of model data read from disk: the model file itself (so a GLB's chunks and embedded data
+		// URIs) and, all together, the external buffer files it references. Both are read whole before anything in
+		// them is validated, so this bounds what a hostile file can make an import allocate; sizes are checked before
+		// a file is read. Real models are far smaller: at 48 bytes a vertex (position, normal, tangent, UV) 256 MiB
+		// holds over five million vertices, and textures are capped separately (TextureAsset::MaxEncodedBytes).
+		static constexpr size_t MaxBufferBytes = 256u * 1024 * 1024;
 	};
 
 }

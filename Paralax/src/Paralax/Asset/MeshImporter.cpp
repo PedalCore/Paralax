@@ -17,8 +17,8 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
-#include <iterator>
 #include <map>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -34,7 +34,9 @@ namespace Paralax {
 			return value ^ (value >> 31);
 		}
 
-		// Upper bound on accessor element counts (also bounds zero-filled accessors, which have no backing bytes).
+		// Upper bound on accessor element counts (also bounds zero-filled accessors, which have no backing bytes). The
+		// bytes behind them are bounded too: external buffers by MeshImporter::MaxBufferBytes (all of a model's
+		// together, read by ReadExternalBuffers) and images by TextureAsset::MaxEncodedBytes.
 		constexpr size_t s_MaxElements = size_t(1) << 24;
 		constexpr size_t s_MaxNodeDepth = 256;
 
@@ -56,6 +58,8 @@ namespace Paralax {
 			return name.empty() ? std::string_view("invalid") : name;
 		}
 
+		// The bytes a buffer actually holds. The sources fastgltf leaves without bytes (a URI it was not asked to
+		// load, a fallback) hold none; ReadExternalBuffers has replaced every URI by the time anything reads data.
 		size_t GetBufferSize(const fastgltf::Buffer& buffer)
 		{
 			return std::visit(fastgltf::visitor{
@@ -67,10 +71,13 @@ namespace Paralax {
 							  buffer.data);
 		}
 
-		// Reads a file the model refers to, which must stay inside the model's directory (no "../" or absolute escapes).
-		// Returns an empty vector (with outProblem set) if it does not exist or would leave the directory.
-		std::vector<uint8_t> ReadModelFile(const std::filesystem::path& directory, const std::filesystem::path& relativePath, std::string& outProblem)
+		// Reads a file the model refers to, which must stay inside the model's directory (no "../" or absolute escapes)
+		// and hold at most maxBytes. Returns an empty vector (with outProblem set) if it does not exist, would leave the
+		// directory or is too large; the size is checked before anything is read or allocated.
+		template<typename Byte>
+		std::vector<Byte> ReadModelFile(const std::filesystem::path& directory, const std::filesystem::path& relativePath, size_t maxBytes, std::string& outProblem)
 		{
+			static_assert(sizeof(Byte) == 1);
 			std::error_code error;
 			const std::filesystem::path base = std::filesystem::weakly_canonical(directory, error);
 			const std::filesystem::path target = std::filesystem::weakly_canonical(directory / relativePath, error);
@@ -86,14 +93,68 @@ namespace Paralax {
 				outProblem = fmt::format("file '{}' not found", relativePath.string());
 				return {};
 			}
-			// Images are refused beyond this size anyway; don't read a huge file to find out.
 			const uintmax_t size = std::filesystem::file_size(target, error);
-			if (error || size > TextureAsset::MaxEncodedBytes)
+			if (error)
 			{
-				outProblem = fmt::format("file '{}' is too large", relativePath.string());
+				outProblem = fmt::format("file '{}' cannot be read: {}", relativePath.string(), error.message());
 				return {};
 			}
-			return std::vector<uint8_t>(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+			if (size > maxBytes)
+			{
+				outProblem = fmt::format("file '{}' is too large ({} bytes; at most {} can be read)", relativePath.string(), size, maxBytes);
+				return {};
+			}
+			std::vector<Byte> bytes(static_cast<size_t>(size));
+			if (size > 0 && !file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size)))
+			{
+				outProblem = fmt::format("file '{}' cannot be read", relativePath.string());
+				return {};
+			}
+			return bytes;
+		}
+
+		// Reads the buffers kept in files beside the model. fastgltf is not asked to (Options::LoadExternalBuffers):
+		// it would follow any path and read any size. Here they are confined to the model's directory, like images,
+		// and to MeshImporter::MaxBufferBytes together. Data URIs and GLB chunks arrive decoded from fastgltf and are
+		// left as they are. Returns the problem ("buffer N: ...") or an empty string.
+		// A glTF URI as a filesystem path. fastgltf percent-decodes the URI into bytes that need not be valid UTF-8, and
+		// building a path from them can throw on Windows (no Unicode translation); that is the boundary, so it is
+		// caught here and such a URI is treated as unusable rather than left to unwind through the importer.
+		std::optional<std::filesystem::path> UriPath(const fastgltf::URI& uri)
+		{
+			if (!uri.isLocalPath())
+				return std::nullopt;
+			try
+			{
+				return uri.fspath();
+			}
+			catch (const std::exception&)
+			{
+				return std::nullopt;
+			}
+		}
+
+		std::string ReadExternalBuffers(fastgltf::Asset& asset, const std::filesystem::path& directory)
+		{
+			size_t budget = MeshImporter::MaxBufferBytes;
+			for (size_t i = 0; i < asset.buffers.size(); i++)
+			{
+				const auto* source = std::get_if<fastgltf::sources::URI>(&asset.buffers[i].data);
+				if (!source)
+					continue;
+				std::string problem;
+				std::vector<std::byte> bytes;
+				if (const std::optional<std::filesystem::path> file = UriPath(source->uri))
+					bytes = ReadModelFile<std::byte>(directory, *file, budget, problem);
+				else
+					problem = "its URI is not a local file path";
+				if (!problem.empty())
+					return fmt::format("buffer {}: {}", i, problem);
+				budget -= bytes.size();
+				const fastgltf::MimeType mimeType = source->mimeType; // source dies with the assignment below.
+				asset.buffers[i].data = fastgltf::sources::Vector{std::move(bytes), mimeType};
+			}
+			return {};
 		}
 
 		// Parallax settings some exporters put in a material's extras (glTF has no height maps): "pom" (or
@@ -141,12 +202,14 @@ namespace Paralax {
 		{
 			fastgltf::Error Parse = fastgltf::Error::None;
 			fastgltf::Error Validation = fastgltf::Error::None;
+			std::string BufferProblem; // Why an external buffer of a parsed, valid document could not be read.
 			bool Threw = false;
 		};
 
-		// Parses (from the start of data) and validates a document, reading material extras into materialExtras. fastgltf
-		// can throw (std::bad_alloc for absurd sizes in a hostile file); that is caught here, at the boundary, and reported
-		// as a parse failure. outAsset is set only on success.
+		// Parses (from the start of data) and validates a document, reading material extras into materialExtras, then
+		// reads its external buffers (ReadExternalBuffers). fastgltf can throw (std::bad_alloc for absurd sizes in a
+		// hostile file); that is caught here, at the boundary, and reported as a parse failure. outAsset is set only on
+		// success: no error, and no BufferProblem.
 		ParseOutcome Parse(fastgltf::GltfDataGetter& data, const std::filesystem::path& directory, fastgltf::Extensions extensions, fastgltf::Options options,
 						   std::vector<MaterialExtras>& materialExtras, std::optional<fastgltf::Asset>& outAsset)
 		{
@@ -163,13 +226,18 @@ namespace Paralax {
 				outcome.Parse = loaded.error();
 				if (outcome.Parse != fastgltf::Error::None)
 					return outcome;
+				// Validation needs only the declared sizes, so a malformed document costs no file reads.
 				outcome.Validation = fastgltf::validate(loaded.get());
-				if (outcome.Validation == fastgltf::Error::None)
+				if (outcome.Validation != fastgltf::Error::None)
+					return outcome;
+				outcome.BufferProblem = ReadExternalBuffers(loaded.get(), directory);
+				if (outcome.BufferProblem.empty())
 					outAsset.emplace(std::move(loaded.get()));
 			}
 			catch (const std::exception&)
 			{
 				outcome.Parse = fastgltf::Error::InvalidGltf;
+				outcome.BufferProblem.clear();
 				outcome.Threw = true;
 				outAsset.reset();
 			}
@@ -207,12 +275,13 @@ namespace Paralax {
 							   bytes.assign(data, data + span.size());
 						   },
 						   [&](const fastgltf::sources::URI& uri) {
-							   if (!uri.uri.isLocalPath())
+							   const std::optional<std::filesystem::path> file = UriPath(uri.uri);
+							   if (!file)
 							   {
-								   outProblem = "image URI is not a local file";
+								   outProblem = "image URI is not a local file path";
 								   return;
 							   }
-							   bytes = ReadModelFile(directory, uri.uri.fspath(), outProblem);
+							   bytes = ReadModelFile<uint8_t>(directory, *file, TextureAsset::MaxEncodedBytes, outProblem);
 						   },
 						   [&](const auto&) { outProblem = "unsupported image source"; },
 					   },
@@ -273,7 +342,22 @@ namespace Paralax {
 				outProblem = fmt::format("accessor {} has an invalid layout", index);
 				return false;
 			}
-			const size_t lastByte = accessor.byteOffset + (accessor.count - 1) * stride + elementSize; // count <= 2^24: no overflow.
+			// The offset and stride come straight from the file, so each is checked against the view on its own before
+			// entering any arithmetic: an offset near 2^64 would wrap the sum below and pass it (fastgltf's validation
+			// sums the same way and wraps the same way). A lone element never advances by the stride.
+			if (accessor.byteOffset > view.byteLength)
+			{
+				outProblem = fmt::format("accessor {} starts {} bytes into a buffer view of {} bytes", index, accessor.byteOffset, view.byteLength);
+				return false;
+			}
+			if (accessor.count > 1 && stride > view.byteLength)
+			{
+				outProblem = fmt::format("accessor {} has a byte stride of {}, more than its buffer view's {} bytes", index, stride, view.byteLength);
+				return false;
+			}
+			// Offset and stride are at most byteLength, itself at most the bytes the buffer holds in memory, and count
+			// is at most 2^24: the sum cannot wrap.
+			const size_t lastByte = accessor.byteOffset + (accessor.count - 1) * stride + elementSize;
 			if (lastByte > view.byteLength)
 			{
 				outProblem = fmt::format("accessor {} reads past its buffer view", index);
@@ -583,6 +667,21 @@ namespace Paralax {
 		outResult = MeshImportResult();
 		outError.clear();
 
+		// The model file is read whole (a GLB carries its buffers, a .gltf may embed them as data URIs), so it gets the
+		// same bound as the external buffers, checked before anything is read.
+		std::error_code sizeError;
+		const uintmax_t fileSize = std::filesystem::file_size(path, sizeError);
+		if (sizeError)
+		{
+			outError = fmt::format("cannot read '{}': {}", path.string(), sizeError.message());
+			return false;
+		}
+		if (fileSize > MeshImporter::MaxBufferBytes)
+		{
+			outError = fmt::format("cannot read '{}': file is too large ({} bytes; at most {} can be read)", path.string(), fileSize, MeshImporter::MaxBufferBytes);
+			return false;
+		}
+
 		auto data = fastgltf::GltfDataBuffer::FromPath(path);
 		if (data.error() != fastgltf::Error::None)
 		{
@@ -591,7 +690,8 @@ namespace Paralax {
 		}
 
 		// fastgltf only validates on export; structurally invalid documents are rejected before any data is touched.
-		const auto options = fastgltf::Options::LoadExternalBuffers | fastgltf::Options::GenerateMeshIndices;
+		// External buffers are read by Parse (see ReadExternalBuffers), not by fastgltf, which would not confine them.
+		const auto options = fastgltf::Options::GenerateMeshIndices;
 		const auto extensions = fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_texture_transform;
 		std::vector<MaterialExtras> materialExtras;
 		std::optional<fastgltf::Asset> parsed;
@@ -615,6 +715,11 @@ namespace Paralax {
 		if (outcome.Validation != fastgltf::Error::None)
 		{
 			outError = fmt::format("'{}' is not a valid glTF file: {}", path.string(), fastgltf::getErrorMessage(outcome.Validation));
+			return false;
+		}
+		if (!outcome.BufferProblem.empty())
+		{
+			outError = fmt::format("cannot load '{}': {}", path.string(), outcome.BufferProblem);
 			return false;
 		}
 		const fastgltf::Asset& asset = *parsed;
@@ -679,8 +784,9 @@ namespace Paralax {
 					const auto& texture = asset.textures[source.pbrData.baseColorTexture->textureIndex];
 					if (texture.imageIndex && *texture.imageIndex < asset.images.size())
 					{
-						if (const auto* uri = std::get_if<fastgltf::sources::URI>(&asset.images[*texture.imageIndex].data); uri && uri->uri.isLocalPath())
-							candidates.push_back(uri->uri.fspath().parent_path() / extras.HeightMap);
+						if (const auto* uri = std::get_if<fastgltf::sources::URI>(&asset.images[*texture.imageIndex].data))
+							if (const std::optional<std::filesystem::path> file = UriPath(uri->uri))
+								candidates.push_back(file->parent_path() / extras.HeightMap);
 					}
 				}
 				AssetHandle handle = 0;
@@ -688,7 +794,7 @@ namespace Paralax {
 				for (const std::filesystem::path& candidate : candidates)
 				{
 					std::string candidateProblem;
-					const std::vector<uint8_t> bytes = ReadModelFile(directory, candidate, candidateProblem);
+					const std::vector<uint8_t> bytes = ReadModelFile<uint8_t>(directory, candidate, TextureAsset::MaxEncodedBytes, candidateProblem);
 					if (bytes.empty())
 					{
 						if (problem.empty() && candidateProblem.find("not found") == std::string::npos)

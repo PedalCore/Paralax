@@ -633,6 +633,203 @@ TEST_CASE("MeshImporter: hostile files are rejected without reading out of bound
 		document["meshes"][0]["primitives"][0]["attributes"]["TEXCOORD_0"] = 4;
 		CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1), result, error));
 	}
+	SUBCASE("accessor byte offset near 2^64 that wraps the end-of-data sum")
+	{
+		// The positions accessor spans 36 bytes of a 36-byte view: offset + 36 wraps to 0 (or 32) for the first two
+		// values, which passes "end <= byteLength" in fastgltf's validation and, before the fix, the importer's own
+		// check, after which the reader started 2^64 - 36 bytes into the buffer. The third is large but does not wrap,
+		// so fastgltf rejects it before the importer looks.
+		struct Case
+		{
+			uint64_t Offset;
+			const char* Expected; // In the importer's error, or nullptr when fastgltf rejects the file first.
+		};
+		for (const Case& c : {Case{18446744073709551580ull, "starts 18446744073709551580 bytes into a buffer view of 36 bytes"}, Case{18446744073709551612ull, "starts 18446744073709551612 bytes"}, Case{18446744073709551000ull, nullptr}})
+		{
+			CAPTURE(c.Offset);
+			json document = Paralax::Testing::MakeTriangleDocument(directory);
+			document["accessors"][0]["byteOffset"] = c.Offset;
+			CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1), result, error));
+			CAPTURE(error);
+			CHECK_FALSE(error.empty());
+			if (c.Expected)
+				CHECK(error.find(c.Expected) != std::string::npos);
+			CHECK(result.Mesh == nullptr);
+		}
+	}
+	SUBCASE("buffer view stride larger than the view")
+	{
+		// Three positions 252 bytes apart (fastgltf's largest stride) reach 516 bytes of a 36-byte view. fastgltf's
+		// validation rejects that sum; with a wrapping offset (2^64 - 516: the sum comes out as exactly 0) fastgltf is
+		// blind and the importer's offset check decides. The importer's stride check behind it is a backstop that no
+		// document reaches today, kept so the end-of-data arithmetic never depends on fastgltf's.
+		struct Case
+		{
+			uint64_t Offset;
+			const char* Expected;
+		};
+		for (const Case& c : {Case{0, "is not a valid glTF file"}, Case{18446744073709551100ull, "starts 18446744073709551100 bytes into a buffer view of 36 bytes"}})
+		{
+			CAPTURE(c.Offset);
+			json document = Paralax::Testing::MakeTriangleDocument(directory);
+			document["bufferViews"][0]["byteStride"] = 252;
+			if (c.Offset)
+				document["accessors"][0]["byteOffset"] = c.Offset;
+			CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1), result, error));
+			CAPTURE(error);
+			CHECK(error.find(c.Expected) != std::string::npos);
+			CHECK(result.Mesh == nullptr);
+		}
+	}
+	SUBCASE("a percent-encoded image URI that is not UTF-8 is skipped, never thrown")
+	{
+		// "%FF" decodes to a byte no path encoding accepts on Windows; the importer must treat it as an unusable image.
+		json document = Paralax::Testing::MakeTriangleDocument(directory);
+		document["images"] = json::array({json{{"uri", "%FF%FE.png"}}});
+		document["textures"] = json::array({json{{"source", 0}}});
+		document["materials"] = json::array({json{{"pbrMetallicRoughness", {{"baseColorTexture", {{"index", 0}}}}}}});
+		document["meshes"][0]["primitives"][0]["material"] = 0;
+		bool imported = false;
+		CHECK_NOTHROW(imported = MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1), result, error));
+		CAPTURE(error);
+		CHECK(imported);
+		CHECK(result.Textures.empty());
+	}
+	SUBCASE("a model file above MaxBufferBytes is refused before it is read")
+	{
+		std::ofstream(directory / "huge.glb", std::ios::binary).put('g');
+		std::filesystem::resize_file(directory / "huge.glb", MeshImporter::MaxBufferBytes + 1);
+		CHECK_FALSE(MeshImporter::Import(directory / "huge.glb", UUID(1), result, error));
+		CAPTURE(error);
+		CHECK(error.find("too large") != std::string::npos);
+		CHECK(result.Mesh == nullptr);
+	}
+	SUBCASE("a real non-zero accessor offset still imports")
+	{
+		// Normals read from the positions' view, 36 bytes in (the two blocks are adjacent in the buffer).
+		json document = Paralax::Testing::MakeTriangleDocument(directory);
+		document["bufferViews"][0]["byteLength"] = 72;
+		document["accessors"][1]["bufferView"] = 0;
+		document["accessors"][1]["byteOffset"] = 36;
+		REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1), result, error), error);
+		CHECK(result.Mesh->Vertices[0].Normal == glm::vec3(0.0f, 0.0f, 1.0f));
+	}
+}
+
+TEST_CASE("MeshImporter: external buffers stay inside the model's directory and under the size cap")
+{
+	// fastgltf would follow any buffer URI and read any size; the importer reads buffers itself, like images.
+	const std::filesystem::path root = Paralax::Testing::CreateTestDirectory("GltfExternalBuffers");
+	const std::filesystem::path directory = root / "model";
+	std::filesystem::create_directories(directory);
+	const std::vector<uint8_t> triangle = Paralax::Testing::MakeTriangleBuffer();
+	auto writeBytes = [](const std::filesystem::path& path, const std::vector<uint8_t>& bytes) {
+		std::ofstream file(path, std::ios::binary);
+		file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+	};
+	// The triangle with its buffer in a file named by uri instead of embedded.
+	auto externalDocument = [&](const std::string& uri) {
+		json document = Paralax::Testing::MakeTriangleDocument(directory);
+		document["buffers"][0]["uri"] = uri;
+		return document;
+	};
+	MeshImportResult result;
+	std::string error;
+
+	SUBCASE("a .bin beside the model, in a subfolder or with a percent-encoded name imports")
+	{
+		std::filesystem::create_directories(directory / "data");
+		writeBytes(directory / "triangle.bin", triangle);
+		writeBytes(directory / "data" / "triangle.bin", triangle);
+		writeBytes(directory / "tri angle.bin", triangle);
+		for (const char* uri : {"triangle.bin", "data/triangle.bin", "tri%20angle.bin"})
+		{
+			CAPTURE(std::string(uri));
+			REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, externalDocument(uri)), UUID(1), result, error), error);
+			CHECK(result.Warnings.empty());
+			CHECK(result.Mesh->Vertices.size() == 6);
+			CHECK(result.Mesh->Vertices[1].Position == glm::vec3(1.0f, 0.0f, 0.0f));
+			CHECK(result.Mesh->Indices.size() == 6);
+		}
+	}
+	SUBCASE("a path leading out of the directory is refused and its bytes are never used")
+	{
+		// Valid data: were it read, the import would succeed.
+		writeBytes(root / "escape.bin", triangle);
+		for (const char* uri : {"../escape.bin", "data/../../escape.bin", "./../escape.bin"})
+		{
+			CAPTURE(std::string(uri));
+			CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, externalDocument(uri)), UUID(1), result, error));
+			CAPTURE(error);
+			CHECK(error.find("buffer 0") != std::string::npos);
+			CHECK(error.find("leaves the model's directory") != std::string::npos);
+			CHECK(result.Mesh == nullptr);
+		}
+	}
+	SUBCASE("an absolute path is refused, as a plain path and as a file URL")
+	{
+		const std::filesystem::path outside = root / "absolute.bin";
+		writeBytes(outside, triangle);
+		for (const std::string& uri : {outside.generic_string(), "file://" + outside.generic_string()})
+		{
+			CAPTURE(uri);
+			CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, externalDocument(uri)), UUID(1), result, error));
+			CAPTURE(error);
+			CHECK(error.find("buffer 0") != std::string::npos);
+			CHECK(result.Mesh == nullptr);
+		}
+	}
+	SUBCASE("a URI that is not a local file is refused")
+	{
+		CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, externalDocument("https://example.com/triangle.bin")), UUID(1), result, error));
+		CAPTURE(error);
+		CHECK(error.find("buffer 0") != std::string::npos);
+		CHECK(error.find("not a local file") != std::string::npos);
+	}
+	SUBCASE("a missing file names the buffer")
+	{
+		CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, externalDocument("missing.bin")), UUID(1), result, error));
+		CAPTURE(error);
+		CHECK(error.find("buffer 0") != std::string::npos);
+		CHECK(error.find("'missing.bin' not found") != std::string::npos);
+	}
+	SUBCASE("a file above MaxBufferBytes is refused before it is read")
+	{
+		// A sparse file, so this costs nothing; the importer checks the size first and never reads it.
+		writeBytes(directory / "huge.bin", triangle);
+		std::filesystem::resize_file(directory / "huge.bin", MeshImporter::MaxBufferBytes + 1);
+		CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, externalDocument("huge.bin")), UUID(1), result, error));
+		CAPTURE(error);
+		CHECK(error.find("buffer 0") != std::string::npos);
+		CHECK(error.find("too large") != std::string::npos);
+		CHECK(result.Mesh == nullptr);
+	}
+	SUBCASE("the cap covers all of a model's buffers together")
+	{
+		// Two files just over half the cap each: the first is read (sparse zeros), the second would go over it.
+		const size_t half = MeshImporter::MaxBufferBytes / 2 + 1;
+		writeBytes(directory / "first.bin", triangle);
+		std::filesystem::resize_file(directory / "first.bin", half);
+		writeBytes(directory / "second.bin", triangle);
+		std::filesystem::resize_file(directory / "second.bin", half);
+		json document = externalDocument("first.bin");
+		document["buffers"][0]["byteLength"] = half;
+		document["buffers"].push_back({{"byteLength", half}, {"uri", "second.bin"}});
+		CHECK_FALSE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, document), UUID(1), result, error));
+		CAPTURE(error);
+		CHECK(error.find("buffer 1") != std::string::npos);
+		CHECK(error.find("too large") != std::string::npos);
+	}
+	SUBCASE("embedded data and GLB chunks are untouched")
+	{
+		// A document with no external file at all imports with no file beside it.
+		REQUIRE_MESSAGE(MeshImporter::Import(Paralax::Testing::WriteGltf(directory, Paralax::Testing::MakeTriangleDocument(directory)), UUID(1), result, error), error);
+		CHECK(result.Mesh->Vertices.size() == 6);
+		const std::vector<uint8_t> glb = Paralax::Testing::MakeTriangleGlb(directory);
+		writeBytes(directory / "triangle.glb", glb);
+		REQUIRE_MESSAGE(MeshImporter::Import(directory / "triangle.glb", UUID(1), result, error), error);
+		CHECK(result.Mesh->Vertices.size() == 6);
+	}
 }
 
 TEST_CASE("MeshImporter: malformed accessor types are rejected without reading past them")
