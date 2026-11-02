@@ -6,6 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cmath>
 
 namespace Paralax {
@@ -191,6 +192,19 @@ namespace Paralax {
 		if (!cut)
 			return fmt::format("'{}'", preview);
 		return fmt::format("'{}' ({})", preview, Count(text.size(), "byte", "bytes"));
+	}
+
+	std::string CapMessage(std::string_view text, size_t maxBytes, size_t fullBytes)
+	{
+		fullBytes = std::max(fullBytes, text.size());
+		if (fullBytes <= maxBytes)
+			return std::string(text);
+		// Back up over continuation bytes to the start of the character the limit falls in, so it is left out whole.
+		// A character has at most three of them; a longer run is not UTF-8, and cutting inside it splits nothing.
+		size_t end = std::min(maxBytes, text.size());
+		for (int step = 0; step < 3 && end > 0 && end < text.size() && (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80; step++)
+			end--;
+		return fmt::format("{}{} ({})", text.substr(0, end), Ellipsis, Count(fullBytes, "byte", "bytes"));
 	}
 
 	std::string DescribeJsonValue(const nlohmann::json& value)

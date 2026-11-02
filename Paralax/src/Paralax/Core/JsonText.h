@@ -54,6 +54,21 @@ namespace Paralax {
 	// 'aaaa...' (16777216 bytes). For echoing a refused name or key. Pure; safe to call from any thread.
 	std::string QuoteText(std::string_view text);
 
+	// The most bytes of text a whole message from outside the engine keeps, as a line a script printed or the error it
+	// raised does. Such text can be hundreds of megabytes (a script builds strings up to its memory limit), and it is
+	// logged, kept in lists and returned to agents. 16 KiB is a few screens of text, more than any message meant to be
+	// read. (The editor's console keeps a little more of every message; see ConsoleSink.)
+	inline constexpr size_t MaxMessageBytes = 16 * 1024;
+
+	// A whole message kept to at most maxBytes bytes of its text: text unchanged if the message fits; otherwise the
+	// text's start, cut between UTF-8 characters at or before maxBytes, then "... (N bytes)" giving the message's full
+	// size. That size is fullBytes when it is larger than text (a caller that collected only the start of a longer
+	// message passes the whole message's size, and maxBytes + 1 bytes of its start if it has that many, so the cut
+	// can tell where a character ends), and text's own size otherwise. Unlike PreviewText this escapes nothing: it bounds
+	// messages, which may hold any text, rather than quoting a name inside one. Never throws. Pure; safe to call
+	// from any thread.
+	std::string CapMessage(std::string_view text, size_t maxBytes = MaxMessageBytes, size_t fullBytes = 0);
+
 	// Describes a JSON value for a message (a refused field value, say) without echoing it whole: a compact preview
 	// of the value as JSON, built as PreviewText builds its text, and the value's JSON type, as in "wide" (string),
 	// 1.5 (number) or [1,2] (array); null is just null. A preview cut short ends in "..." and the type then gives
