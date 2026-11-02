@@ -14,6 +14,7 @@
 #include <Paralax/Scene/Entity.h>
 
 #include <glm/gtc/packing.hpp>
+#include <glm/gtx/quaternion.hpp>
 
 #include <array>
 #include <cmath>
@@ -1774,5 +1775,174 @@ TEST_CASE("ProbeGI: inspection allocation failures preserve history and recover 
 			REQUIRE(fixture.GI.Inspect({}, {0, 1, 0}, {0, 0, 1}));
 			CHECK(fixture.GI.GetUpdateCount() == updates);
 		}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: sun-lit tilted surfaces retain analytic energy far from the world origin")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	float translation = 0.0f;
+	bool blocked = false;
+	SUBCASE("near origin") {}
+	SUBCASE("positive large translation")
+	{
+		translation = 100000.0f;
+	}
+	SUBCASE("negative large translation")
+	{
+		translation = -100000.0f;
+	}
+	SUBCASE("sun blocker at large translation")
+	{
+		translation = 100000.0f;
+		blocked = true;
+	}
+	AssetManager assets;
+	Scene scene;
+	auto material = CreateRef<MaterialAsset>();
+	material->Handle = AssetHandle(60130);
+	material->BaseColorFactor = glm::vec4(1.0f);
+	material->MetallicFactor = 0.0f;
+	assets.AddMemoryAsset(material);
+	const glm::quat rotation = glm::angleAxis(0.61f, glm::normalize(glm::vec3(1, 0, 1)));
+	const glm::vec3 normal = rotation * glm::vec3(0, 1, 0);
+	const glm::vec3 centre(translation);
+	auto floor = AddCube(scene, centre - normal * 0.1f, {100, 0.2f, 100}, material->Handle);
+	floor.GetTransform().Rotation = rotation;
+	if (blocked)
+	{
+		auto ceiling = AddCube(scene, centre + normal * 10.0f, {110, 0.2f, 110}, material->Handle);
+		ceiling.GetTransform().Rotation = rotation;
+	}
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.Origin = centre + normal * 2.0f - glm::vec3(0.5f);
+	fixture.Specification.RaysPerProbe = 128;
+	fixture.Specification.BounceFeedback = false;
+	fixture.ViewData.EnvironmentParams.x = 0.0f;
+	fixture.ViewData.SunDirection = glm::vec4(-normal, 1.0f);
+	fixture.ViewData.SunColor = glm::vec4(3.14159265358979323846f / 0.96f);
+	REQUIRE(fixture.Update(scene, assets));
+	const auto pixels = ReadProbe(fixture.Device, fixture.GI.GetIrradiance());
+	const glm::vec3 probe = fixture.Specification.Origin;
+	for (uint32_t y = 1; y < 7; ++y)
+		for (uint32_t x = 1; x < 7; ++x)
+		{
+			const glm::vec2 oct = (glm::vec2(x, y) - 0.5f) / 3.0f - 1.0f;
+			glm::vec3 direction(oct, 1.0f - std::abs(oct.x) - std::abs(oct.y));
+			const float fold = glm::clamp(-direction.z, 0.0f, 1.0f);
+			direction.x += direction.x >= 0.0f ? -fold : fold;
+			direction.y += direction.y >= 0.0f ? -fold : fold;
+			direction = glm::normalize(direction);
+			float sum = 0.0f, weight = 0.0f;
+			for (uint32_t ray = 0; ray < 128; ++ray)
+			{
+				const float vertical = 1.0f - 2.0f * (static_cast<float>(ray) + 0.5f) / 128.0f;
+				const float radius = std::sqrt(1.0f - vertical * vertical);
+				const float angle = 2.399963229728653f * static_cast<float>(ray);
+				const glm::vec3 rayDirection(std::cos(angle) * radius, vertical, std::sin(angle) * radius);
+				const float cosine = std::max(glm::dot(direction, rayDirection), 0.0f);
+				weight += cosine;
+				const float denominator = glm::dot(normal, rayDirection);
+				if (blocked || denominator >= 0.0f)
+					continue;
+				const float distance = glm::dot(centre - probe, normal) / denominator;
+				const glm::vec3 local = glm::conjugate(rotation) * (probe - centre + rayDirection * distance);
+				if (std::abs(local.x) < 50.0f && std::abs(local.z) < 50.0f)
+					sum += cosine;
+			}
+			CAPTURE(translation);
+			CAPTURE(blocked);
+			CAPTURE(x);
+			CAPTURE(y);
+			CHECK(pixels[y * 8 + x].r == doctest::Approx(static_cast<double>(sum / weight)).epsilon(0.015).scale(1.0));
+		}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: large translations retain distinct walls one representable step from a receiver")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	AssetManager assets;
+	Scene scene;
+	// At 100000 the float32 step is 0.0078125. The near face is exactly one step away.
+	AddCube(scene, {100000.015625f, 0, 0}, {0.015625f, 4, 4});
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.Origin.x += 100000.0f;
+	fixture.Specification.NormalBias = fixture.Specification.ViewBias = 0.0f;
+	REQUIRE(fixture.Update(scene, assets));
+	const auto query = fixture.GI.Inspect({100000.0f, 0.001f, 0}, {0, 1, 0}, {0, 1, 0});
+	REQUIRE(query);
+	for (uint32_t corner = 0; corner < 8; ++corner)
+	{
+		const auto& ray = query->Neighbours[corner].SurfaceRay;
+		CHECK((ray.Metadata.w & 2) == 0);
+		CHECK(ray.Metadata.z == (corner % 2));
+		if (corner % 2)
+			CHECK(ray.HitPositionDistance.x == 100000.0078125f);
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ProbeGI: secondary rays retain close parallel and near-light blockers at large translations")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const uint32_t errors = graphics.GetValidationErrorCount();
+	bool pointLight = false;
+	float translation = 100000.0f;
+	SUBCASE("parallel blocker four representable steps above the source") {}
+	SUBCASE("blocker two representable steps before a point light")
+	{
+		pointLight = true;
+	}
+	SUBCASE("same point-light blocker near the origin")
+	{
+		pointLight = true;
+		translation = 0.0f;
+	}
+	AssetManager assets;
+	Scene scene;
+	auto material = CreateRef<MaterialAsset>();
+	material->Handle = AssetHandle(60131);
+	material->BaseColorFactor = glm::vec4(1.0f);
+	material->MetallicFactor = 0.0f;
+	assets.AddMemoryAsset(material);
+	AddCube(scene, {0, translation - 0.0078125f, 0}, {100, 0.015625f, 100}, material->Handle);
+	// The source at Y=translation and blocker faces are exactly representable at either translation.
+	const float blockerCentre = translation + (pointLight ? 2.0f - 0.0234375f : 0.0390625f);
+	auto blocker = AddCube(scene, {0, blockerCentre, 0}, {100, 0.015625f, 100}, material->Handle);
+	ProbeFixture fixture(graphics.GetDevice());
+	fixture.Specification.Origin = {0, translation + (pointLight ? 1.0f : 0.015625f), 0};
+	fixture.Specification.RaysPerProbe = 128;
+	fixture.Specification.BounceFeedback = false;
+	fixture.ViewData.EnvironmentParams.x = 0.0f;
+	if (pointLight)
+	{
+		GPU::Light light{};
+		light.PositionRange = {0, translation + 2.0f, 0, 200};
+		light.ColorIntensity = {10, 10, 10, 0};
+		fixture.LightData = {light};
+	}
+	else
+	{
+		fixture.ViewData.SunDirection = {0, -1, 0, 1};
+		fixture.ViewData.SunColor = glm::vec4(1.0f);
+	}
+	REQUIRE(fixture.Update(scene, assets));
+	for (const auto& pixel : ReadProbe(fixture.Device, fixture.GI.GetIrradiance()))
+		CHECK(glm::length(glm::vec3(pixel)) < 1e-6f);
+	scene.DestroyEntity(blocker);
+	REQUIRE(fixture.Update(scene, assets));
+	float maximum = 0.0f;
+	for (const auto& pixel : ReadProbe(fixture.Device, fixture.GI.GetIrradiance()))
+		maximum = std::max(maximum, pixel.r);
+	CHECK(maximum > 0.01f);
 	CHECK(graphics.GetValidationErrorCount() == errors);
 }

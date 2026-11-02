@@ -55,21 +55,23 @@ float4 SampleMaterial(uint4 texture, float2 uv)
 				lerp(MaterialTexel(texture, base + int2(0, 1)), MaterialTexel(texture, base + int2(1, 1)), alpha.x), alpha.y);
 }
 
-bool IntersectBox(float3 origin, float3 direction, TraceNode node, float maximum)
+bool IntersectBox(float3 origin, float3 direction, TraceNode node, float maximum, float3 originOffset)
 {
+	precise float3 minimum = (node.Minimum.xyz - origin) - originOffset;
+	precise float3 maximumPoint = (node.Maximum.xyz - origin) - originOffset;
 	float nearDistance = 0.0;
 	float farDistance = maximum;
 	for (uint axis = 0; axis < 3; ++axis)
 	{
 		if (abs(direction[axis]) < 1e-10)
 		{
-			if (origin[axis] < node.Minimum[axis] || origin[axis] > node.Maximum[axis])
+			if (minimum[axis] > 0.0 || maximumPoint[axis] < 0.0)
 				return false;
 		}
 		else
 		{
-			float a = (node.Minimum[axis] - origin[axis]) / direction[axis];
-			float b = (node.Maximum[axis] - origin[axis]) / direction[axis];
+			float a = minimum[axis] / direction[axis];
+			float b = maximumPoint[axis] / direction[axis];
 			nearDistance = max(nearDistance, min(a, b));
 			farDistance = min(farDistance, max(a, b));
 		}
@@ -84,7 +86,7 @@ struct TraceHit
 	float2 Barycentric;
 };
 
-TraceHit Trace(float3 origin, float3 direction, float maximum, bool anyHit)
+TraceHit Trace(float3 origin, float3 direction, float maximum, bool anyHit, float3 originOffset = float3(0.0))
 {
 	TraceHit hit;
 	hit.Distance = maximum;
@@ -94,7 +96,7 @@ TraceHit Trace(float3 origin, float3 direction, float maximum, bool anyHit)
 	while (nodeIndex < g_Probe.Scene.x)
 	{
 		TraceNode node = g_Nodes[nodeIndex];
-		if (!IntersectBox(origin, direction, node, hit.Distance))
+		if (!IntersectBox(origin, direction, node, hit.Distance, originOffset))
 		{
 			nodeIndex = node.Range.z;
 			continue;
@@ -109,7 +111,7 @@ TraceHit Trace(float3 origin, float3 direction, float maximum, bool anyHit)
 			float determinant = dot(edge1, p);
 			if (!isfinite(determinant) || abs(determinant) < 1e-10)
 				continue;
-			float3 offset = origin - triangle.Position[0].xyz;
+			precise float3 offset = (origin - triangle.Position[0].xyz) + originOffset;
 			float u = dot(offset, p) / determinant;
 			float3 q = cross(offset, edge1);
 			float v = dot(direction, q) / determinant;
@@ -142,9 +144,9 @@ float3 RayDirection(uint ray)
 	return float3(cos(angle) * radius, y, sin(angle) * radius);
 }
 
-bool Unoccluded(float3 origin, float3 direction, float maximum)
+bool Unoccluded(float3 origin, float3 direction, float maximum, float3 originOffset)
 {
-	return Trace(origin, direction, maximum, true).Triangle == 0xffffffff;
+	return Trace(origin, direction, maximum, true, originOffset).Triangle == 0xffffffff;
 }
 
 [shader("compute")]
@@ -198,14 +200,23 @@ void TraceProbes(uint3 dispatch : SV_DispatchThreadID)
 				geometric = -geometric;
 				normal = -normal;
 			}
+			// Keep secondary origins relative to a triangle vertex. Adding a millimetre offset to
+			// a world position near 1e5 otherwise rounds it away; enlarging that offset skips close
+			// blockers. Subtract the anchor before adding this local part during traversal.
+			float3 anchor = triangle.Position[0].xyz;
+			float3 edge1 = triangle.Position[1].xyz - anchor;
+			float3 edge2 = triangle.Position[2].xyz - anchor;
+			precise float3 localPosition = edge1 * hit.Barycentric.x + edge2 * hit.Barycentric.y;
 			float3 position = origin + direction * hit.Distance;
-			float3 rayOrigin = position + geometric * 0.001;
+			float3 localError = 4.8e-7 * (abs(edge1 * hit.Barycentric.x) + abs(edge2 * hit.Barycentric.y));
+			float epsilon = max(0.001, dot(abs(geometric), localError));
+			precise float3 rayOffset = localPosition + geometric * epsilon;
 			float3 baseColor = saturate(material.BaseColor.rgb * SampleMaterial(material.Textures[0], uv).rgb);
 			float metallic = saturate(material.Parameters.x * SampleMaterial(material.Textures[2], uv).b);
 			float3 diffuse = baseColor * (1.0 - metallic) * 0.96;
 			radiance = max(material.Emissive.rgb * SampleMaterial(material.Textures[1], uv).rgb, float3(0.0));
 			if (g_View.SunDirection.w > 0.5 && dot(normal, -g_View.SunDirection.xyz) > 0.0 &&
-				Unoccluded(rayOrigin, -g_View.SunDirection.xyz, g_Probe.Spacing.w))
+				Unoccluded(anchor, -g_View.SunDirection.xyz, g_Probe.Spacing.w, rayOffset))
 				radiance += diffuse * g_View.SunColor.rgb * saturate(dot(normal, -g_View.SunDirection.xyz)) / PI;
 			for (uint i = 0; i < g_Probe.Scene.y; ++i)
 			{
@@ -222,7 +233,11 @@ void TraceProbes(uint3 dispatch : SV_DispatchThreadID)
 					float cone = saturate((dot(-L, light.DirectionCos.xyz) - light.DirectionCos.w) / max(light.Params.x - light.DirectionCos.w, 1e-4));
 					attenuation *= cone * cone;
 				}
-				if (dot(normal, L) > 0.0 && Unoccluded(rayOrigin, L, max(lightDistance - 0.002, 0.0)))
+				precise float3 shadowDelta = (light.PositionRange.xyz - anchor) - rayOffset;
+				float shadowDistance = length(shadowDelta);
+				float3 shadowDirection = shadowDelta / max(shadowDistance, 1e-8);
+				// The light is a point, not a surface requiring an exclusion interval before it.
+				if (dot(normal, L) > 0.0 && Unoccluded(anchor, shadowDirection, shadowDistance, rayOffset))
 					radiance += diffuse * light.ColorIntensity.rgb * attenuation * saturate(dot(normal, L)) / PI;
 			}
 			float4 indirect = SampleProbeGI(position, normal, -direction, g_Probe, g_PreviousIrradiance, g_PreviousDistance, hit.Distance);
