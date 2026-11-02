@@ -1,12 +1,14 @@
 #include "pxpch.h"
 #include "Paralax/Core/CommandLine.h"
 
+#include "Paralax/Core/EngineResources.h"
 #include "Paralax/Core/PathEncoding.h"
 
 #if defined(PX_PLATFORM_WINDOWS)
 
 	#include <Windows.h>
 
+	#include <algorithm>
 	#include <climits>
 	#include <cstring>
 	#include <string_view>
@@ -49,8 +51,15 @@ namespace Paralax {
 		// argv is never preferred: it is the C runtime's split of the ANSI command line, which best-fit mapping can
 		// give different quotes and backslashes (see CommandLine.h), so it may not even split the same way.
 		if (const wchar_t* commandLine = GetCommandLineW())
+		{
+			// CreateProcess accepts an empty command line. The C runtime then still gives the program's path as argv[0]
+			// (by parsing the path as a command line, which would split a path with spaces: not copied here).
+			if (*commandLine == L'\0')
+				return std::vector<std::string>{Utf16ToUtf8(ToUtf16(GetExecutablePath().wstring()))};
 			return SplitWindowsCommandLine(ToUtf16(commandLine));
+		}
 
+		// Not documented as possible: a guard, so that a program still starts with what argv holds.
 		PX_CORE_WARN("Could not read the Unicode command line: using argv in the system code page, which may have lost characters");
 		std::vector<std::string> arguments;
 		if (argc <= 0 || !argv)
