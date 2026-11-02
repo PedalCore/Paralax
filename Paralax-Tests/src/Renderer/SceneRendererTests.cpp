@@ -1486,20 +1486,21 @@ TEST_CASE("VisibilitySurfaces: command recording and mesh preparation require pr
 	CHECK_THROWS_AS(surfaces.PrepareMesh(GPUMesh{}), Testing::AssertionFailedError);
 }
 
-TEST_CASE("SceneRenderer: Visibility failures preserve Forward output and recover without stable allocation churn")
-{
-	if (!Testing::RequireTestGraphicsDevice())
-		return;
-	auto& graphics = *Testing::GetTestGraphicsDevice();
-	const auto initialErrors = graphics.GetValidationErrorCount();
+namespace {
+
+	// Register failure sites independently so slower drivers have the full test timeout for each recovery.
+	void CheckVisibilityFailureRecovery(int failure)
 	{
-		AssetManager assets;
-		Scene scene("DeferredFallback");
-		BuildTestScene(scene, assets);
-		auto output = CreateOutput(graphics.GetDevice(), 64, 64);
-		const auto camera = CameraView::LookAt({0, 2, 4.5f}, {0, 0.4f, 0}, glm::radians(50.0f), 1.0f);
-		for (int failure = 9; failure < 22; ++failure)
+		if (!Testing::RequireTestGraphicsDevice())
+			return;
+		auto& graphics = *Testing::GetTestGraphicsDevice();
+		const auto initialErrors = graphics.GetValidationErrorCount();
 		{
+			AssetManager assets;
+			Scene scene("DeferredFallback");
+			BuildTestScene(scene, assets);
+			auto output = CreateOutput(graphics.GetDevice(), 64, 64);
+			const auto camera = CameraView::LookAt({0, 2, 4.5f}, {0, 0.4f, 0}, glm::radians(50.0f), 1.0f);
 			CAPTURE(failure);
 			FailingDeferredFactory factory;
 			factory.FailAt = failure;
@@ -1534,8 +1535,74 @@ TEST_CASE("SceneRenderer: Visibility failures preserve Forward output and recove
 			CHECK(renderer.GetStats().SurfaceOwnedBytes == 0);
 			CHECK(Image::MaxChannelDifference(forward, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
 		}
+		CHECK(graphics.GetValidationErrorCount() == initialErrors);
 	}
-	CHECK(graphics.GetValidationErrorCount() == initialErrors);
+
+}
+
+TEST_CASE("SceneRenderer: Visibility preserves Forward output and recovers after an unsupported ID format")
+{
+	CheckVisibilityFailureRecovery(9);
+}
+
+TEST_CASE("SceneRenderer: Visibility preserves Forward output and recovers after an ID texture allocation failure")
+{
+	CheckVisibilityFailureRecovery(10);
+}
+
+TEST_CASE("SceneRenderer: Visibility preserves Forward output and recovers after an ID framebuffer allocation failure")
+{
+	CheckVisibilityFailureRecovery(11);
+}
+
+TEST_CASE("SceneRenderer: Visibility preserves Forward output and recovers after a normal ID pipeline allocation failure")
+{
+	CheckVisibilityFailureRecovery(12);
+}
+
+TEST_CASE("SceneRenderer: Visibility preserves Forward output and recovers after a mirrored ID pipeline allocation failure")
+{
+	CheckVisibilityFailureRecovery(13);
+}
+
+TEST_CASE("SceneRenderer: Visibility preserves Forward output and recovers after a two-sided ID pipeline allocation failure")
+{
+	CheckVisibilityFailureRecovery(14);
+}
+
+TEST_CASE("SceneRenderer: Visibility preserves Forward output and recovers after a material resolve pipeline allocation failure")
+{
+	CheckVisibilityFailureRecovery(15);
+}
+
+TEST_CASE("SceneRenderer: Visibility preserves Forward output and recovers after the first mesh ID binding allocation failure")
+{
+	CheckVisibilityFailureRecovery(16);
+}
+
+TEST_CASE("SceneRenderer: Visibility preserves Forward output and recovers after the first mesh resolve binding allocation failure")
+{
+	CheckVisibilityFailureRecovery(17);
+}
+
+TEST_CASE("SceneRenderer: Visibility preserves Forward output and recovers after the second mesh ID binding allocation failure")
+{
+	CheckVisibilityFailureRecovery(18);
+}
+
+TEST_CASE("SceneRenderer: Visibility preserves Forward output and recovers after the second mesh resolve binding allocation failure")
+{
+	CheckVisibilityFailureRecovery(19);
+}
+
+TEST_CASE("SceneRenderer: Visibility preserves Forward output and recovers after the third mesh ID binding allocation failure")
+{
+	CheckVisibilityFailureRecovery(20);
+}
+
+TEST_CASE("SceneRenderer: Visibility preserves Forward output and recovers after the third mesh resolve binding allocation failure")
+{
+	CheckVisibilityFailureRecovery(21);
 }
 
 TEST_CASE("SceneRenderer: Visibility reconstructs clipped tiny and UV seam triangles without losing interior coverage")
