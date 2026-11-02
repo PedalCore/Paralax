@@ -26,6 +26,11 @@ namespace Paralax {
 	// Registered assets live in files under the asset directory and are listed in "AssetRegistry.json" there.
 	// Sub-assets (materials and textures inside a glTF file) are registered with their parent's handle and are
 	// loaded by loading the parent. Memory assets (built-ins, generated content) exist only in the cache.
+	//
+	// Within a session, the Version of what is cached under a handle never goes down: whatever takes an asset's place
+	// (a reload of its file, of its parent's file or of the registry, or a removal followed by a registration of the
+	// same handle) starts above it. Caches keyed on (handle, Version), such as the renderer's GPU copies, can rely on
+	// that to tell a new asset from the one it replaced.
 	class AssetManager
 	{
 	public:
@@ -176,9 +181,13 @@ namespace Paralax {
 		static RegistryFileIdentity IdentifyRegistryText(std::string_view text);
 
 		Ref<Asset> LoadAsset(const AssetMetadata& metadata);
-		// Puts a file-backed asset in the cache under handle. One that replaces an asset LoadRegistry evicted gets a
-		// Version above the evicted one's.
+		// Puts an asset in the cache under handle, raising its Version above that of the asset it replaces there and of
+		// any one UncacheAsset took out, so the class's Version invariant holds. Every insertion goes through here except
+		// RemoveAsset's rollback, which puts back the very assets it took out.
 		void CacheAsset(AssetHandle handle, Ref<Asset> asset);
+		// Takes the asset cached under handle out of the cache, remembering its Version for CacheAsset. Returns it, or
+		// nullptr if none was cached.
+		Ref<Asset> UncacheAsset(AssetHandle handle);
 		// Replaces m_Registry and the save guard with what the registry file holds (the body of LoadRegistry).
 		bool ReadRegistryFile();
 		Ref<Asset> CreateBuiltin(AssetHandle handle) const;
@@ -205,7 +214,7 @@ namespace Paralax {
 		mutable std::optional<RegistryFileIdentity> m_RegistryIdentity;
 		std::unordered_map<uint64_t, AssetMetadata> m_Registry;
 		std::unordered_map<uint64_t, Ref<Asset>> m_Loaded;
-		// The Version each asset LoadRegistry evicted had, until its handle is loaded again (CacheAsset).
+		// The Version each asset UncacheAsset took out had, until its handle is cached again (CacheAsset).
 		std::unordered_map<uint64_t, uint32_t> m_EvictedVersions;
 		// Handles that are unknown or failed to load, reported once (cleared by imports, reloads and registry loads).
 		std::unordered_set<uint64_t> m_Failed;

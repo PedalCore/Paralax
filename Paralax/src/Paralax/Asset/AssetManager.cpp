@@ -210,10 +210,8 @@ namespace Paralax {
 	{
 		std::vector<std::pair<AssetMetadata, Ref<Asset>>> detached;
 		auto take = [&](uint64_t taken) {
-			auto loaded = m_Loaded.find(taken);
-			detached.emplace_back(m_Registry[taken], loaded == m_Loaded.end() ? nullptr : loaded->second);
+			detached.emplace_back(m_Registry[taken], UncacheAsset(taken));
 			m_Registry.erase(taken);
-			m_Loaded.erase(taken);
 		};
 		// Sub-assets go with their parent.
 		std::vector<uint64_t> subAssets;
@@ -243,7 +241,11 @@ namespace Paralax {
 			{
 				m_Registry[metadata.Handle] = metadata;
 				if (asset)
+				{
+					// The very asset taken out goes back, so nothing replaces it and its Version needs no floor.
 					m_Loaded[metadata.Handle] = asset;
+					m_EvictedVersions.erase(metadata.Handle);
+				}
 			}
 			PX_CORE_ERROR("Cannot remove asset {}: the asset registry could not be saved", static_cast<uint64_t>(handle));
 			return false;
@@ -334,7 +336,7 @@ namespace Paralax {
 		{
 			Ref<Asset> builtin = CreateBuiltin(handle);
 			if (builtin)
-				m_Loaded[handle] = builtin;
+				CacheAsset(handle, builtin);
 			else
 				m_Failed.insert(handle);
 			return builtin;
@@ -513,7 +515,8 @@ namespace Paralax {
 		PX_CORE_VERIFY(asset && asset->Handle.IsValid(), "Memory assets need a valid handle");
 		PX_CORE_VERIFY(!m_Loaded.contains(asset->Handle) && !m_Registry.contains(asset->Handle) && !IsBuiltin(asset->Handle),
 					   "Asset handle {} is already in use", static_cast<uint64_t>(asset->Handle));
-		m_Loaded[asset->Handle] = std::move(asset);
+		const AssetHandle handle = asset->Handle;
+		CacheAsset(handle, std::move(asset));
 	}
 
 	bool AssetManager::ReloadAsset(AssetHandle handle)
@@ -523,15 +526,6 @@ namespace Paralax {
 		if (!metadata || metadata->Parent.IsValid())
 			return false;
 
-		const uint32_t previousVersion = m_Loaded.contains(handle) ? m_Loaded[handle]->Version : 0;
-
-		// Sub-assets are re-produced by the reload; remember their versions so caches see them change.
-		std::unordered_map<uint64_t, uint32_t> previousSubVersions;
-		for (const auto& [subHandle, subMetadata] : m_Registry)
-		{
-			if (subMetadata.Parent == handle && m_Loaded.contains(subHandle))
-				previousSubVersions[subHandle] = m_Loaded[subHandle]->Version;
-		}
 		// The registry's record of the sub-assets, ordered so a before/after comparison is exact.
 		auto subAssetEntries = [&] {
 			std::map<uint64_t, std::pair<AssetType, std::string>> entries;
@@ -548,13 +542,13 @@ namespace Paralax {
 		Ref<Asset> asset = LoadAsset(parentMetadata);
 		if (!asset)
 			return false;
-		asset->Version = previousVersion + 1;
+		// Above the asset it replaces (CacheAsset), as LoadAsset's re-created sub-assets are, so caches see the change.
 		CacheAsset(handle, asset);
 
 		if (parentMetadata.Type == AssetType::Mesh)
 		{
 			// Rebuild the registry's sub-asset entries from exactly what the file produces now: drop entries (and
-			// cached assets) the file no longer yields, register new ones and bump versions of re-created ones.
+			// cached assets) the file no longer yields and register new ones.
 			std::unordered_map<uint64_t, AssetType> produced;
 			for (const auto& [subHandle, type] : m_LastSubAssets)
 				produced[subHandle] = type;
@@ -562,7 +556,8 @@ namespace Paralax {
 			{
 				if (it->second.Parent == handle && !produced.contains(it->first))
 				{
-					m_Loaded.erase(it->first);
+					// Remembered, so the sub-asset a later export brings back counts on from this one.
+					UncacheAsset(it->first);
 					it = m_Registry.erase(it);
 				}
 				else
@@ -573,10 +568,6 @@ namespace Paralax {
 			for (const auto& [subHandle, type] : produced)
 			{
 				m_Registry[subHandle] = {AssetHandle(subHandle), type, parentMetadata.FilePath, handle};
-				// A sub-asset cached before counts up from its version; a new one keeps the version CacheAsset gave it (1, or
-				// above that of one LoadRegistry evicted).
-				if (auto previous = previousSubVersions.find(subHandle); previous != previousSubVersions.end())
-					m_Loaded[subHandle]->Version = previous->second + 1;
 			}
 			// Only a change needs recording, so a model that kept its objects still reloads where the registry cannot be
 			// written (a read-only project, a file held open elsewhere).
@@ -715,12 +706,28 @@ namespace Paralax {
 
 	void AssetManager::CacheAsset(AssetHandle handle, Ref<Asset> asset)
 	{
+		PX_CORE_ASSERT(asset, "Only an asset can be cached");
 		if (const auto evicted = m_EvictedVersions.find(handle); evicted != m_EvictedVersions.end())
 		{
 			asset->Version = std::max(asset->Version, evicted->second + 1);
 			m_EvictedVersions.erase(evicted);
 		}
-		m_Loaded[handle] = std::move(asset);
+		Ref<Asset>& cached = m_Loaded[handle];
+		if (cached && cached != asset)
+			asset->Version = std::max(asset->Version, cached->Version + 1);
+		cached = std::move(asset);
+	}
+
+	Ref<Asset> AssetManager::UncacheAsset(AssetHandle handle)
+	{
+		const auto cached = m_Loaded.find(handle);
+		if (cached == m_Loaded.end())
+			return nullptr;
+		Ref<Asset> asset = std::move(cached->second);
+		m_Loaded.erase(cached);
+		uint32_t& version = m_EvictedVersions[handle];
+		version = std::max(version, asset->Version);
+		return asset;
 	}
 
 	bool AssetManager::LoadRegistry()
@@ -732,14 +739,6 @@ namespace Paralax {
 		// registry no longer lists, or the file it used to name, which an export (a copy of the file) would not. Each
 		// evicted asset's Version is kept, so the one loaded in its place counts on from it and no cache keyed on
 		// (handle, Version) can take one for the other. Memory assets and built-ins are never registered, so they stay.
-		auto evict = [&](uint64_t handle) {
-			const auto cached = m_Loaded.find(handle);
-			if (cached == m_Loaded.end())
-				return;
-			uint32_t& version = m_EvictedVersions[handle];
-			version = std::max(version, cached->second->Version);
-			m_Loaded.erase(cached);
-		};
 		std::unordered_set<uint64_t> changed;
 		for (const auto& [handle, before] : previous)
 		{
@@ -747,14 +746,14 @@ namespace Paralax {
 			if (!now || now->Type != before.Type || now->FilePath != before.FilePath || now->Parent != before.Parent)
 			{
 				changed.insert(handle);
-				evict(handle);
+				UncacheAsset(handle);
 			}
 		}
 		// Sub-assets come from their parent's file: one whose parent's entry changed is stale too, even if its own is not.
 		for (const auto& [handle, metadata] : m_Registry)
 		{
 			if (metadata.Parent.IsValid() && changed.contains(metadata.Parent))
-				evict(handle);
+				UncacheAsset(handle);
 		}
 		return loaded;
 	}

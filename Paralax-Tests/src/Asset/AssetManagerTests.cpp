@@ -774,6 +774,134 @@ TEST_CASE("AssetManager: a reloaded registry that unloads a model unloads its su
 	CHECK(assets.GetAsset(model)->Version == 2);
 }
 
+TEST_CASE("AssetManager: a node mesh that a re-export drops and a later one restores counts on from its old Version")
+{
+	// GPU copies are keyed on (handle, Version) and never dropped: a restored mesh at its old Version would be drawn
+	// with the old buffers.
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("AssetManagerNodeMeshRestored");
+	nlohmann::json document = Paralax::Testing::MakeTriangleDocument(directory);
+	document["meshes"].push_back(document["meshes"][0]);
+	document["meshes"][0]["name"] = "Keep";
+	document["meshes"][1]["name"] = "Drop";
+	document["nodes"] = {{{"name", "Kept"}, {"mesh", 0}}, {{"name", "Dropped"}, {"mesh", 1}}};
+	document["scenes"][0]["nodes"] = {0, 1};
+	const nlohmann::json both = document;
+	Paralax::Testing::WriteGltf(directory, both, "Model.gltf");
+
+	AssetManager assets(directory);
+	const AssetHandle model = assets.ImportAsset("Model.gltf");
+	REQUIRE(model.IsValid());
+	MeshImportResult imported;
+	std::string error;
+	REQUIRE(MeshImporter::Import(directory / "Model.gltf", model, imported, error));
+	REQUIRE(imported.NodeMeshes.size() == 2);
+	const AssetHandle kept = imported.Nodes[0].Mesh;
+	const AssetHandle dropped = imported.Nodes[1].Mesh;
+	const Ref<Asset> before = assets.GetAsset(dropped);
+	REQUIRE(before);
+	const uint32_t keptVersion = assets.GetAsset(kept)->Version;
+
+	document["meshes"].erase(1);
+	document["nodes"].erase(1);
+	document["scenes"][0]["nodes"] = {0};
+	Paralax::Testing::WriteGltf(directory, document, "Model.gltf");
+	REQUIRE(assets.ReloadAsset(model));
+	CHECK_FALSE(assets.IsRegistered(dropped));
+	CHECK_FALSE(assets.IsLoaded(dropped));
+
+	Paralax::Testing::WriteGltf(directory, both, "Model.gltf");
+	REQUIRE(assets.ReloadAsset(model));
+	REQUIRE(assets.IsRegistered(dropped));
+	const Ref<Asset> restored = assets.GetAsset(dropped);
+	REQUIRE(restored);
+	CHECK(restored != before);
+	CHECK(restored->Version == before->Version + 1);
+	// The mesh kept throughout counts up once per reload.
+	CHECK(assets.GetAsset(kept)->Version == keptVersion + 2);
+}
+
+TEST_CASE("AssetManager: a removed asset registered again counts on from its old Version, and a refused removal keeps it as it was")
+{
+	const std::filesystem::path directory = MakeProject("AssetRemovedVersions");
+	const std::filesystem::path registry = directory / AssetManager::RegistryFileName;
+	AssetManager assets(directory);
+	const AssetHandle material = assets.ImportAsset("Brick.pxmat");
+	REQUIRE(material.IsValid());
+	REQUIRE(assets.GetAsset(material));
+	REQUIRE(assets.ReloadAsset(material));
+	const Ref<Asset> before = assets.GetAsset(material);
+	REQUIRE(before->Version == 2);
+
+	// Refused (a folder in the registry's place): the very asset stays, as it was.
+	std::filesystem::remove(registry);
+	std::filesystem::create_directories(registry);
+	{
+		Paralax::Testing::ScopedLogCapture log;
+		CHECK_FALSE(assets.RemoveAsset(material));
+	}
+	CHECK(assets.GetAsset(material) == before);
+	CHECK(before->Version == 2);
+	std::filesystem::remove_all(registry);
+
+	// Removed, then listed again (a checkout bringing the entry back): the asset loaded counts on from the old one.
+	REQUIRE(assets.RemoveAsset(material));
+	CHECK_FALSE(assets.IsLoaded(material));
+	REQUIRE(WriteFileAtomically(registry, fmt::format(R"({{"Paralax":{{"Type":"AssetRegistry","Version":1}},"Assets":[{{"Handle":"{}","Type":"Material","Path":"Brick.pxmat"}}]}})",
+													  static_cast<uint64_t>(material))));
+	REQUIRE(assets.LoadRegistry());
+	const Ref<Asset> after = assets.GetAsset(material);
+	REQUIRE(after);
+	CHECK(after != before);
+	CHECK(after->Version == 3);
+}
+
+TEST_CASE("AssetManager: a sub-asset the registry never listed counts on from its old Version when its model loads again")
+{
+	// A registry as an older engine wrote it lists a model but not its per-node meshes, which loading the model still
+	// caches. When the model is unloaded and loaded again, the new mesh must not take the old one's Version.
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("AssetUnlistedSubAsset");
+	nlohmann::json document = Paralax::Testing::MakeTriangleDocument(directory);
+	document["nodes"] = {{{"name", "Node"}, {"mesh", 0}}};
+	document["scenes"][0]["nodes"] = {0};
+	Paralax::Testing::WriteGltf(directory, document, "Model.gltf");
+	Paralax::Testing::WriteGltf(directory, document, "Copy.gltf");
+	AssetHandle model = 0;
+	{
+		AssetManager importer(directory);
+		model = importer.ImportAsset("Model.gltf");
+		REQUIRE(model.IsValid());
+	}
+	MeshImportResult imported;
+	std::string error;
+	REQUIRE(MeshImporter::Import(directory / "Model.gltf", model, imported, error));
+	REQUIRE(imported.NodeMeshes.size() == 1);
+	const AssetHandle nodeMesh = imported.Nodes[0].Mesh;
+
+	const std::filesystem::path registry = directory / AssetManager::RegistryFileName;
+	const std::string listing = R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[{"Handle":")" + std::to_string(static_cast<uint64_t>(model)) +
+								R"(","Type":"Mesh","Path":"{}"}]})";
+	auto listModelAt = [&](const char* path) {
+		std::string text = listing;
+		text.replace(text.find("{}"), 2, path);
+		REQUIRE(WriteFileAtomically(registry, text));
+	};
+	listModelAt("Model.gltf");
+	AssetManager assets(directory);
+	REQUIRE(assets.GetAsset(model));
+	CHECK_FALSE(assets.IsRegistered(nodeMesh));
+	const Ref<Asset> before = assets.GetAsset(nodeMesh);
+	REQUIRE(before);
+
+	listModelAt("Copy.gltf");
+	REQUIRE(assets.LoadRegistry());
+	CHECK_FALSE(assets.IsLoaded(model));
+	REQUIRE(assets.GetAsset(model));
+	const Ref<Asset> after = assets.GetAsset(nodeMesh);
+	REQUIRE(after);
+	CHECK(after != before);
+	CHECK(after->Version == before->Version + 1);
+}
+
 TEST_CASE("AssetManager: a registry with entries it cannot read skips them, warns once with the count and stays read-only until fixed")
 {
 	const std::filesystem::path directory = MakeProject("AssetRegistrySkipped");
