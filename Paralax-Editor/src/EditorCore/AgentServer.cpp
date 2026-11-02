@@ -6,6 +6,8 @@
 #include <Paralax/Core/Log.h>
 
 #include <chrono>
+#include <exception>
+#include <optional>
 #include <random>
 #include <system_error>
 
@@ -15,19 +17,29 @@ namespace Paralax::Editor {
 
 	namespace {
 
-		std::string GenerateToken()
+		// A random token, or nullopt (error logged) without an OS entropy source: the token grants full control of
+		// the editor, so nothing weaker stands in for it.
+		std::optional<std::string> GenerateToken()
 		{
-			std::random_device device;
-			std::string token;
-			token.reserve(32);
-			constexpr std::string_view digits = "0123456789abcdef";
-			for (int i = 0; i < 4; i++)
+			try
 			{
-				uint32_t value = device();
-				for (int nibble = 0; nibble < 8; nibble++, value >>= 4)
-					token.push_back(digits[value & 0xF]);
+				std::random_device device;
+				std::string token;
+				token.reserve(32);
+				constexpr std::string_view digits = "0123456789abcdef";
+				for (int i = 0; i < 4; i++)
+				{
+					uint32_t value = device();
+					for (int nibble = 0; nibble < 8; nibble++, value >>= 4)
+						token.push_back(digits[value & 0xF]);
+				}
+				return token;
 			}
-			return token;
+			catch (const std::exception& e)
+			{
+				PX_CORE_ERROR("Agent server: cannot generate a token, no entropy source is available ({})", e.what());
+				return std::nullopt;
+			}
 		}
 
 		// Compares without an early exit so response timing does not reveal how much of the token matched.
@@ -76,16 +88,50 @@ namespace Paralax::Editor {
 
 	}
 
-	Scope<AgentServer> AgentServer::Start(const AgentServerSpecification& specification)
+	Scope<AgentServer> AgentServer::Listen(const AgentServerSpecification& specification)
 	{
 		Scope<AgentServer> server(new AgentServer());
 		server->m_Specification = specification;
-		server->m_Token = specification.Token.empty() ? GenerateToken() : specification.Token;
+		if (specification.Token.empty())
+		{
+			std::optional<std::string> token = GenerateToken();
+			if (!token)
+				return nullptr;
+			server->m_Token = std::move(*token);
+		}
+		else
+		{
+			server->m_Token = specification.Token;
+		}
 		if (!server->m_Listener.Listen(specification.Port))
 			return nullptr;
 		server->m_Port = server->m_Listener.GetPort();
-		server->m_AcceptThread = std::thread([raw = server.get()] { raw->AcceptLoop(); });
-		PX_CORE_INFO("Agent server listening on 127.0.0.1:{}", server->m_Port);
+		return server;
+	}
+
+	bool AgentServer::Run()
+	{
+		if (m_AcceptThread.joinable())
+			return true;
+		try
+		{
+			m_AcceptThread = std::thread([this] { AcceptLoop(); });
+		}
+		catch (const std::system_error& e)
+		{
+			// Thread creation failed (resource exhaustion): report it rather than terminate the editor.
+			PX_CORE_ERROR("Agent server: cannot start the accept thread: {}", e.what());
+			return false;
+		}
+		PX_CORE_INFO("Agent server listening on 127.0.0.1:{}", m_Port);
+		return true;
+	}
+
+	Scope<AgentServer> AgentServer::Start(const AgentServerSpecification& specification)
+	{
+		Scope<AgentServer> server = Listen(specification);
+		if (!server || !server->Run())
+			return nullptr;
 		return server;
 	}
 

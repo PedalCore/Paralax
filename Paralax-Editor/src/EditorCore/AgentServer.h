@@ -42,12 +42,20 @@ namespace Paralax::Editor {
 	// ProcessRequests. JSON-RPC batches (arrays, up to MaxBatchSize) run in one main-thread pass. Requests nested
 	// deeper than MaxJsonDepth are refused.
 	//
-	// Thread-safety: network I/O runs on internal threads. Construction, ProcessRequests and destruction are
-	// main-thread-only. Destruction stops the server, failing any queued requests.
+	// Thread-safety: network I/O runs on internal threads, which exist from Run() on. Listen, Start, Run,
+	// ProcessRequests and destruction are main-thread-only. Destruction stops the server, failing any queued requests.
 	class AgentServer
 	{
 	public:
-		// Returns nullptr (error logged) if the port cannot be bound.
+		// Binds the port and prepares the token, but accepts no connection until Run(): no thread of the server runs
+		// before then, so the owner can finish main-thread-only setup (installing log sinks, say) first. Clients that
+		// connect in between wait in the listen backlog. Returns nullptr (error logged) if the port cannot be bound or
+		// no token can be generated.
+		static Scope<AgentServer> Listen(const AgentServerSpecification& specification);
+		// Starts accepting connections on an internal thread. Returns false (error logged) if the thread cannot be
+		// created; the server then serves nobody and is destroyed as usual. Calling it again does nothing.
+		bool Run();
+		// Listen() and Run() in one step, for owners with nothing to set up in between.
 		static Scope<AgentServer> Start(const AgentServerSpecification& specification);
 		~AgentServer();
 

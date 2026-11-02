@@ -58,6 +58,16 @@ namespace Paralax {
 
 			void OnAttach() override
 			{
+				// The server accepts connections from here on, once the application exists and its log sinks are
+				// installed: the network threads log, and sink changes must not race them (see Log).
+				if (!m_Server->Run())
+				{
+					// An agent asked for control and cannot get it: fail the launch rather than leave it waiting.
+					PX_CORE_ERROR("The agent server could not start; closing the editor");
+					Application::Get().SetExitCode(1);
+					Application::Get().Close();
+					return;
+				}
 				{
 					std::lock_guard lock(m_Wake->Mutex);
 					m_Wake->Wake = [this, alive = std::weak_ptr<int>(m_Alive)] {
@@ -235,8 +245,9 @@ namespace Paralax {
 		if (project)
 			specification.Window.Title = fmt::format("Paralax Editor - {}", project->GetName());
 
-		// The server starts before the application so a bad port fails the launch: an agent that asked for control
-		// would otherwise wait on an editor it cannot reach.
+		// The server binds its port before the application exists so a bad port fails the launch: an agent that asked
+		// for control would otherwise wait on an editor it cannot reach. It starts serving (and its threads) only
+		// once its layer is attached, after the application has installed the log sinks.
 		Scope<Editor::AgentServer> agentServer;
 		auto agentWake = std::make_shared<AgentServerWake>();
 		bool malformedPort = false;
@@ -250,7 +261,7 @@ namespace Paralax {
 			Editor::AgentServerSpecification serverSpecification;
 			serverSpecification.Port = static_cast<uint16_t>(*port);
 			serverSpecification.OnRequestQueued = [agentWake] { (*agentWake)(); };
-			agentServer = Editor::AgentServer::Start(serverSpecification);
+			agentServer = Editor::AgentServer::Listen(serverSpecification);
 			if (!agentServer)
 				return nullptr;
 		}

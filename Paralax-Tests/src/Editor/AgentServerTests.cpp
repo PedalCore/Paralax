@@ -244,6 +244,39 @@ TEST_CASE("AgentServer: invalid JSON gets a parse error and the connection stays
 	CHECK(Call(client, *server, context, Request(2, "scene.info")).contains("result"));
 }
 
+TEST_CASE("AgentServer: Listen binds the port but serves connections only once Run is called")
+{
+	// The order the editor relies on: a log sink installed before any server thread exists (sink changes are
+	// main-thread-only and must not run concurrently with logging from those threads).
+	Paralax::Testing::ScopedLogCapture capture;
+	Scope<AgentServer> listening = AgentServer::Listen({});
+	REQUIRE(listening);
+	CHECK(listening->GetPort() != 0);
+	CHECK(listening->GetToken().size() == 32);
+	CHECK_FALSE(capture.Contains(spdlog::level::info, "listening"));
+	listening.reset(); // Never run: nothing to join.
+
+	Scope<AgentServer> server = AgentServer::Listen({});
+	REQUIRE(server);
+	EditorContext context;
+	// The connection is queued by the OS; nobody answers it yet.
+	TestClient client(server->GetPort());
+	std::future<json> response = client.SendAsync(Request(0, "session.authenticate", {{"token", server->GetToken()}}));
+	const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+	while (std::chrono::steady_clock::now() < until)
+	{
+		server->ProcessRequests(context);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	CHECK(response.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready);
+
+	REQUIRE(server->Run());
+	CHECK(Await(response, *server, context)["result"]["authenticated"] == true);
+	CHECK(capture.Contains(spdlog::level::info, "listening"));
+	CHECK(server->Run()); // Already running: nothing happens.
+	CHECK(Call(client, *server, context, Request(1, "scene.info")).contains("result"));
+}
+
 TEST_CASE("AgentServer: queued requests notify the owner so they can be processed promptly")
 {
 	std::atomic<int> notifications = 0;
