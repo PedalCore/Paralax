@@ -425,8 +425,12 @@ TEST_CASE("AssetManager: an import whose registry cannot be saved is undone")
 
 	CHECK_FALSE(assets.ImportAsset("Brick.pxmat").IsValid());
 	CHECK_FALSE(assets.ImportAsset("Textures/Brick.png").IsValid());
+	// A model registers its sub-assets (material, texture, node meshes) during the import; they go back out too.
+	Paralax::Testing::WriteGltf(directory, Paralax::Testing::MakeTriangleDocument(directory), "Model.gltf");
+	CHECK_FALSE(assets.ImportAsset("Model.gltf").IsValid());
 	CHECK(assets.GetRegisteredAssets().empty());
 	CHECK_FALSE(assets.GetHandleForPath("Brick.pxmat").IsValid());
+	CHECK_FALSE(assets.GetHandleForPath("Model.gltf").IsValid());
 	CHECK(capture.Contains(spdlog::level::err, "registry could not be saved"));
 
 	// Writable again: the same files import.
@@ -449,6 +453,18 @@ TEST_CASE("AssetManager: removing and reloading fail without losing the registry
 	REQUIRE(model.IsValid());
 	const size_t registered = assets.GetRegisteredAssets().size();
 	REQUIRE(registered >= 3); // The material, the model and its node mesh at least.
+	// The loaded model and one of its sub-assets, which a refused removal must put back as they were.
+	const Ref<MeshAsset> mesh = assets.GetAsset<MeshAsset>(model);
+	REQUIRE(mesh);
+	AssetHandle subAsset = 0;
+	for (const AssetMetadata& metadata : assets.GetRegisteredAssets())
+	{
+		if (metadata.Parent == model)
+			subAsset = metadata.Handle;
+	}
+	REQUIRE(subAsset.IsValid());
+	const Ref<Asset> loadedSubAsset = assets.GetAsset(subAsset);
+	REQUIRE(loadedSubAsset);
 
 	// Lock the registry by putting a directory in its place.
 	std::filesystem::remove(directory / AssetManager::RegistryFileName);
@@ -459,7 +475,11 @@ TEST_CASE("AssetManager: removing and reloading fail without losing the registry
 	CHECK_FALSE(assets.RemoveAsset(model));
 	CHECK(assets.IsRegistered(model));
 	CHECK(assets.GetRegisteredAssets().size() == registered);
-	CHECK(assets.GetAsset<MeshAsset>(model));
+	CHECK(assets.IsLoaded(model));
+	CHECK(assets.GetAsset<MeshAsset>(model) == mesh);
+	CHECK(assets.GetMetadata(subAsset)->Parent == model);
+	CHECK(assets.IsLoaded(subAsset));
+	CHECK(assets.GetAsset(subAsset) == loadedSubAsset);
 	// Reloads that change nothing in the registry need no save; a material's never does.
 	CHECK(assets.ReloadAsset(model));
 	CHECK(assets.ReloadAsset(material));
