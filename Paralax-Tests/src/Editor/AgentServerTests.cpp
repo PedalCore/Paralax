@@ -110,6 +110,29 @@ TEST_CASE("AgentServer: requests map to editor commands with JSON-RPC results an
 	CHECK(info.contains("result"));
 }
 
+TEST_CASE("AgentServer: an error quotes a refused method or value briefly, whatever its size")
+{
+	EditorContext context;
+	size_t executed = 0;
+	const std::string huge(16u << 20, 'x');
+
+	const json unknown = AgentServer::HandleRequest(context, Request(1, huge), executed);
+	CHECK(ErrorCode(unknown) == AgentServer::MethodNotFound);
+	const std::string unknownMessage = unknown["error"]["message"].get<std::string>();
+	CHECK(unknownMessage.size() < 256);
+	CHECK_MESSAGE(unknownMessage.starts_with("Unknown command 'xxxx"), unknownMessage);
+	CHECK_MESSAGE(unknownMessage.find("...' (16777216 bytes)") != std::string::npos, unknownMessage);
+	CHECK(executed == 0);
+
+	// A 16 MiB value refused by a field comes back as a short error naming the field.
+	const json created = AgentServer::HandleRequest(context, Request(2, "entity.create", {{"name", "A"}, {"components", {{"PointLight", {{"Intensity", huge}}}}}}), executed);
+	CHECK(ErrorCode(created) == AgentServer::CommandFailed);
+	const std::string createdMessage = created["error"]["message"].get<std::string>();
+	CHECK(createdMessage.size() < 256);
+	CHECK_MESSAGE(createdMessage.starts_with("Field 'Intensity' expects"), createdMessage);
+	CHECK_MESSAGE(createdMessage.ends_with("... (string of 16777216 bytes)"), createdMessage);
+}
+
 TEST_CASE("AgentServer: malformed requests are rejected without running anything")
 {
 	EditorContext context;

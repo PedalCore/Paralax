@@ -218,7 +218,7 @@ namespace Paralax {
 				const ComponentInfo* info = ComponentRegistry::Find(it.key());
 				if (!info)
 				{
-					warn(fmt::format("Entity {}: unknown component '{}' skipped", static_cast<uint64_t>(entity.GetUUID()), it.key()));
+					warn(fmt::format("Entity {}: unknown component {} skipped", static_cast<uint64_t>(entity.GetUUID()), QuoteText(it.key())));
 					continue;
 				}
 				std::string error;

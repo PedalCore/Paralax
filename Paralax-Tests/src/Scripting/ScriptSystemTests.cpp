@@ -255,6 +255,29 @@ TEST_CASE("ScriptSystem: a refused value of any size or bytes gives a short scri
 	CHECK(entity.GetName() == "Target");
 }
 
+TEST_CASE("ScriptSystem: an unknown field or component of any size is named briefly")
+{
+	ScriptFixture fixture;
+	Entity entity = fixture.World.CreateEntity("Target");
+	fixture.Start();
+	fixture.Update();
+	const std::string target = EntityExpression(entity);
+	auto fails = [&](const std::string& code) { return ExpectShortError(fixture, code); };
+
+	// Writing, reading and adding a field.
+	std::string error = fails(target + ":GetComponent('Transform')[string.rep('k', 1 << 20)] = 1");
+	CHECK_MESSAGE(error.find("component 'Transform' has no field 'kkkk") != std::string::npos, error);
+	CHECK_MESSAGE(error.find("...' (1048576 bytes)") != std::string::npos, error);
+	error = fails(target + ":GetComponent('Transform')[string.rep('k', 1 << 20)]");
+	CHECK_MESSAGE(error.find("component 'Transform' has no field 'kkkk") != std::string::npos, error);
+	CHECK_MESSAGE(error.find("...' (1048576 bytes)") != std::string::npos, error);
+	error = fails(target + ":AddComponent('Transform', { [string.rep('k', 1 << 20)] = 1 })");
+	CHECK_MESSAGE(error.find("...' (1048576 bytes)") != std::string::npos, error);
+	error = fails(target + ":GetComponent(string.rep('c', 1 << 20) .. '\\xFF')");
+	CHECK_MESSAGE(error.find("unknown component 'cccc") != std::string::npos, error);
+	CHECK_MESSAGE(error.find("...' (1048577 bytes)") != std::string::npos, error);
+}
+
 TEST_CASE("ScriptSystem: a script that sends a refused value of bytes that are not UTF-8 reports a script error")
 {
 	ScriptFixture fixture;

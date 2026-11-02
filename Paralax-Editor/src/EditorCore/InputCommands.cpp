@@ -2,6 +2,7 @@
 
 #include <Paralax/Core/Input.h>
 #include <Paralax/Core/InputNames.h>
+#include <Paralax/Core/JsonText.h>
 #include <Paralax/Events/ApplicationEvent.h>
 #include <Paralax/Events/KeyEvent.h>
 #include <Paralax/Events/MouseEvent.h>
@@ -63,7 +64,7 @@ namespace Paralax::Editor {
 							   const std::string name = params["key"].get<std::string>();
 							   std::optional<KeyCode> key = KeyFromName(name);
 							   if (!key)
-								   return CommandResult::Fail(fmt::format("Unknown key '{}'; keys are: {}", name, KeyNamesList()));
+								   return CommandResult::Fail(fmt::format("Unknown key {}; keys are: {}", QuoteText(name), KeyNamesList()));
 							   std::string error;
 							   std::optional<bool> press = ParseAction(params, error);
 							   if (!press)

@@ -43,6 +43,57 @@ TEST_CASE("BuiltinCommands: parameters are validated before commands run")
 	CHECK(hasCreate);
 }
 
+TEST_CASE("BuiltinCommands: errors show refused ids, names and keys briefly, whatever their size")
+{
+	EditorContext context;
+	const std::string huge(16u << 20, 'x');
+	constexpr size_t ShortErrorBytes = 1024;
+	auto fails = [&](std::string_view command, const json& params) {
+		const CommandResult result = context.Execute(command, params);
+		CHECK_FALSE(result.Success);
+		CHECK_MESSAGE(result.Error.size() < ShortErrorBytes, result.Error.substr(0, ShortErrorBytes));
+		return result.Error;
+	};
+
+	// An id that names no entity.
+	std::string error = fails("entity.get", {{"id", huge}});
+	CHECK_MESSAGE(error.starts_with("No entity with id \"xxxx"), error);
+	CHECK_MESSAGE(error.ends_with("... (string of 16777216 bytes)"), error);
+	CHECK(fails("entity.destroy", {{"id", "42"}}) == "No entity with id \"42\" (string)");
+	CHECK(fails("entity.rename", {{"id", json::array({1, 2})}, {"name", "A"}}) == "No entity with id [1,2] (array)");
+
+	// Unknown parameters and commands.
+	error = fails("entity.create", {{"name", "A"}, {huge, 1}});
+	CHECK_MESSAGE(error.starts_with("'entity.create': unknown parameter 'xxxx"), error);
+	CHECK_MESSAGE(error.ends_with("...' (16777216 bytes)"), error);
+	CHECK(fails("entity.create", {{"colour", "red"}}) == "'entity.create': unknown parameter 'colour'");
+	error = fails(huge, json::object());
+	CHECK_MESSAGE(error.starts_with("Unknown command 'xxxx"), error);
+	CHECK(error.find("...' (16777216 bytes)") != std::string::npos);
+	error = fails("input.key", {{"key", huge}, {"action", "press"}});
+	CHECK_MESSAGE(error.starts_with("Unknown key 'xxxx"), error);
+	CHECK(error.find("...' (16777216 bytes); keys are: ") != std::string::npos);
+	CHECK(fails("input.key", {{"key", "Nope"}, {"action", "press"}}).starts_with("Unknown key 'Nope'; keys are: "));
+
+	// Many unknown components, one of them huge: the first few are named and the rest counted.
+	json components = json::object();
+	for (int i = 0; i < 10000; i++)
+		components["Bogus" + std::to_string(10000 + i)] = json::object();
+	components[huge] = json::object();
+	error = fails("entity.create", {{"name", "A"}, {"components", components}});
+	CHECK_MESSAGE(error.starts_with("unknown component 'Bogus10000'; unknown component 'Bogus10001'"), error);
+	CHECK_MESSAGE(error.ends_with("; and 9993 more"), error);
+	// A component's own field errors are capped the same way.
+	json fields = json::object();
+	for (int i = 0; i < 10000; i++)
+		fields["Field" + std::to_string(10000 + i)] = huge.substr(0, 1000);
+	error = fails("entity.create", {{"name", "A"}, {"components", {{"PointLight", fields}}}});
+	CHECK_MESSAGE(error.starts_with("Unknown field 'PointLight.Field10000'"), error);
+	CHECK_MESSAGE(error.ends_with("; and 9992 more"), error);
+	// Nothing was created by the refused commands.
+	CHECK(context.GetEditorScene().GetEntityCount() == 0);
+}
+
 TEST_CASE("BuiltinCommands: entities and components are created, edited and inspected")
 {
 	EditorContext context;

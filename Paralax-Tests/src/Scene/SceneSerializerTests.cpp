@@ -2,6 +2,7 @@
 
 #include "TestUtilities.h"
 
+#include <Paralax/Core/JsonText.h>
 #include <Paralax/Scene/Entity.h>
 #include <Paralax/Scene/SceneSerializer.h>
 
@@ -132,6 +133,30 @@ TEST_CASE("SceneSerializer: unknown components and invalid fields produce warnin
 	CHECK(a.GetName() == "A");
 	CHECK(a.GetComponent<PointLightComponent>().Range == 5.0f);
 	CHECK_FALSE(scene.GetParent(scene.GetEntityByUUID(UUID(200))).has_value());
+}
+
+TEST_CASE("SceneSerializer: warnings quote a hostile file's names and values briefly")
+{
+	// A scene file may be up to MaxTextFileBytes, so one name or value in it can be megabytes, and every warning is
+	// logged and handed to agents.
+	const std::string huge(16u << 20, 'x');
+	json components = {{huge, json::object()}, {"PointLight", {{"Intensity", huge}}}};
+	for (int i = 0; i < 100; i++)
+		components["PointLight"]["Unknown" + std::to_string(100 + i)] = 1;
+	const json document = {
+		{"Paralax", {{"Type", "Scene"}, {"Version", 1}}},
+		{"Entities", {{{"ID", "100"}, {"Parent", "0"}, {"Components", components}}}},
+	};
+
+	Scene scene;
+	std::string error;
+	std::vector<std::string> warnings;
+	REQUIRE(SceneSerializer::Deserialize(scene, document, error, &warnings));
+	REQUIRE(warnings.size() == 2);
+	for (const std::string& warning : warnings)
+		CHECK_MESSAGE(warning.size() < 1024, warning.substr(0, 1024));
+	CHECK(warnings[0] == "Entity 100: Field 'Intensity' expects a finite number, got \"" + std::string(MaxPreviewBytes - 1, 'x') + "... (string of 16777216 bytes); Unknown field 'PointLight.Unknown100'; Unknown field 'PointLight.Unknown101'; Unknown field 'PointLight.Unknown102'; Unknown field 'PointLight.Unknown103'; Unknown field 'PointLight.Unknown104'; Unknown field 'PointLight.Unknown105'; Unknown field 'PointLight.Unknown106'; and 93 more");
+	CHECK(warnings[1] == "Entity 100: unknown component '" + std::string(MaxPreviewBytes, 'x') + "...' (16777216 bytes) skipped");
 }
 
 TEST_CASE("SceneSerializer: structurally invalid documents are rejected")

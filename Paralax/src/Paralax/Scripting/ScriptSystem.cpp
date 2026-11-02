@@ -5,6 +5,7 @@
 #include "Paralax/Audio/AudioSystem.h"
 #include "Paralax/Core/Input.h"
 #include "Paralax/Core/InputNames.h"
+#include "Paralax/Core/JsonText.h"
 #include "Paralax/Core/PathEncoding.h"
 #include "Paralax/Game/GameState.h"
 #include "Paralax/Math/Math.h"
@@ -590,7 +591,7 @@ namespace Paralax {
 		{
 			const ComponentInfo* info = ComponentRegistry::Find(name);
 			if (!info)
-				ScriptError(fmt::format("unknown component '{}'", name));
+				ScriptError(fmt::format("unknown component {}", QuoteText(name)));
 			return *info;
 		}
 
@@ -1031,7 +1032,7 @@ namespace Paralax {
 					return sol::make_object(state, component.Info->Name);
 				const FieldInfo* field = component.Info->FindField(key);
 				if (!field)
-					ScriptError(fmt::format("component '{}' has no field '{}'", component.Info->Name, key));
+					ScriptError(fmt::format("component '{}' has no field {}", component.Info->Name, QuoteText(key)));
 				Entity entity = Resolve(ScriptEntity{component.ID});
 				void* data = component.Info->Get(GetScene().GetRegistry(), entity.GetHandle());
 				if (!data)
@@ -1041,7 +1042,7 @@ namespace Paralax {
 			auto newIndex = [this](const ComponentRef& component, const std::string& key, const sol::object& value) {
 				const FieldInfo* field = component.Info->FindField(key);
 				if (!field)
-					ScriptError(fmt::format("component '{}' has no field '{}'", component.Info->Name, key));
+					ScriptError(fmt::format("component '{}' has no field {}", component.Info->Name, QuoteText(key)));
 				// Convert first, then resolve the component: nothing may hold a pointer into component storage while Lua
 				// code could run (the conversion reads the value; allocations may trigger a collection step).
 				std::optional<json> converted = LuaToFieldJson(value, *field);
@@ -1081,7 +1082,7 @@ namespace Paralax {
 						const std::string fieldName = key.as<std::string>();
 						const FieldInfo* field = info.FindField(fieldName);
 						if (!field)
-							ScriptError(fmt::format("component '{}' has no field '{}'", name, fieldName));
+							ScriptError(fmt::format("component '{}' has no field {}", name, QuoteText(fieldName)));
 						std::optional<json> converted = LuaToFieldJson(value, *field);
 						if (!converted)
 							ScriptError(fmt::format("{}.{} expects {}", name, fieldName, DescribeExpected(field->Type)));

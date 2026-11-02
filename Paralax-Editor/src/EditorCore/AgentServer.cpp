@@ -340,7 +340,7 @@ namespace Paralax::Editor {
 		if (name == "session.authenticate")
 			return notification ? json() : json{{"jsonrpc", "2.0"}, {"id", id}, {"result", {{"authenticated", true}}}};
 		if (!context.GetCommands().Find(name))
-			return notification ? json() : MakeError(id, MethodNotFound, fmt::format("Unknown command '{}' (use 'help' to list commands)", name));
+			return notification ? json() : MakeError(id, MethodNotFound, fmt::format("Unknown command {} (use 'help' to list commands)", QuoteText(name)));
 
 		auto params = request.find("params");
 		static const json s_NoParameters = json::object();

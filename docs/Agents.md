@@ -93,11 +93,11 @@ windowed one.
 5. **Iterate.** `play.stop` returns to the edited scene unchanged. Change scripts with `script.update` (while
    playing, the change waits for the next `play.start`). Change components with `component.set`. When it refuses a
    value, the error names the field and what it expects and shows the value briefly, with its JSON type: a long one
-   is cut, ends in `...` and gives its full size. Of a component's problems, the first eight are listed and the rest
-   counted. Undo with `edit.undo` and redo with `edit.redo`; both refuse while playing ("Stop play mode first"),
-   since the history belongs to the edited scene, not the running copy. Should restoring the scene have to drop a
-   value it cannot hold (an engine bug), the result lists it under `warnings`, and a failed command's rollback adds
-   it to the error.
+   is cut, ends in `...` and gives its full size. Of many problems (with the components, and within each one), the
+   first eight are listed and the rest counted. Undo with `edit.undo` and redo with `edit.redo`; both refuse while
+   playing ("Stop play mode first"), since the history belongs to the edited scene, not the running copy. Should
+   restoring the scene have to drop a value it cannot hold (an engine bug), the result lists it under `warnings`, and
+   a failed command's rollback adds it to the error.
 6. **Ship.** `project.export { output }` writes a standalone game folder: the runtime, its resources and the project.
    Run that folder's executable with `--headless --frames N --fail-on-script-error` to check it on its own.
 

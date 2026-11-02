@@ -2,12 +2,12 @@
 
 #include <Paralax/Asset/MaterialAsset.h>
 #include <Paralax/Asset/MaterialSerializer.h>
+#include <Paralax/Core/JsonText.h>
 #include <Paralax/Core/PathEncoding.h>
+#include <Paralax/Core/Reflection.h>
 #include <Paralax/Scene/ComponentRegistry.h>
 #include <Paralax/Scene/Entity.h>
 #include <Paralax/Scene/SceneSerializer.h>
-
-#include <spdlog/fmt/ranges.h>
 
 #include <charconv>
 
@@ -52,7 +52,9 @@ namespace Paralax::Editor {
 
 		CommandResult EntityNotFound(const json& params)
 		{
-			return CommandResult::Fail(fmt::format("No entity with id {}", params.value("id", json()).dump(-1, ' ', false, json::error_handler_t::replace)));
+			// Described, not dumped: the id is whatever the caller sent, a 16 MiB string included.
+			const auto id = params.find("id");
+			return CommandResult::Fail(fmt::format("No entity with id {}", id == params.end() ? std::string("null") : DescribeJsonValue(*id)));
 		}
 
 		// Names are written through the registry, so the editor accepts exactly the names scene files, scripts and
@@ -70,29 +72,29 @@ namespace Paralax::Editor {
 		// Applies { "<Component>": { fields } } to an entity, adding missing components.
 		CommandResult ApplyComponents(Scene& scene, Entity entity, const json& components)
 		{
-			std::vector<std::string> errors;
+			Reflection::ErrorList errors;
 			for (auto it = components.begin(); it != components.end(); ++it)
 			{
 				const ComponentInfo* info = ComponentRegistry::Find(it.key());
 				if (!info)
 				{
-					errors.push_back(fmt::format("unknown component '{}'", it.key()));
+					errors.Add(fmt::format("unknown component {}", QuoteText(it.key())));
 					continue;
 				}
 				if (!info->Has(scene.GetRegistry(), entity.GetHandle()) && !info->UserEditable)
 				{
-					errors.push_back(fmt::format("component '{}' cannot be added", it.key()));
+					errors.Add(fmt::format("component '{}' cannot be added", info->Name));
 					continue;
 				}
 				std::string error;
 				if (!ComponentRegistry::FromJson(*info, info->Add(scene.GetRegistry(), entity.GetHandle()), it.value(), error))
-					errors.push_back(error);
+					errors.Add(std::move(error));
 			}
 			// Same rule as entity.rename (and what the scene loader would otherwise silently fix up).
 			if (entity.GetName().empty())
-				errors.emplace_back("the entity name cannot be empty");
-			if (!errors.empty())
-				return CommandResult::Fail(fmt::format("{}", fmt::join(errors, "; ")));
+				errors.Add("the entity name cannot be empty");
+			if (!errors.IsEmpty())
+				return CommandResult::Fail(errors.Join());
 			return CommandResult::Ok({{"id", IdString(entity.GetUUID())}});
 		}
 

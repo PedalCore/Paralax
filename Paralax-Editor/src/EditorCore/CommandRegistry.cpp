@@ -3,6 +3,7 @@
 #include "EditorCore/EditorContext.h"
 
 #include <Paralax/Core/Base.h>
+#include <Paralax/Core/JsonText.h>
 
 #include <spdlog/fmt/ranges.h>
 
@@ -71,7 +72,7 @@ namespace Paralax::Editor {
 	{
 		const CommandDescriptor* descriptor = Find(name);
 		if (!descriptor)
-			return CommandResult::Fail(fmt::format("Unknown command '{}' (use 'help' to list commands)", name));
+			return CommandResult::Fail(fmt::format("Unknown command {} (use 'help' to list commands)", QuoteText(name)));
 
 		const json& arguments = params.is_null() ? json::object() : params;
 		if (!arguments.is_object())
@@ -93,7 +94,7 @@ namespace Paralax::Editor {
 		{
 			const bool known = std::any_of(descriptor->Parameters.begin(), descriptor->Parameters.end(), [&](const CommandParameter& p) { return p.Name == it.key(); });
 			if (!known)
-				return CommandResult::Fail(fmt::format("'{}': unknown parameter '{}'", name, it.key()));
+				return CommandResult::Fail(fmt::format("'{}': unknown parameter {}", name, QuoteText(it.key())));
 		}
 
 		if (descriptor->ModifiesScene)
