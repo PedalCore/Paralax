@@ -188,6 +188,9 @@ TEST_CASE("MeshImporter: hostile node, camera and light values are made safe")
 	document["nodes"][6]["matrix"] = json::array();          // A matrix of zeros: collapsed to a point.
 	for (int i = 0; i < 16; i++)
 		document["nodes"][6]["matrix"].push_back(0.0);
+	// Flat on one axis (glTF allows a zero scale): collapsed where it is, like a matrix of zeros.
+	document["nodes"][1].erase("translation");
+	document["nodes"][1]["matrix"] = {1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.0, 0.0, 1.0};
 	// Every entry a float, but an axis longer than a float can hold: not a collapse, an unusable transform.
 	document["nodes"][4]["matrix"] = {3e38, 3e38, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0};
 	document["nodes"][5]["name"] = std::string(255, 'x') + "\xC3\xA9" + std::string(10, 'y'); // A 2-byte character across byte 256.
@@ -212,8 +215,10 @@ TEST_CASE("MeshImporter: hostile node, camera and light values are made safe")
 		CHECK(result.Nodes[i].Scale == glm::vec3(1.0f));
 	}
 	CHECK(std::count_if(result.Warnings.begin(), result.Warnings.end(), [](const std::string& w) { return w.find("unusable transform") != std::string::npos; }) == 3);
-	// The collapsed node stays collapsed, where the combined mesh shows it (nowhere).
+	// The collapsed nodes stay collapsed, where the combined mesh shows them.
 	CHECK(result.Nodes[6].Scale == glm::vec3(0.0f));
+	CHECK(result.Nodes[1].Scale == glm::vec3(0.0f));
+	CHECK(result.Nodes[1].Translation == glm::vec3(0.0f, 5.0f, 0.0f));
 	CHECK(result.Nodes[5].Name == std::string(255, 'x'));
 	CHECK(result.Nodes[2].Camera->FieldOfView == doctest::Approx(glm::radians(179.0)));
 	CHECK(result.Nodes[3].Camera->Far > result.Nodes[3].Camera->Near);

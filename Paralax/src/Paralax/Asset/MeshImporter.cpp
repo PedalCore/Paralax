@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <optional>
 #include <unordered_map>
@@ -472,12 +473,17 @@ namespace Paralax {
 				std::memcpy(glm::value_ptr(transform), matrix->data(), sizeof(float) * 16);
 				if (!Math::DecomposeTransform(transform, record.Translation, record.Rotation, record.Scale))
 				{
-					// No scale to take apart because every axis has zero length (a node collapsed to a point): keep
-					// it collapsed where it is, as the combined mesh shows it. Any other matrix that cannot be taken
-					// apart (an axis longer than a float can hold, say) is unusable. Lengths in double, as the
+					// The decomposition refuses an axis of zero length (a node scaled flat, or collapsed to a point)
+					// and an axis longer than a float can hold. The first is kept collapsed where it is, as the
+					// combined mesh shows it; a node flat on one axis collapses entirely, because a rotation cannot be
+					// taken from fewer than three axes. The second is unusable. Lengths in double, as the
 					// decomposition takes them, so a huge axis cannot pass for a zero one.
-					const bool collapsed = glm::length(glm::dvec3(transform[0])) < 1e-8 && glm::length(glm::dvec3(transform[1])) < 1e-8 &&
-										   glm::length(glm::dvec3(transform[2])) < 1e-8;
+					bool collapsed = true;
+					for (int axis = 0; axis < 3; axis++)
+					{
+						const double length = glm::length(glm::dvec3(transform[axis]));
+						collapsed = collapsed && std::isfinite(length) && length <= static_cast<double>(std::numeric_limits<float>::max());
+					}
 					if (collapsed)
 					{
 						record.Translation = glm::vec3(transform[3]);
