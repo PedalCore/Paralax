@@ -1244,6 +1244,12 @@ namespace Paralax {
 						if (!positionValue.is<glm::vec3>())
 							ScriptError("Scene.Instantiate: options.position must be a vec3");
 						position = positionValue.as<glm::vec3>();
+						// The position bypasses reflection (PrefabAsset::Instantiate assigns it), so reflection's rule
+						// applies here: a non-finite translation would silently leave the instance without a body and
+						// with a NaN world transform. The components are floats already, so finite also means within
+						// FLT_MAX, the rest of that rule.
+						if (!std::isfinite(position->x) || !std::isfinite(position->y) || !std::isfinite(position->z))
+							ScriptError("Scene.Instantiate: options.position must be finite");
 					}
 				}
 				CountCreatedEntities(asset->GetEntityCount());

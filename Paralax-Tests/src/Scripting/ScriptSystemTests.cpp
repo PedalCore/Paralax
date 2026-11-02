@@ -303,6 +303,16 @@ TEST_CASE("ScriptSystem: prefabs are instantiated by handle or path with a paren
 	CHECK(error.find("no prefab") != std::string::npos);
 	CHECK_FALSE(fixture.System->Evaluate("Scene.Instantiate('Crate.pxprefab', { position = 3 })", error));
 	CHECK(error.find("position must be a vec3") != std::string::npos);
+	// The position is written past reflection, so the binding applies reflection's finiteness rule itself; nothing is
+	// instantiated when it fails.
+	const std::string count = fixture.Eval("Scene.GetEntityCount()");
+	for (const char* position : {"vec3(0/0)", "vec3(math.huge)", "vec3(0, -math.huge, 0)", "vec3(0, 0, 0/0)"})
+	{
+		CAPTURE(position);
+		CHECK_FALSE(fixture.System->Evaluate(std::string("Scene.Instantiate('Crate.pxprefab', { position = ") + position + " })", error));
+		CHECK(error.find("position must be finite") != std::string::npos);
+	}
+	CHECK(fixture.Eval("Scene.GetEntityCount()") == count);
 }
 
 TEST_CASE("ScriptSystem: a failing callback disables its instance with a traceback naming the script")

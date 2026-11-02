@@ -111,7 +111,7 @@ Field values are **copies**. `t.Translation.x = 1` changes only the copy, so ass
 | `Scene.GetEntity(id)` | Entity by id, or `nil`. |
 | `Scene.FindEntityByName(name)` | First match in hierarchy order, or `nil`. |
 | `Scene.FindEntitiesByTag(tag)` | Array of entities. |
-| `Scene.Instantiate(prefab [, { parent = e, position = vec3 }])` | Spawns a prefab, given by handle or by asset path (e.g. `"Prefabs/Enemy.pxprefab"`), and returns its root entity. |
+| `Scene.Instantiate(prefab [, { parent = e, position = vec3 }])` | Spawns a prefab, given by handle or by asset path (e.g. `"Prefabs/Enemy.pxprefab"`), and returns its root entity. A `position` that is not finite is an error. |
 | `Scene.Destroy(entity)` | Same as `entity:Destroy()`. |
 | `Scene.GetEntityCount()` | Number of entities. |
 | `Scene.Load(scene)` | Switches to another scene, given by handle or asset path (e.g. `"Scenes/Level2.pxscene"`), after the current update: this scene stops (its scripts get `OnDestroy`) and the new one starts fresh. An unknown scene is an error. |
