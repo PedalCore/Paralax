@@ -10,9 +10,11 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <future>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -124,5 +126,11 @@ namespace Paralax::Editor {
 		std::mutex m_QueueMutex; // Guards m_Queue and, with m_Stopping, whether new requests may be queued.
 		std::deque<Scope<PendingRequest>> m_Queue;
 	};
+
+	// Where the editor writes the agent server's connection details (host, port and token): `requested` (the
+	// --agent-info option) if it is not empty, used as given; else .paralax/AgentServer.json in projectDirectory if
+	// that is not empty; else the same in the working directory. Returns nullopt, with an error logged, when the
+	// working directory is needed and cannot be read (it was deleted, say). Safe to call from any thread.
+	std::optional<std::filesystem::path> ResolveAgentInfoPath(const std::filesystem::path& requested, const std::filesystem::path& projectDirectory);
 
 }

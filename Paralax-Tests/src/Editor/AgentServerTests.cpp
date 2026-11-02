@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <future>
 #include <thread>
 
@@ -371,4 +372,73 @@ TEST_CASE("AgentServer: stopping answers queued requests and disconnects clients
 	if (ErrorCode(response) == AgentServer::ServerStopping)
 		CHECK(response["id"] == 1);
 	CHECK(context.GetEditorScene().GetEntityCount() == 0);
+}
+
+TEST_CASE("AgentServer: the connection file goes where --agent-info says, else into the project, else into the working directory")
+{
+	const std::filesystem::path name = std::filesystem::path(".paralax") / "AgentServer.json";
+	CHECK(ResolveAgentInfoPath("Elsewhere/Info.json", "Project") == std::filesystem::path("Elsewhere/Info.json"));
+	CHECK(ResolveAgentInfoPath("Elsewhere/Info.json", {}) == std::filesystem::path("Elsewhere/Info.json"));
+	CHECK(ResolveAgentInfoPath({}, "Project") == std::filesystem::path("Project") / name);
+	CHECK(ResolveAgentInfoPath({}, {}) == std::filesystem::current_path() / name);
+}
+
+namespace {
+
+	// Makes a new directory the working directory for the scope, then restores the previous one and deletes the
+	// directory if it is still there, so a failed check cannot strand the tests that follow.
+	class ScopedWorkingDirectory
+	{
+	public:
+		explicit ScopedWorkingDirectory(std::filesystem::path directory)
+			: m_Saved(std::filesystem::current_path())
+			, m_Directory(std::move(directory))
+		{
+			std::error_code error;
+			std::filesystem::remove_all(m_Directory, error);
+			std::filesystem::create_directories(m_Directory, error);
+			REQUIRE_FALSE(error);
+			std::filesystem::current_path(m_Directory);
+		}
+		~ScopedWorkingDirectory()
+		{
+			std::error_code error;
+			std::filesystem::current_path(m_Saved, error);
+			std::filesystem::remove_all(m_Directory, error);
+		}
+
+		ScopedWorkingDirectory(const ScopedWorkingDirectory&) = delete;
+		ScopedWorkingDirectory& operator=(const ScopedWorkingDirectory&) = delete;
+
+		const std::filesystem::path& GetDirectory() const { return m_Directory; }
+
+	private:
+		std::filesystem::path m_Saved;
+		std::filesystem::path m_Directory;
+	};
+
+}
+
+TEST_CASE("AgentServer: without a readable working directory the default connection file is refused with an error")
+{
+	ScopedWorkingDirectory workingDirectory(std::filesystem::current_path() / "TestOutput" / "DeletedWorkingDirectory");
+	std::error_code removeError;
+	const bool removed = std::filesystem::remove(workingDirectory.GetDirectory(), removeError) && !removeError;
+	std::error_code readError;
+	const bool readable = !std::filesystem::current_path(readError).empty() && !readError;
+	// Some systems refuse to delete a process's working directory (Windows does), and a system could still report it
+	// once deleted; the case cannot arise there.
+	if (!removed || readable)
+	{
+		MESSAGE("The working directory stays readable on this system; nothing to test");
+		return;
+	}
+
+	// Only the default without a project needs the working directory.
+	Paralax::Testing::ScopedLogCapture log;
+	CHECK(ResolveAgentInfoPath("Info.json", {}) == std::filesystem::path("Info.json"));
+	CHECK(ResolveAgentInfoPath({}, "Project") == std::filesystem::path("Project") / ".paralax" / "AgentServer.json");
+	CHECK(log.GetEntries().empty());
+	CHECK_FALSE(ResolveAgentInfoPath({}, {}));
+	CHECK(log.Contains(spdlog::level::err, "--agent-info"));
 }

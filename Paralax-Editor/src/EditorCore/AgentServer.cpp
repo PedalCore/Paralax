@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <exception>
+#include <filesystem>
 #include <optional>
 #include <random>
 #include <system_error>
@@ -357,6 +358,23 @@ namespace Paralax::Editor {
 	json AgentServer::MakeError(const json& id, int code, std::string_view message)
 	{
 		return {{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", code}, {"message", message}}}};
+	}
+
+	std::optional<std::filesystem::path> ResolveAgentInfoPath(const std::filesystem::path& requested, const std::filesystem::path& projectDirectory)
+	{
+		if (!requested.empty())
+			return requested;
+		const std::filesystem::path name = std::filesystem::path(".paralax") / "AgentServer.json";
+		if (!projectDirectory.empty())
+			return projectDirectory / name;
+		std::error_code error;
+		const std::filesystem::path workingDirectory = std::filesystem::current_path(error);
+		if (error)
+		{
+			PX_CORE_ERROR("Cannot find the working directory, where the agent connection file goes without a project: {} (pass --agent-info <file>)", error.message());
+			return std::nullopt;
+		}
+		return workingDirectory / name;
 	}
 
 }
