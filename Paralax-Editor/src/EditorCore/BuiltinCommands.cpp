@@ -442,6 +442,27 @@ namespace Paralax::Editor {
 							   return CommandResult::Ok({{"handle", IdString(handle)}});
 						   }});
 
+		// The registry file is never saved over once it differs from what was last read or written, so a checkout or
+		// merge under a running editor survives; this is how an agent takes the new file in.
+		registry.Register({"asset.reload_registry",
+						   "Reads Assets/AssetRegistry.json from disk again, replacing the registry in memory (not while playing). Commands that register files "
+						   "(asset.import, material.create, a first scene.save, ...) refuse to save over a registry that changed on disk since it was read, by a "
+						   "version-control checkout or merge or another editor, or that could not be read; once the file is as it should be, reload it with this. "
+						   "Assets already loaded stay loaded.",
+						   {},
+						   false,
+						   [](EditorContext& context, const json&) {
+							   if (!context.GetProject())
+								   return CommandResult::Fail("No project is open");
+							   // The running game resolves paths through the registry; it must not change under it.
+							   if (context.IsPlaying())
+								   return CommandResult::Fail("Stop play mode first (play.stop)");
+							   AssetManager& assets = context.GetAssets();
+							   if (!assets.LoadRegistry())
+								   return CommandResult::Fail("The asset registry could not be read: nothing is registered, and it is not saved over until it loads (see the log for details: console.get)");
+							   return CommandResult::Ok({{"assets", assets.GetRegisteredAssets().size()}});
+						   }});
+
 		registry.Register({"material.create", "Creates a new .pxmat material file in the project (failing if it exists), imports it and returns its handle.", {{"path", "string", "Destination (relative to Assets), e.g. Materials/Red.pxmat.", true}, {"fields", "object", "Material fields, e.g. {\"BaseColor\": [1,0,0,1], \"Roughness\": 0.4}.", false}}, false, [](EditorContext& context, const json& params) {
 							   if (!context.GetProject())
 								   return CommandResult::Fail("No project is open");

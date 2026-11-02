@@ -7,6 +7,7 @@
 #include <Paralax/Asset/MaterialAsset.h>
 #include <Paralax/Audio/AudioSystem.h>
 #include <Paralax/Scene/Entity.h>
+#include <Paralax/Scene/SceneSerializer.h>
 #include <Paralax/Scripting/ScriptAsset.h>
 
 using namespace Paralax;
@@ -358,6 +359,59 @@ TEST_CASE("BuiltinCommands: material.create leaves no file behind when the impor
 	std::filesystem::remove_all(registry);
 	CHECK(context.Execute("material.create", {{"path", "M.pxmat"}}).Success);
 	CHECK(std::filesystem::is_regular_file(directory / "Assets" / "M.pxmat"));
+}
+
+TEST_CASE("BuiltinCommands: asset.reload_registry takes in a registry changed on disk, after which imports save again")
+{
+	const std::filesystem::path directory = Paralax::Testing::CreateTestDirectory("AssetReloadRegistry") / "Game";
+	EditorContext context(Project::Create(directory, "Game"));
+	REQUIRE(context.GetProject());
+	REQUIRE(context.Execute("material.create", {{"path", "M.pxmat"}}).Success);
+
+	// A checkout replaces the registry under the running editor.
+	const std::filesystem::path registry = directory / "Assets" / AssetManager::RegistryFileName;
+	const std::string checkedOut = R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[{"Handle":"5003","Type":"Material","Path":"Other.pxmat"}]})";
+	REQUIRE(WriteFileAtomically(registry, checkedOut));
+	{
+		Paralax::Testing::ScopedLogCapture capture;
+		const CommandResult refused = context.Execute("material.create", {{"path", "N.pxmat"}});
+		CHECK_FALSE(refused.Success);
+		CHECK(refused.Error.find("console.get") != std::string::npos);
+		CHECK(capture.Contains(spdlog::level::err, "has changed on disk"));
+		CHECK_FALSE(std::filesystem::exists(directory / "Assets" / "N.pxmat"));
+		CHECK(Paralax::Testing::ReadFileText(registry) == checkedOut);
+	}
+
+	// Not while playing (the game reads the registry), and not without a project.
+	REQUIRE(context.Execute("play.start", {{"paused", true}}).Success);
+	const CommandResult playing = context.Execute("asset.reload_registry");
+	CHECK_FALSE(playing.Success);
+	CHECK(playing.Error.find("play.stop") != std::string::npos);
+	REQUIRE(context.Execute("play.stop").Success);
+	CHECK_FALSE(EditorContext().Execute("asset.reload_registry").Success);
+
+	const CommandResult reloaded = context.Execute("asset.reload_registry");
+	REQUIRE_MESSAGE(reloaded.Success, reloaded.Error);
+	CHECK(reloaded.Result["assets"] == 1);
+	CHECK(context.GetAssets().IsRegistered(AssetHandle(5003)));
+	REQUIRE(context.Execute("material.create", {{"path", "N.pxmat"}}).Success);
+	{
+		AssetManager reopened(directory / "Assets");
+		CHECK(reopened.IsRegistered(AssetHandle(5003)));
+		CHECK(reopened.GetHandleForPath("N.pxmat").IsValid());
+		CHECK_FALSE(reopened.GetHandleForPath("M.pxmat").IsValid());
+	}
+
+	// A file that cannot be read fails the reload, and stays as it is.
+	const std::string conflicted = "<<<<<<< HEAD\n" + checkedOut + "\n=======\n";
+	REQUIRE(WriteFileAtomically(registry, conflicted));
+	Paralax::Testing::ScopedLogCapture capture;
+	const CommandResult broken = context.Execute("asset.reload_registry");
+	CHECK_FALSE(broken.Success);
+	CHECK(broken.Error.find("could not be read") != std::string::npos);
+	CHECK(context.GetAssets().GetRegisteredAssets().empty());
+	CHECK_FALSE(context.Execute("material.create", {{"path", "P.pxmat"}}).Success);
+	CHECK(Paralax::Testing::ReadFileText(registry) == conflicted);
 }
 
 TEST_CASE("BuiltinCommands: play.step validates its frame count and time step")

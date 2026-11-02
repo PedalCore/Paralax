@@ -134,6 +134,13 @@ windowed one.
   page. (The last folder of `--new-project` names the project, so it must be 1 to 64 characters, each an ASCII letter
   or digit, a space, `_` or `-`; the folders above it may use anything.)
 - Commands that edit the scene are undoable, and they are rolled back if they fail partway.
+- The asset registry, `Assets/AssetRegistry.json`, lists every imported file under its handle. Commands that register
+  a file (`asset.import`, `material.create`, `script.create`, `prefab.create`, `model.create_prefab`, a scene's first
+  `scene.save`) save it, but never over a file that has changed on disk since the editor read or last wrote it (a
+  version-control checkout or merge, another editor), nor over one it could not read. Such a command fails (a
+  `scene.save` still writes the scene, and says under `warnings` that it is not registered), the file is left as it
+  is, and the log says why (`console.get`). Once the file is as it should be, `asset.reload_registry` reads it again
+  (not while playing; assets already loaded stay loaded), and the next command saves.
 
 ## Command reference
 
@@ -199,6 +206,9 @@ editor's commands, names and parameters both, so an entry cannot go missing or s
 - `asset.list`: the project's registered assets, each `{ handle, type, path, parent }` (a model's sub-assets name it
   as their `parent`), and the built-in ones, each `{ handle, type, name }`: `{ assets, builtins }`.
 - `asset.import { path: string }`: registers a file inside `Assets/` (relative to it, or absolute): `{ handle }`.
+- `asset.reload_registry`: reads `Assets/AssetRegistry.json` again, replacing the registry in memory, after a
+  checkout or merge changed it or once a file that could not be read is fixed (see the asset registry above): `{
+  assets }`, the number registered. It is refused while playing, and fails if the file cannot be read.
 - `material.create { path: string, fields?: object }`: writes a new `.pxmat` (failing if the file exists) with these
   fields, as in `{"BaseColor": [1, 0, 0, 1], "Roughness": 0.4}`, and imports it: `{ handle }`.
 - `material.set { handle: string, fields: object }`: changes material fields; a material file is saved, while a

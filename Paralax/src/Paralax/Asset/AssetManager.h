@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -100,17 +101,23 @@ namespace Paralax {
 		// asset is kept in memory). The registry is saved only when its sub-asset entries change.
 		bool ReloadAsset(AssetHandle handle);
 
-		// Writes AssetRegistry.json atomically. Refuses a registry larger than LoadRegistry reads (MaxRegistryBytes),
-		// leaving the file on disk as it was, and refuses while a file that LoadRegistry could not read is still in
-		// place. Returns false (with an error logged) on failure.
+		// Writes AssetRegistry.json atomically. Returns false (with an error logged), leaving the file on disk as it was,
+		// if the registry is larger than LoadRegistry reads (MaxRegistryBytes), while a file that LoadRegistry could not
+		// read is still in place, or if the file has changed on disk since this manager loaded or last saved it (a
+		// version-control checkout or merge, or another editor): saving would replace that change with this registry.
+		// The file is compared by size and a hash of its bytes, not by modification time, which a checkout can leave
+		// as it was. To recover from a change, call LoadRegistry (the editor's asset.reload_registry) or reopen the
+		// project, then save again. A missing file is never refused: it is created anew. The file is not locked, so a
+		// change made between the check and the write is still replaced.
 		bool SaveRegistry() const;
-		// Replaces the registry with the one on disk (a missing file yields an empty registry, as for a new project).
-		// Returns false, with an error logged, if the file exists but cannot be read: too large, nested too deeply,
-		// malformed (merge-conflict markers, say) or unreadable. Nothing is registered then, and SaveRegistry refuses
-		// until a LoadRegistry succeeds, so imports, removals and reloads fail instead of replacing the file, and every
-		// handle it lists, with only what was registered since. To recover, repair the file or restore it (from
-		// version control, say), then reopen the project or call LoadRegistry. (Deleting the file gives up what it
-		// listed; saves then create a new one.)
+		// Replaces the registry with the one on disk (a missing file yields an empty registry, as for a new project),
+		// and records what the file is, so SaveRegistry can tell whether it changes. Assets already loaded stay in the
+		// cache. Returns false, with an error logged, if the file exists but cannot be read: too large, nested too
+		// deeply, malformed (merge-conflict markers, say) or unreadable. Nothing is registered then, and SaveRegistry
+		// refuses until a LoadRegistry succeeds, so imports, removals and reloads fail instead of replacing the file,
+		// and every handle it lists, with only what was registered since. To recover, repair the file or restore it
+		// (from version control, say), then reopen the project or call LoadRegistry. (Deleting the file gives up what
+		// it listed; saves then create a new one.)
 		bool LoadRegistry();
 
 		// Converts between absolute paths and registry paths (relative, '/' separators). Returns nullopt for
@@ -121,11 +128,26 @@ namespace Paralax {
 		std::filesystem::path ToAbsolutePath(const std::filesystem::path& registryPath) const;
 
 	private:
+		// What a registry file holds, to tell it from another: its size and an FNV-1a hash of its bytes. This detects
+		// accidental changes (a checkout, another editor), not forgeries.
+		struct RegistryFileIdentity
+		{
+			uint64_t Size = 0;
+			uint64_t Hash = 0;
+
+			bool operator==(const RegistryFileIdentity&) const = default;
+		};
+
+		static RegistryFileIdentity IdentifyRegistryText(std::string_view text);
+
 		Ref<Asset> LoadAsset(const AssetMetadata& metadata);
 		Ref<Asset> CreateBuiltin(AssetHandle handle) const;
 		// Takes an asset and its sub-assets out of the registry and the cache (without saving), returning them so a
 		// failed save can put them back.
 		std::vector<std::pair<AssetMetadata, Ref<Asset>>> DetachAsset(AssetHandle handle);
+		// Whether SaveRegistry may replace the file at path: there is none, or it is, unchanged, the file the last
+		// LoadRegistry read in full or the last SaveRegistry wrote. Logs why not.
+		bool CanReplaceRegistryFile(const std::filesystem::path& path) const;
 
 	private:
 		std::filesystem::path m_AssetDirectory;
@@ -134,6 +156,9 @@ namespace Paralax {
 		// because SaveRegistry, which is const (it changes nothing that is registered), clears it once it has written
 		// the file anew: from then on the file is one this manager wrote.
 		mutable bool m_RegistryUnreadable = false;
+		// The registry file as the last LoadRegistry read it or the last SaveRegistry wrote it; nullopt if there was
+		// none (or it could not be read). Mutable for the same reason.
+		mutable std::optional<RegistryFileIdentity> m_RegistryIdentity;
 		std::unordered_map<uint64_t, AssetMetadata> m_Registry;
 		std::unordered_map<uint64_t, Ref<Asset>> m_Loaded;
 		// Handles that are unknown or failed to load, reported once (cleared by imports, reloads and registry loads).

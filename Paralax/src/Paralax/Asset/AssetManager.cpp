@@ -587,24 +587,72 @@ namespace Paralax {
 		return true;
 	}
 
+	AssetManager::RegistryFileIdentity AssetManager::IdentifyRegistryText(std::string_view text)
+	{
+		// FNV-1a. Size and hash together tell a changed file from the one recorded without trusting modification
+		// times, which a checkout can leave as they were and some file systems store coarsely.
+		uint64_t hash = 0xCBF29CE484222325ull;
+		for (const char c : text)
+			hash = (hash ^ static_cast<unsigned char>(c)) * 0x100000001B3ull;
+		return {static_cast<uint64_t>(text.size()), hash};
+	}
+
+	bool AssetManager::CanReplaceRegistryFile(const std::filesystem::path& path) const
+	{
+		auto cannotCheck = [&](const std::string& reason) {
+			PX_CORE_ERROR("Not saving the asset registry: '{}' cannot be checked ({})", ToUtf8(path), reason);
+			return false;
+		};
+		std::error_code error;
+		const bool exists = std::filesystem::exists(path, error);
+		if (error)
+			return cannotCheck(error.message());
+		// Once the file is gone (removed by the user, or by a checkout), a save loses nothing: it creates the file anew.
+		if (!exists)
+			return true;
+		if (m_RegistryUnreadable)
+		{
+			// Writing now would replace every entry of the file that failed to load with only those registered since,
+			// and every handle the project's scenes use would be lost.
+			PX_CORE_ERROR("Not saving the asset registry: '{}' could not be read, and saving would replace all it lists. Repair or restore the file, then reload the "
+						  "registry (asset.reload_registry in the editor) or reopen the project.",
+						  ToUtf8(path));
+			return false;
+		}
+
+		// Any other file than the one last read or written was put there by someone else (a version-control checkout or
+		// merge, another editor), and this registry, which never saw it, would replace it.
+		auto changed = [&] {
+			PX_CORE_ERROR("Not saving the asset registry: '{}' has changed on disk since it was loaded or last saved (by a version-control checkout or merge, or "
+						  "another editor, say), and saving would replace that change. Reload the registry (asset.reload_registry in the editor) or reopen the "
+						  "project, then try again.",
+						  ToUtf8(path));
+			return false;
+		};
+		if (!m_RegistryIdentity)
+			return changed();
+		const uintmax_t size = std::filesystem::file_size(path, error);
+		if (error)
+			return cannotCheck(error.message());
+		if (static_cast<uint64_t>(size) != m_RegistryIdentity->Size)
+			return changed();
+		// The size matches one this manager read or wrote, so it is within m_MaxRegistryBytes.
+		std::string text;
+		std::string readError;
+		if (!ReadTextFile(path, text, readError, m_MaxRegistryBytes))
+			return cannotCheck(readError);
+		if (IdentifyRegistryText(text) != *m_RegistryIdentity)
+			return changed();
+		return true;
+	}
+
 	bool AssetManager::SaveRegistry() const
 	{
 		if (m_AssetDirectory.empty())
 			return false;
-		if (m_RegistryUnreadable)
-		{
-			// Writing now would replace every entry of the file that failed to load with only those registered since,
-			// and every handle the project's scenes use would be lost. Once the file is gone (removed by the user),
-			// there is nothing left to lose.
-			const std::filesystem::path path = m_AssetDirectory / RegistryFileName;
-			std::error_code error;
-			if (std::filesystem::exists(path, error) || error)
-			{
-				PX_CORE_ERROR("Not saving the asset registry: '{}' could not be read, and saving would replace all it lists. Repair or restore the file, then reopen the project.",
-							  ToUtf8(path));
-				return false;
-			}
-		}
+		const std::filesystem::path path = m_AssetDirectory / RegistryFileName;
+		if (!CanReplaceRegistryFile(path))
+			return false;
 
 		json assets = json::array();
 		for (const AssetMetadata& metadata : GetRegisteredAssets())
@@ -616,11 +664,13 @@ namespace Paralax {
 		}
 
 		json document = {{"Paralax", {{"Type", "AssetRegistry"}, {"Version", 1}}}, {"Assets", std::move(assets)}};
-		if (!WriteFileAtomically(m_AssetDirectory / RegistryFileName, FormatJsonDocument(document), m_MaxRegistryBytes))
+		const std::string text = FormatJsonDocument(document);
+		if (!WriteFileAtomically(path, text, m_MaxRegistryBytes))
 			return false;
 		// The file on disk is now one this manager wrote (after an unreadable one was removed, the save that creates it
-		// anew), so later saves may replace it.
+		// anew), so later saves may replace it as long as it stays as written.
 		m_RegistryUnreadable = false;
+		m_RegistryIdentity = IdentifyRegistryText(text);
 		return true;
 	}
 
@@ -629,6 +679,7 @@ namespace Paralax {
 		m_Registry.clear();
 		m_Failed.clear();
 		m_RegistryUnreadable = false;
+		m_RegistryIdentity.reset();
 		const std::filesystem::path path = m_AssetDirectory / RegistryFileName;
 		// A registry that exists but cannot be read stays as it is on disk: SaveRegistry refuses until one loads.
 		auto unreadable = [&](const std::string& reason) {
@@ -647,6 +698,7 @@ namespace Paralax {
 		std::string readError;
 		if (!ReadTextFile(path, text, readError, m_MaxRegistryBytes))
 			return unreadable(fmt::format("cannot be read ({})", readError));
+		m_RegistryIdentity = IdentifyRegistryText(text);
 		if (JsonExceedsDepth(text, MaxJsonDepth))
 			return unreadable("nests too deeply");
 		const json document = json::parse(text, nullptr, false);

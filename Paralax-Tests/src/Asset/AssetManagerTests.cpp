@@ -496,6 +496,91 @@ TEST_CASE("AssetManager: a registry that cannot be read is never overwritten, an
 	CHECK(recreated.IsRegistered(brickTexture));
 }
 
+TEST_CASE("AssetManager: a registry changed on disk since it was loaded or saved is not saved over until it is reloaded")
+{
+	// A version-control checkout or merge rewrites the file under a running editor. Saving the registry in memory
+	// over it would drop the entries it brought and bring back those it removed.
+	const std::filesystem::path directory = MakeProject("AssetRegistryChangedOnDisk");
+	const std::filesystem::path registry = directory / AssetManager::RegistryFileName;
+	AssetManager assets(directory);
+	const AssetHandle material = assets.ImportAsset("Brick.pxmat");
+	REQUIRE(material.IsValid());
+	const std::string checkedOut = R"({"Paralax":{"Type":"AssetRegistry","Version":1},"Assets":[{"Handle":"5003","Type":"Material","Path":"Brick.pxmat"},)"
+								   R"({"Handle":"5004","Type":"Texture","Path":"Textures/Brick.png"}]})";
+	REQUIRE(WriteFileAtomically(registry, checkedOut));
+
+	{
+		Paralax::Testing::ScopedLogCapture log;
+		CHECK_FALSE(assets.SaveRegistry());
+		CHECK(log.Contains(spdlog::level::err, "'" + ToUtf8(assets.GetAssetDirectory() / AssetManager::RegistryFileName) + "' has changed on disk since it was loaded or last saved"));
+		CHECK(log.Contains(spdlog::level::err, "asset.reload_registry"));
+		// Whatever would save fails, and is undone: the import, the removal.
+		CHECK_FALSE(assets.ImportAsset("Textures/Brick.png").IsValid());
+		CHECK_FALSE(assets.GetHandleForPath("Textures/Brick.png").IsValid());
+		CHECK_FALSE(assets.RemoveAsset(material));
+		CHECK(assets.IsRegistered(material));
+		CHECK(Paralax::Testing::ReadFileText(registry) == checkedOut);
+	}
+
+	// Reloaded, the registry is the checkout's, and saves go through again.
+	REQUIRE(assets.LoadRegistry());
+	CHECK_FALSE(assets.IsRegistered(material));
+	CHECK(assets.GetHandleForPath("Textures/Brick.png") == AssetHandle(5004));
+	CHECK(assets.SaveRegistry());
+
+	// A rewrite of the same size differs in its bytes: the hash tells it apart.
+	const std::string saved = Paralax::Testing::ReadFileText(registry);
+	std::string sameSize = saved;
+	REQUIRE(sameSize.find("\"5004\"") != std::string::npos);
+	sameSize.replace(sameSize.find("\"5004\""), 6, "\"5005\"");
+	REQUIRE(sameSize.size() == saved.size());
+	REQUIRE(WriteFileAtomically(registry, sameSize));
+	{
+		Paralax::Testing::ScopedLogCapture log;
+		CHECK_FALSE(assets.RemoveAsset(AssetHandle(5003)));
+		CHECK(log.Contains(spdlog::level::err, "has changed on disk"));
+		CHECK(Paralax::Testing::ReadFileText(registry) == sameSize);
+	}
+	REQUIRE(assets.LoadRegistry());
+	CHECK(assets.RemoveAsset(AssetHandle(5003)));
+	{
+		AssetManager reopened(directory);
+		CHECK_FALSE(reopened.IsRegistered(AssetHandle(5003)));
+		CHECK(reopened.IsRegistered(AssetHandle(5005)));
+	}
+
+	// A file that appears where there was none is someone else's too; one removed since loses nothing when saved.
+	std::filesystem::remove(registry);
+	AssetManager fresh(directory);
+	REQUIRE(WriteFileAtomically(registry, checkedOut));
+	{
+		Paralax::Testing::ScopedLogCapture log;
+		CHECK_FALSE(fresh.ImportAsset("Brick.pxmat").IsValid());
+		CHECK(log.Contains(spdlog::level::err, "has changed on disk"));
+		CHECK(Paralax::Testing::ReadFileText(registry) == checkedOut);
+	}
+	std::filesystem::remove(registry);
+	const AssetHandle recreated = fresh.ImportAsset("Brick.pxmat");
+	CHECK(recreated.IsValid());
+	CHECK(AssetManager(directory).IsRegistered(recreated));
+
+	// Two managers on one project: what the first saves is not lost to the second, which must reload first.
+	AssetManager first(directory);
+	AssetManager second(directory);
+	const AssetHandle texture = first.ImportAsset("Textures/Brick.png");
+	REQUIRE(texture.IsValid());
+	{
+		Paralax::Testing::ScopedLogCapture log;
+		CHECK_FALSE(second.RemoveAsset(recreated));
+	}
+	REQUIRE(second.LoadRegistry());
+	CHECK(second.GetHandleForPath("Textures/Brick.png") == texture);
+	CHECK(second.RemoveAsset(recreated));
+	AssetManager last(directory);
+	CHECK(last.IsRegistered(texture));
+	CHECK_FALSE(last.IsRegistered(recreated));
+}
+
 TEST_CASE("AssetManager: one registry byte limit governs loading and saving, and an import past it is undone")
 {
 	// At a small limit (the constructor's seam), the cases a 64 MiB registry would take minutes to reach.
