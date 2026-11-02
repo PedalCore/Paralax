@@ -18,7 +18,6 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
-#include <map>
 #include <set>
 #include <sstream>
 
@@ -806,21 +805,13 @@ TEST_CASE("ScriptSystem: AddComponent puts an existing component back exactly wh
 	fixture.World.CreateEntity("Lamp").AddComponent<PointLightComponent>().Intensity = 200000.0f;
 	fixture.Start();
 
-	// Fields are written in the table's iteration order: use a valid field that comes before the refused one, so a
-	// value really is written before the refusal undoes it.
-	const std::map<std::string, std::string> candidates = {{"Intensity", "5"}, {"Color", "vec3(0, 1, 0)"}, {"CastShadows", "true"}};
-	std::string valid;
-	for (const auto& [field, unused] : candidates)
-	{
-		if (fixture.Eval(fmt::format("local t = {{ {} = true, Range = true }} return (next(t))", field)) == field)
-		{
-			valid = field;
-			break;
-		}
-	}
-	REQUIRE_FALSE(valid.empty());
+	// Fields are written in the table's iteration order. The out-of-range Intensity must be overwritten before the
+	// refused Range, so the old value really has to be put back: restoring through the fields would refuse 200000
+	// and leave 5. Should a seed or Lua change reorder the keys, this fails here instead of passing vacuously.
+	const std::string fields = "{ Intensity = 5, Range = -1 }";
+	REQUIRE(fixture.Eval("local keys = {} for key in pairs(" + fields + ") do keys[#keys + 1] = key end return table.concat(keys, ',')") == "Intensity,Range");
 	std::string error;
-	CHECK_FALSE(fixture.System->Evaluate(fmt::format("Scene.FindEntityByName('Lamp'):AddComponent('PointLight', {{ {} = {}, Range = -1 }})", valid, candidates.at(valid)), error));
+	CHECK_FALSE(fixture.System->Evaluate("Scene.FindEntityByName('Lamp'):AddComponent('PointLight', " + fields + ")", error));
 	CHECK(error.find("Range") != std::string::npos);
 	const PointLightComponent& light = fixture.World.FindEntityByName("Lamp")->GetComponent<PointLightComponent>();
 	CHECK(light.Intensity == 200000.0f);
