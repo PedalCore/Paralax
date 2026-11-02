@@ -42,7 +42,7 @@ cmake --preset debug && cmake --build build/debug && ctest --preset debug -j8
 | `release` | Optimised. Asserts still on. |
 | `dist` | Distribution: asserts compiled out, no editor, no tests. |
 | `asan` | Debug + AddressSanitizer + UndefinedBehaviorSanitizer (GCC/Clang). |
-| `tsan` | Debug + ThreadSanitizer (GCC/Clang). |
+| `tsan` | Debug + ThreadSanitizer (Clang only: GCC's TSan does not support the atomic fence Jolt uses, so configuring it with GCC is an error). |
 
 - Build configurations are **Debug / Release / Dist** only. They define `PX_DEBUG`, `PX_RELEASE` or `PX_DIST`.
 - Warnings are errors (`PX_WARNINGS_AS_ERRORS=ON`) on every compiler. Fix warnings; never silence them with pragmas unless the warning comes from a third-party header, and comment why.

@@ -19,7 +19,15 @@ option(PX_BUILD_TESTS "Build the Paralax unit tests" ON)
 option(PX_BUILD_EDITOR "Build the Paralax editor" ON)
 option(PX_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 option(PX_USE_CCACHE "Compile through ccache when it is installed (all build trees share one cache)" ON)
-set(PX_SANITIZERS "" CACHE STRING "Sanitizers for Paralax targets (GCC/Clang): empty, \"address,undefined\" or \"thread\"")
+set(PX_SANITIZERS "" CACHE STRING "Sanitizers for Paralax targets: empty, \"address,undefined\" (GCC/Clang) or \"thread\" (Clang)")
+# GCC's ThreadSanitizer does not support std::atomic_thread_fence (GCC documents that it can report false races), and
+# Jolt, which TSan builds instrument, uses that fence: GCC rejects it under -Werror=tsan. Fail here, with the fix,
+# rather than deep into the build. C counts too: miniaudio is instrumented, and two TSan runtimes cannot be mixed. CI's
+# TSan job uses Clang.
+if(PX_SANITIZERS MATCHES "thread" AND (CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+	message(FATAL_ERROR "PX_SANITIZERS=thread needs Clang: GCC's ThreadSanitizer does not support std::atomic_thread_fence, "
+		"which Jolt uses. Configure a fresh build directory with -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++.")
+endif()
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 # Before Dependencies, so third-party targets are cached too.

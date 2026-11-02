@@ -52,7 +52,7 @@
     },
     {
       "name": "tsan",
-      "displayName": "Debug + ThreadSanitizer (GCC/Clang)",
+      "displayName": "Debug + ThreadSanitizer (Clang)",
       "inherits": "base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
