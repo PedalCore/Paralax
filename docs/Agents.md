@@ -254,6 +254,32 @@ The adapter's storage-buffer range and texture-array layer limits may impose sma
 than six compute storage-buffer descriptors retain normal forward rendering with GI unavailable. Probe sampling
 uses explicit bilinear loads, so optional 32-bit-float linear filtering is not required.
 
+Point and spot lights now cast raster shadows when their `CastShadows` is true and renderer `Shadows` is enabled.
+Imported lights retain their authored flags; enable `PointLight.CastShadows` or `SpotLight.CastShadows` through
+`component.set` for an existing import. Mesh `CastShadows: false` disables its casting; opaque and alpha-cutout
+materials cast from either side, while blended materials do not cast. POM affects shading, not shadow geometry.
+
+`LocalShadowResolution` is Low (512), Medium (1024, default), or High (2048). `MaxShadowedLocalLights` is 0–16
+(default 4); zero disables local maps. `LocalShadowSoftness` is 0–0.5 metres (default 0.06). Filtering uses
+receiver-plane taps and is limited by resolution; perspective bounds narrow the world-space filter for wide spots.
+Points and spots wider than 75 degrees use six faces; other spots use one. Their actual cone attenuation is unchanged.
+The depth pool is capped at 256 MiB and the adapter's array-layer limit:
+
+| Face resolution | Maximum layers (16 requested lights) | Point-light capacity | Ordinary spot capacity |
+|---|---:|---:|---:|
+| 512 | 96 | 16 | 16 |
+| 1024 | 64 | 10 | 16 |
+| 2048 | 16 | 2 | 16 |
+
+Selection sorts lights by distance from their influence range, then distance, UUID and point/spot type before the
+256-light direct-light limit. A light that cannot fit is skipped so a later one-face spot can use remaining layers.
+Viewport/runtime selection retains a light until a challenger is 20% closer; captures have no retention history.
+Offscreen lights remain in the direct-light array used by GI. Unselected lights illuminate without a raster shadow.
+`render.stats` reports requested/selected counts, used/capacity layers, local shadow draw calls, cumulative allocation
+attempts and selected UUID strings. Stable frames reuse the pool; failed allocations temporarily use unshadowed lighting
+and retry. `DebugView: "LocalShadow"` displays the minimum visibility across contributing local lights: white is lit,
+black occluded. It ignores exposure and GI display scaling. This diagnostic is not a combined lighting contribution.
+
 At probe hits, GI always tests direct-light occlusion regardless of the **light's** `CastShadows` setting.
 A **mesh** with `CastShadows: false` is excluded from those direct-light shadow rays, matching raster shadow
 passes. It remains visible to radiance rays, probe classification and distance moments, so an emissive bulb
@@ -431,13 +457,15 @@ editor's commands, names and parameters both, so an entry cannot go missing or s
   must end in `.png`; with a project open it is relative to the project directory and must stay inside it.
   `camera` is `"scene"` (the default: the scene's primary camera, or the editor camera if it has none) or
   `"editor"`, the editor camera wherever `editor.camera.set` or `editor.camera.focus` left it: `{ path, width,
-  height }`. MCP returns the image. `giWarmupFrames` (0–1024, default 0) performs exactly that many GI updates
+  height, stats }`. `stats` belongs to that exact capture. MCP returns the image. `giWarmupFrames` (0–1024, default 0) performs exactly that many GI updates
   before capture; a positive count requires frozen GI and paused/stopped simulation.
 - `render.stats`: the statistics of the renderer's latest frame: `{ drawCalls, shadowDrawCalls, triangles,
-  culledSubmeshes, textGlyphs, lights, staticLightingGenerations }`, `lights` counting point and spot lights. The
+  culledSubmeshes, textGlyphs, lights, staticLightingGenerations, requestedLocalShadows, shadowedLocalLights,
+  localShadowLayers, localShadowCapacity, localShadowDrawCalls, localShadowAllocationAttempts, shadowedLocalLightIDs }`,
+  `lights` counting point and spot lights. The
   viewport renders every editor frame: send `render.capture` and `render.stats` in one batch to read a capture's.
 - `render.settings.get`: the renderer settings: `{ Exposure, Tonemapper, Shadows, ShadowResolution, ShadowDistance,
-  ShadowSoftness, ShadowCascadeBlend, SkyIntensity, DebugView }`, plus the GI, diagnostics and
+  ShadowSoftness, ShadowCascadeBlend, LocalShadowResolution, MaxShadowedLocalLights, LocalShadowSoftness, SkyIntensity, DebugView }`, plus the GI, diagnostics and
   `EnvironmentSpecular` controls described in the experimental GI section above.
 - `render.settings.set { settings: object }`: changes some of them, returning them all; nothing changes if any value
   is refused. The settings are the editor's view, not part of the scene, so they are not undoable.

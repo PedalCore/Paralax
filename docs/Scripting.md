@@ -332,3 +332,9 @@ and its root carries a `PrefabInstance` component that records the prefab.
 | `script.api` | Every name scripts can use (generated from the bindings). |
 | `prefab.create { id, path }`, `prefab.instantiate { prefab [, parent, position] }` | Save and place prefabs. |
 | `play.start { [paused] }`, `play.step { frames, dt }`, `play.pause`, `play.resume`, `play.stop` | Run the game. Start paused and step for deterministic, agent-driven runs. |
+
+Point and spot light components expose `CastShadows` through the reflected component API. Their raster shadows
+also require the renderer's `Shadows` switch and an available local-shadow slot; renderer settings belong to the
+view, not the simulation. Mesh `CastShadows` affects both raster casting and direct-light occlusion at GI hits.
+GI continues to test direct-light visibility even when a light's raster-shadow flag is false. See
+[renderer controls](Agents.md) for budgets and diagnostics.

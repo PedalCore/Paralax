@@ -671,7 +671,7 @@ TEST_CASE("SceneRenderer: diagnostic settings round trip and reject invalid valu
 	}
 	const auto* debug = FindField(fields, "DebugView");
 	REQUIRE(debug);
-	for (const char* name : {"Lit", "Normals", "BaseColor", "Indirect", "GICoverage", "DirectDiffuse", "DirectSpecular", "EnvironmentDiffuse", "EnvironmentSpecular", "Emissive", "IndirectDiffuse", "GIWeightSum", "GIValidNeighbours", "GIProbeWeight", "GIMeanDistance", "GISecondMoment", "GIVariance"})
+	for (const char* name : {"Lit", "Normals", "BaseColor", "Indirect", "GICoverage", "DirectDiffuse", "DirectSpecular", "EnvironmentDiffuse", "EnvironmentSpecular", "Emissive", "IndirectDiffuse", "GIWeightSum", "GIValidNeighbours", "GIProbeWeight", "GIMeanDistance", "GISecondMoment", "GIVariance", "LocalShadow"})
 	{
 		REQUIRE(Reflection::SetField(*debug, &settings, name, error));
 		SceneRendererSettings restored;

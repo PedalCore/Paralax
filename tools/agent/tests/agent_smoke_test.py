@@ -109,7 +109,12 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
     captured, stats = editor.batch([("render.capture", {"path": str(image), "width": 320, "height": 180}), ("render.stats", {})])
     check(not isinstance(captured, AgentError) and not isinstance(stats, AgentError), f"batch failed: {captured}, {stats}")
     check(set(stats) == {"drawCalls", "shadowDrawCalls", "triangles", "culledSubmeshes", "textGlyphs", "lights",
-                         "staticLightingGenerations"}, f"unexpected render statistics: {stats}")
+                         "staticLightingGenerations", "requestedLocalShadows", "shadowedLocalLights", "localShadowLayers",
+                         "localShadowCapacity", "localShadowDrawCalls", "localShadowAllocationAttempts", "shadowedLocalLightIDs"},
+          f"unexpected render statistics: {stats}")
+    check(captured["stats"] == stats, "capture did not include statistics from its own frame")
+    check(stats["requestedLocalShadows"] == 0 and stats["shadowedLocalLights"] == 0 and stats["localShadowLayers"] == 0
+          and stats["localShadowDrawCalls"] == 0 and stats["shadowedLocalLightIDs"] == [], "empty local-light set consumed shadow slots")
     check(stats["drawCalls"] == 2 and stats["triangles"] > 2 and stats["lights"] == 0, f"unexpected render statistics: {stats}")
     editor_image = output / "AgentCaptureEditorCamera.png"
     editor.call("render.capture", path=str(editor_image), width=160, height=90, camera="editor")

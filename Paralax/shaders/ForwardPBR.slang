@@ -11,6 +11,9 @@ Texture2DArray<float> g_ShadowMap : register(t1, space0);
 TextureCube<float4> g_SpecularEnvironment : register(t2, space0);
 TextureCube<float4> g_DiffuseEnvironment : register(t3, space0);
 Texture2D<float2> g_BRDFLut : register(t4, space0);
+Texture2DArray<float> g_LocalShadowMap : register(t6, space0);
+StructuredBuffer<LocalShadowSlot> g_LocalShadowSlots : register(t7, space0);
+SamplerComparisonState g_LocalShadowSampler : register(s3, space0);
 SamplerState g_LinearWrap : register(s0, space0);
 SamplerState g_LinearClamp : register(s1, space0);
 SamplerComparisonState g_ShadowSampler : register(s2, space0);
@@ -118,7 +121,7 @@ float InterleavedGradientNoise(float2 pixel)
 }
 
 // Normal-offset biasing and a rotated 16-tap Poisson PCF, evaluated independently in each cascade's space.
-float SampleSunCascade(uint cascade, float3 worldPosition, float3 normal, float3 receiverNormal, float2 pixel)
+float SampleSunCascade(uint cascade, float3 worldPosition, float3 normal, float3 receiverNormal, float2x2 rotation)
 {
 	// Normal offset and filter radius are expressed per cascade in world units, so the bias and the penumbra size
 	// match across cascade boundaries.
@@ -133,8 +136,6 @@ float SampleSunCascade(uint cascade, float3 worldPosition, float3 normal, float3
 	// Shadow maps use standard Z (0 near the light) and NVRHI's comparison sampler tests ref < stored: lit when the
 	// biased fragment depth is in front of the occluder.
 	float depth = lightNDC.z - g_View.ShadowParams.y;
-	float angle = InterleavedGradientNoise(pixel) * 6.28318530718;
-	float2x2 rotation = float2x2(cos(angle), -sin(angle), sin(angle), cos(angle));
 	float radius = max(g_View.ShadowParams.w / texelWorld, 1.0) * g_View.ShadowParams.x;
 
 	// Compare each tap against the receiver plane at that UV, not the center depth. Otherwise a wide
@@ -159,7 +160,7 @@ float SampleSunCascade(uint cascade, float3 worldPosition, float3 normal, float3
 	return lit / 16.0;
 }
 
-float SunShadow(float3 worldPosition, float3 normal, float3 receiverNormal, float viewDepth, float2 pixel)
+float SunShadow(float3 worldPosition, float3 normal, float3 receiverNormal, float viewDepth, float2x2 rotation)
 {
 	if (g_View.SunColor.w < 0.5 || viewDepth >= g_View.CascadeSplits[MaxCascades - 1])
 		return 1.0;
@@ -167,17 +168,77 @@ float SunShadow(float3 worldPosition, float3 normal, float3 receiverNormal, floa
 	uint cascade = 0;
 	while (cascade + 1 < MaxCascades && viewDepth >= g_View.CascadeSplits[cascade])
 		cascade++;
-	float shadow = SampleSunCascade(cascade, worldPosition, normal, receiverNormal, pixel);
+	float shadow = SampleSunCascade(cascade, worldPosition, normal, receiverNormal, rotation);
 	float start = cascade == 0 ? g_View.CascadeNear : g_View.CascadeSplits[cascade - 1];
 	float end = g_View.CascadeSplits[cascade];
 	float blendWidth = (end - start) * g_View.CascadeBlend;
 	if (blendWidth > 0.0 && viewDepth > end - blendWidth)
 	{
 		// The last cascade fades out too, so the shadow distance never introduces another hard seam.
-		float next = cascade + 1 < MaxCascades ? SampleSunCascade(cascade + 1, worldPosition, normal, receiverNormal, pixel) : 1.0;
+		float next = cascade + 1 < MaxCascades ? SampleSunCascade(cascade + 1, worldPosition, normal, receiverNormal, rotation) : 1.0;
 		shadow = lerp(shadow, next, smoothstep(end - blendWidth, end, viewDepth));
 	}
 	return shadow;
+}
+
+uint LocalShadowFace(float3 direction)
+{
+	float3 magnitude = abs(direction);
+	if (magnitude.x >= magnitude.y && magnitude.x >= magnitude.z)
+		return direction.x >= 0.0 ? 0u : 1u;
+	if (magnitude.y >= magnitude.z)
+		return direction.y >= 0.0 ? 2u : 3u;
+	return direction.z >= 0.0 ? 4u : 5u;
+}
+
+float LocalShadow(GPULight light, float3 position, float3 normal, float3 receiverNormal, float2x2 rotation)
+{
+	if (light.Params.y < 0.5)
+		return 1.0;
+	LocalShadowSlot slot = g_LocalShadowSlots[uint(light.Params.y) - 1];
+	float3 fromLight = position - light.PositionRange.xyz;
+	float distance = slot.Atlas.y > 1.5 ? length(fromLight) : mul(slot.ViewProjection[0], float4(position, 1)).w;
+	// For a spot, bound displacement after perspective division, including the change in w.
+	// The 24-texel projection guard contains the eight-tap-radius + one normal-offset texel.
+	float perspectiveBound = slot.Atlas.y > 1.5 ? 1.0 : 1.0 + slot.Atlas.w;
+	float texelWorld = max(distance, slot.Bias.x) * 2.0 * slot.Atlas.w * slot.Atlas.z / perspectiveBound;
+	float3 biased = position + normal * slot.Bias.w * texelWorld;
+	float radius = clamp(slot.Bias.z, texelWorld, 8.0 * texelWorld);
+	float3 tangent = normalize(cross(receiverNormal, abs(receiverNormal.y) < 0.99 ? float3(0,1,0) : float3(1,0,0)));
+	float3 bitangent = cross(receiverNormal, tangent);
+	float lit = 0.0;
+	[unroll]
+	for (int tap = 0; tap < 16; ++tap)
+	{
+		float2 disk = PoissonDisk[tap] / max(1.0, length(PoissonDisk[tap]));
+		float2 offset = mul(rotation, disk) * radius;
+		float3 samplePosition = biased + tangent * offset.x + bitangent * offset.y;
+		uint face = slot.Atlas.y > 1.5 ? LocalShadowFace(samplePosition - light.PositionRange.xyz) : 0u;
+		float4x4 matrix = slot.ViewProjection[face];
+		float4 clip = mul(matrix, float4(samplePosition, 1));
+		if (clip.w <= 0.0 || clip.z > clip.w || clip.z < 0.0)
+		{
+			lit += 1.0;
+			continue;
+		}
+		float3 ndc = clip.xyz / clip.w;
+		float2 uv = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+		if (any(uv < 0.0) || any(uv > 1.0))
+		{
+			lit += 1.0;
+			continue;
+		}
+		// Perspective division changes the receiver-plane derivatives. The quotient rule gives
+		// their exact local directions; each tap's UV and reference depth use the same world point.
+		float4 t = mul(matrix, float4(tangent, 0));
+		float4 b = mul(matrix, float4(bitangent, 0));
+		float3 plane = cross(t.xyz - ndc * t.w, b.xyz - ndc * b.w);
+		float2 gradient = abs(plane.z) > 1e-5 * length(plane) ? float2(-2.0 * plane.x, 2.0 * plane.y) / plane.z : float2(0);
+		float depth = ndc.z + dot(abs(gradient), float2(0.5) * slot.Atlas.z);
+		// NVRHI compares ref < stored. Reverse that result for reversed Z (clear depth zero).
+		lit += 1.0 - g_LocalShadowMap.SampleCmpLevelZero(g_LocalShadowSampler, float3(uv, slot.Atlas.x + float(face)), depth);
+	}
+	return lit / 16.0;
 }
 
 float3 RotateY(float3 v, float angle)
@@ -311,11 +372,14 @@ float4 MainPS(VertexOutput input, bool isFrontFace: SV_IsFrontFace) : SV_Target
 	surface.Emissive = emissive;
 	surface.Alpha = baseColor.a;
 
+	float angle = InterleavedGradientNoise(input.Position.xy) * 6.28318530718;
+	float2x2 shadowRotation = float2x2(cos(angle), -sin(angle), sin(angle), cos(angle));
+	float localVisibility = 1.0;
 	float3 directDiffuse = float3(0.0), directSpecular = float3(0.0);
 
 	if (g_View.SunDirection.w > 0.5)
 	{
-		float shadow = SunShadow(surface.Position, shadowNormal, receiverNormal, input.ViewDepth, input.Position.xy);
+		float shadow = SunShadow(surface.Position, shadowNormal, receiverNormal, input.ViewDepth, shadowRotation);
 		LightContribution contribution = EvaluateLightTerms(surface, -g_View.SunDirection.xyz, g_View.SunColor.rgb * shadow);
 		directDiffuse += contribution.Diffuse;
 		directSpecular += contribution.Specular;
@@ -336,7 +400,9 @@ float4 MainPS(VertexOutput input, bool isFrontFace: SV_IsFrontFace) : SV_Target
 			float cone = saturate((cd - light.DirectionCos.w) / max(light.Params.x - light.DirectionCos.w, 1e-4));
 			attenuation *= cone * cone;
 		}
-		LightContribution contribution = EvaluateLightTerms(surface, L, light.ColorIntensity.rgb * attenuation);
+		float visibility = attenuation > 0.0 ? LocalShadow(light, surface.Position, shadowNormal, receiverNormal, shadowRotation) : 1.0;
+		localVisibility = min(localVisibility, visibility);
+		LightContribution contribution = EvaluateLightTerms(surface, L, light.ColorIntensity.rgb * attenuation * visibility);
 		directDiffuse += contribution.Diffuse;
 		directSpecular += contribution.Specular;
 	}
@@ -362,6 +428,8 @@ float4 MainPS(VertexOutput input, bool isFrontFace: SV_IsFrontFace) : SV_Target
 		color = environment.Specular;
 	else if (g_View.DebugView == 9)
 		color = surface.Emissive;
+	else if (g_View.DebugView == 17)
+		color = float3(localVisibility);
 	else if (g_View.DebugView >= 11)
 	{
 		float4 probeView = ProbeCameraRay(surface.Position);

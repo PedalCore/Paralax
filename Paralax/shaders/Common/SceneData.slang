@@ -34,7 +34,15 @@ public struct GPULight
 	public float4 PositionRange;       // xyz position, w range
 	public float4 ColorIntensity;      // rgb color * intensity, w type
 	public float4 DirectionCos;        // xyz direction the light points to, w cos(outer cone)
-	public float4 Params;              // x cos(inner cone)
+	public float4 Params;              // x cos(inner cone), y shadow slot + 1 (0 unshadowed), z requested, w near
+};
+
+public struct LocalShadowSlot
+{
+	public float4x4 ViewProjection[6];
+	public float4 Atlas; // first layer, face count, inverse resolution, tan(half FOV)
+	public float4 Bias; // near, far, filter radius in metres, normal offset in texels
+	public float4 PositionRange;
 };
 
 public struct MaterialConstants

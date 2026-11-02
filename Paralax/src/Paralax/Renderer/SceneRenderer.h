@@ -6,6 +6,8 @@
 #include "Paralax/Math/AABB.h"
 #include "Paralax/Renderer/EnvironmentLighting.h"
 #include "Paralax/Renderer/GPUResourceCache.h"
+#include "Paralax/Renderer/LocalShadowMaps.h"
+#include "Paralax/Renderer/LocalShadowSelection.h"
 #include "Paralax/Renderer/ProbeGI.h"
 #include "Paralax/Renderer/SceneRendererTypes.h"
 #include "Paralax/Renderer/TextRenderer.h"
@@ -53,7 +55,8 @@ namespace Paralax {
 		GIProbeWeight = 13,
 		GIMeanDistance = 14,
 		GISecondMoment = 15,
-		GIVariance = 16
+		GIVariance = 16,
+		LocalShadow = 17
 	};
 
 	enum class ShadowQuality
@@ -61,6 +64,13 @@ namespace Paralax {
 		Low = 0,    // 1024 texels per cascade
 		Medium = 1, // 2048
 		High = 2,   // 4096
+	};
+
+	enum class LocalShadowQuality
+	{
+		Low = 0,    // 512 texels per face
+		Medium = 1, // 1024
+		High = 2    // 2048
 	};
 
 	// Renderer settings. Reflected (GetFields) so the editor UI, scene tooling and agents share one description.
@@ -75,6 +85,9 @@ namespace Paralax {
 		float ShadowSoftness = 0.06f;
 		// Fraction of each cascade blended into the next (0 disables blending).
 		float ShadowCascadeBlend = 0.1f;
+		LocalShadowQuality LocalShadowResolution = LocalShadowQuality::Medium;
+		int MaxShadowedLocalLights = 4;
+		float LocalShadowSoftness = 0.06f;
 		// Environment intensity when the scene has no SkyLight (procedural sky lit by the sun).
 		float DefaultEnvironmentIntensity = 0.65f;
 		bool GIEnabled = true;
@@ -97,6 +110,7 @@ namespace Paralax {
 		RenderDebugView DebugView = RenderDebugView::None;
 
 		uint32_t GetShadowMapSize() const { return 1024u << std::clamp(static_cast<int>(ShadowResolution), 0, 2); }
+		uint32_t GetLocalShadowMapSize() const { return 512u << std::clamp(static_cast<int>(LocalShadowResolution), 0, 2); }
 		static std::span<const FieldInfo> GetFields();
 	};
 
@@ -134,6 +148,10 @@ namespace Paralax {
 		uint32_t TextGlyphs = 0;
 		uint64_t Triangles = 0;
 		uint32_t Lights = 0;
+		uint32_t RequestedLocalShadows = 0, ShadowedLocalLights = 0, LocalShadowLayers = 0, LocalShadowCapacity = 0;
+		uint32_t LocalShadowDrawCalls = 0;
+		uint64_t LocalShadowAllocationAttempts = 0;
+		std::vector<uint64_t> ShadowedLocalLightIDs;
 		// 1 when this frame regenerated the BRDF LUT and environment maps after allocating render targets (see Render).
 		uint32_t StaticLightingGenerations = 0;
 	};
@@ -144,7 +162,8 @@ namespace Paralax {
 	class SceneRenderer
 	{
 	public:
-		SceneRenderer(GraphicsDevice& device, AssetManager& assets);
+		// The optional allocation factory is non-owning and must outlive the renderer.
+		SceneRenderer(GraphicsDevice& device, AssetManager& assets, LocalShadowResourceFactory* shadowFactory = nullptr);
 		~SceneRenderer();
 
 		SceneRenderer(const SceneRenderer&) = delete;
@@ -155,7 +174,8 @@ namespace Paralax {
 
 		// Renders the scene into output (a framebuffer with one 8-bit color attachment, e.g. a swapchain image).
 		// Internal targets are resized to the output's size as needed.
-		void Render(Scene& scene, const CameraView& camera, nvrhi::IFramebuffer* output);
+		// History belongs to one viewport; omit it for deterministic, independent captures.
+		void Render(Scene& scene, const CameraView& camera, nvrhi::IFramebuffer* output, LocalShadowHistory* shadowHistory = nullptr);
 
 		SceneRendererSettings& GetSettings() { return m_Settings; }
 		const SceneRenderStats& GetStats() const { return m_Stats; }
@@ -218,6 +238,8 @@ namespace Paralax {
 		void UpdateEnvironment(Scene& scene, const glm::vec3& sunDirection, const glm::vec3& sunColor);
 		void ComputeCascades(const CameraView& camera, const glm::vec3& sunDirection, GPU::ViewConstants& view);
 		void RenderShadows(const GPU::ViewConstants& view);
+		void CollectLights(Scene& scene, const CameraView& camera, LocalShadowHistory* history);
+		void RenderLocalShadows();
 		void RenderForward(const GPU::ViewConstants& view);
 
 	private:
@@ -230,11 +252,15 @@ namespace Paralax {
 		EnvironmentLighting m_Environment;
 		TextRenderer m_Text;
 		ProbeGI m_ProbeGI;
+		LocalShadowMaps m_LocalShadowMaps;
+		LocalShadowResourceFactory* m_ShadowFactory;
 		EnvironmentMaps m_EnvironmentMaps;
 		bool m_Initialized = false;
 		uint64_t m_FrameIndex = 0;
 		bool m_ReportedMultipleGIVolumes = false;
 		bool m_ReportedGIFailure = false;
+		bool m_ReportedLocalPipelineFailure = false;
+		bool m_ReportedLocalCapacity = false;
 		uint32_t m_QueuedGIUpdates = 0;
 
 		nvrhi::CommandListHandle m_CommandList;
@@ -252,10 +278,12 @@ namespace Paralax {
 		// Shared state.
 		nvrhi::BufferHandle m_ViewConstants;
 		nvrhi::BufferHandle m_LightBuffer;
+		nvrhi::BufferHandle m_LocalShadowBuffer;
 		nvrhi::SamplerHandle m_LinearWrap;
 		nvrhi::SamplerHandle m_LinearClamp;
 		nvrhi::SamplerHandle m_PointClamp;
 		nvrhi::SamplerHandle m_ShadowSampler;
+		nvrhi::SamplerHandle m_LocalShadowSampler;
 		nvrhi::BindingLayoutHandle m_ViewLayout;
 		nvrhi::BindingLayoutHandle m_MaterialLayout;
 		nvrhi::BindingLayoutHandle m_ShadowViewLayout;
@@ -271,14 +299,16 @@ namespace Paralax {
 		nvrhi::InputLayoutHandle m_InputLayout;
 		nvrhi::InputLayoutHandle m_ShadowInputLayout;
 
-		nvrhi::ShaderHandle m_ForwardVS, m_ForwardPS, m_ShadowVS, m_ShadowMaskPS, m_SkyVS, m_SkyPS, m_TonemapVS, m_TonemapPS;
+		nvrhi::ShaderHandle m_ForwardVS, m_ForwardPS, m_ShadowVS, m_LocalShadowVS, m_ShadowPS, m_ShadowMaskPS, m_LocalShadowPS, m_LocalShadowMaskPS, m_SkyVS, m_SkyPS, m_TonemapVS, m_TonemapPS;
 		nvrhi::GraphicsPipelineHandle m_OpaquePipeline, m_OpaqueMirroredPipeline, m_OpaqueDoubleSidedPipeline, m_BlendPipeline, m_SkyPipeline;
 		nvrhi::GraphicsPipelineHandle m_ShadowPipeline, m_ShadowMaskPipeline;
+		nvrhi::GraphicsPipelineHandle m_LocalShadowPipeline, m_LocalShadowMaskPipeline;
 		std::unordered_map<uint64_t, nvrhi::GraphicsPipelineHandle> m_TonemapPipelines;
 
 		std::unordered_map<uint64_t, MaterialEntry> m_Materials;
 		std::vector<DrawItem> m_Draws;
 		std::vector<GPU::Light> m_Lights;
+		std::vector<GPU::LocalShadowSlot> m_LocalShadowSlots;
 
 		// Environment cache: the environment is only regenerated when its inputs change.
 		uint64_t m_EnvironmentKey = 0;

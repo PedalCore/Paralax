@@ -45,6 +45,16 @@ namespace Paralax::GPU {
 	};
 	static_assert(sizeof(Light) == 64);
 
+	// Keeping the exact raster matrices also makes face orientation identical during sampling.
+	struct LocalShadowSlot
+	{
+		glm::mat4 ViewProjection[6];
+		glm::vec4 Atlas; // first layer, face count, inverse resolution, tan(half FOV)
+		glm::vec4 Bias;  // near, far, filter radius in metres, normal offset in texels
+		glm::vec4 PositionRange;
+	};
+	static_assert(sizeof(LocalShadowSlot) == 432);
+
 	struct MaterialConstants
 	{
 		glm::vec4 BaseColorFactor;

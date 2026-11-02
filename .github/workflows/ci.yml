@@ -113,8 +113,16 @@ jobs:
         run: echo "TSAN_OPTIONS=suppressions=${{ github.workspace }}/tools/sanitizers/tsan.supp" >> "$GITHUB_ENV"
 
       - name: Unit tests
+        id: unit_tests
         shell: bash
         run: .github/scripts/run-step.sh "Unit tests" ctest --test-dir build --build-config ${{ matrix.config }} --parallel 4 --timeout 300 --no-tests=error
+
+      - name: Isolated macOS HDR diagnosis
+        if: failure() && runner.os == 'macOS' && steps.unit_tests.outcome == 'failure'
+        shell: bash
+        # Preserve the failed suite result; this measures whether the HDR failure also occurs without concurrent tests.
+        run: |
+          .github/scripts/run-step.sh "Isolated macOS HDR diagnosis" ctest --test-dir build --build-config ${{ matrix.config }} --parallel 1 --timeout 300 --no-tests=error --repeat until-fail:3 -R '^EnvironmentLighting: (packaged HDR|filtered HDR)'
 
       - name: Headless smoke test
         shell: bash
