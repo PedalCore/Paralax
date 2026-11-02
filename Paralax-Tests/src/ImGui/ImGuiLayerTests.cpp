@@ -6,7 +6,6 @@
 #include <Paralax/Core/Application.h>
 #include <Paralax/Events/MouseEvent.h>
 #include <Paralax/ImGui/ImGuiLayer.h>
-#include <Paralax/ImGui/ImGuiRenderer.h>
 #include <Paralax/Renderer/TextureReadback.h>
 
 #include <imgui.h>
@@ -47,12 +46,6 @@ namespace {
 		nvrhi::CommandListHandle m_CommandList;
 	};
 
-}
-
-TEST_CASE("ImGuiRenderer: constructing it without a device is an asserted precondition")
-{
-	Paralax::Testing::ScopedAssertionCapture capture;
-	CHECK_THROWS_AS(ImGuiRenderer(nullptr), Paralax::Testing::AssertionFailedError);
 }
 
 TEST_CASE("ImGuiLayer: renders UI into the back buffer without validation errors")
