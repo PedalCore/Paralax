@@ -50,18 +50,33 @@ namespace Paralax {
 		destination->m_ViewportWidth = source.m_ViewportWidth;
 		destination->m_ViewportHeight = source.m_ViewportHeight;
 
-		// Recreate every entity with its UUID, then copy all components exactly (typed copies, no JSON).
+		// Recreate every entity with its UUID, then copy all components exactly (typed copies, no JSON). Entities are
+		// created in hierarchy order, the order a scene file lists them in, so the copy's registry stores them as the
+		// loaded scene does: renderers take "the first" directional or sky light from a view and sum lights in view
+		// order, and play mode must not disagree with the editor about either. Iterative: hierarchies can be very deep.
 		const entt::registry& sourceRegistry = source.m_Registry;
-		for (const auto& [uuid, sourceHandle] : source.m_EntityMap)
+		std::vector<UUID> stack(source.m_RootEntities.rbegin(), source.m_RootEntities.rend());
+		while (!stack.empty())
 		{
-			Entity copy = destination->CreateEntityWithUUID(UUID(uuid));
+			const UUID uuid = stack.back();
+			stack.pop_back();
+			const auto it = source.m_EntityMap.find(uuid);
+			PX_CORE_VERIFY(it != source.m_EntityMap.end(), "Scene::Copy: the hierarchy names an entity {} that does not exist", static_cast<uint64_t>(uuid));
+			const entt::entity sourceHandle = it->second;
+
+			Entity copy = destination->CreateEntityWithUUID(uuid);
 			copy.GetComponent<RelationshipComponent>() = sourceRegistry.get<RelationshipComponent>(sourceHandle);
 			for (const ComponentInfo& info : ComponentRegistry::GetAll())
 			{
 				if (info.Has(sourceRegistry, sourceHandle))
 					info.Copy(sourceRegistry, sourceHandle, destination->m_Registry, copy.GetHandle());
 			}
+
+			// Push children in reverse so they are created in their sibling order.
+			const std::vector<UUID>& children = sourceRegistry.get<RelationshipComponent>(sourceHandle).Children;
+			stack.insert(stack.end(), children.rbegin(), children.rend());
 		}
+		PX_CORE_ASSERT(destination->m_EntityMap.size() == source.m_EntityMap.size(), "Scene::Copy: the hierarchy does not reach every entity");
 
 		destination->m_RootEntities = source.m_RootEntities;
 		return destination;

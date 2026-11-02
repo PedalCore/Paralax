@@ -273,6 +273,51 @@ TEST_CASE("Scene: very deep hierarchies are handled iteratively (no stack overfl
 	CHECK(scene.GetEntityCount() == 0);
 }
 
+TEST_CASE("Scene: Copy stores entities in hierarchy order, so views iterate as they do in the loaded scene")
+{
+	// A loaded scene holds its entities in file order, which is hierarchy order. The renderer takes "the first"
+	// directional or sky light from a view and sums lights in view order, so the play-mode copy must store them the
+	// same way, whatever order the source's UUID map happens to iterate in.
+	Scene authored("Lights");
+	Entity previous;
+	for (int i = 0; i < 16; i++)
+	{
+		Entity light = authored.CreateEntity("Light" + std::to_string(i));
+		light.AddComponent<DirectionalLightComponent>().Intensity = static_cast<float>(i);
+		if (i % 2 == 0)
+			light.AddComponent<SkyLightComponent>();
+		if (i % 3 == 1)
+			REQUIRE(authored.SetParent(light, previous));
+		previous = light;
+	}
+	Scene loaded;
+	std::string error;
+	REQUIRE(SceneSerializer::Deserialize(loaded, SceneSerializer::Serialize(authored), error));
+
+	auto viewOrder = [](Scene& scene, auto view) {
+		std::vector<UUID> order;
+		for (entt::entity handle : view)
+			order.push_back(Entity(handle, &scene).GetUUID());
+		return order;
+	};
+	auto hierarchyOrder = [](Scene& scene) {
+		std::vector<UUID> order;
+		scene.ForEachEntity([&](Entity entity) { order.push_back(entity.GetUUID()); });
+		return order;
+	};
+	REQUIRE(viewOrder(loaded, loaded.GetAllEntitiesWith<DirectionalLightComponent>()).size() == 16);
+
+	Ref<Scene> copy = Scene::Copy(loaded);
+	CHECK(hierarchyOrder(*copy) == hierarchyOrder(loaded));
+	CHECK(viewOrder(*copy, copy->GetAllEntitiesWith<DirectionalLightComponent>()) == viewOrder(loaded, loaded.GetAllEntitiesWith<DirectionalLightComponent>()));
+	CHECK(viewOrder(*copy, copy->GetAllEntitiesWith<SkyLightComponent>()) == viewOrder(loaded, loaded.GetAllEntitiesWith<SkyLightComponent>()));
+	CHECK(viewOrder(*copy, copy->GetAllEntitiesWith<TransformComponent>()) == viewOrder(loaded, loaded.GetAllEntitiesWith<TransformComponent>()));
+
+	// A copy of the copy (a scene switch back to the level) is stable too.
+	Ref<Scene> again = Scene::Copy(*copy);
+	CHECK(viewOrder(*again, again->GetAllEntitiesWith<DirectionalLightComponent>()) == viewOrder(loaded, loaded.GetAllEntitiesWith<DirectionalLightComponent>()));
+}
+
 TEST_CASE("Scene: Copy and Duplicate preserve component values exactly, even outside editor ranges")
 {
 	Scene scene;
