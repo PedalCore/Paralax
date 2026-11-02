@@ -206,10 +206,19 @@ TEST_CASE("CopyArgv: copies argc entries, null ones as empty strings")
 	CHECK(CopyArgv(-1, argv).empty());
 	CHECK(CopyArgv(3, nullptr).empty());
 
-	// A null entry keeps its position, so the following option still finds its value.
+	// A null entry keeps its position as an empty argument, in CommandLine(argc, argv) too.
 	CommandLine args(4, argv);
 	CHECK(args.GetProgram() == "app");
+	CHECK(args.GetArguments() == std::vector<std::string>{"", "--frames", "3"});
+	CHECK(args.GetPositional() == std::vector<std::string>{""});
 	CHECK(args.GetOption("frames") == "3");
+
+	// In a value's position it is the (empty) value: skipping it would make the next argument the value instead.
+	const char* nullValue[] = {"app", "--frames", nullptr, "3"};
+	CommandLine valueArgs(4, nullValue);
+	CHECK(valueArgs.GetArguments() == std::vector<std::string>{"--frames", "", "3"});
+	CHECK(valueArgs.GetOption("frames") == "");
+	CHECK(valueArgs.GetPositional() == std::vector<std::string>{"3"});
 }
 
 TEST_CASE("SplitWindowsCommandLine: splits as the C runtime splits argv")
