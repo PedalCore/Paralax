@@ -14,7 +14,7 @@ namespace Paralax {
 
 	// Which ImGui textures have a failed creation on record. ImGui asks for a texture again every frame until it
 	// exists, so ImGuiRenderer logs a failure only the first time, and again only once the texture has been created or
-	// destroyed in between. Main-thread-only.
+	// destroyed in between. Internal to ImGuiRenderer: public only so tests can reach it. Main-thread-only.
 	class ImGuiTextureFailures
 	{
 	public:

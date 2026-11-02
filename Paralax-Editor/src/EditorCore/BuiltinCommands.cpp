@@ -440,8 +440,8 @@ namespace Paralax::Editor {
 							   const AssetHandle handle = context.GetAssets().ImportAsset(*registryPath);
 							   if (!handle.IsValid())
 							   {
-								   // The file is new (checked above): remove it, so the failed command leaves nothing behind and a
-								   // retry is not refused because the file exists.
+								   // The file is new (checked above): it is removed, so a retry is not refused because the file
+								   // exists. (Folders created for it stay.)
 								   std::error_code removeError;
 								   std::filesystem::remove(file, removeError);
 								   return CommandResult::Fail("Import failed (see the log for details: console.get)");

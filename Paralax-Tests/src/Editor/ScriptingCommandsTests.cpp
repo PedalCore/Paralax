@@ -89,6 +89,33 @@ TEST_CASE("ScriptingCommands: a script or prefab whose import fails leaves no fi
 	CHECK(std::filesystem::is_regular_file(assets / "Prefabs" / "Crate.pxprefab"));
 }
 
+TEST_CASE("ScriptingCommands: model.create_prefab whose prefab import fails leaves no prefab behind")
+{
+	ProjectFixture fixture("ModelPrefabRegistryLocked");
+	const std::filesystem::path assets = fixture.Context.GetAssets().GetAssetDirectory();
+	const std::filesystem::path models = assets / "Models";
+	std::filesystem::create_directories(models);
+	Paralax::Testing::WriteGltf(models, Paralax::Testing::MakeTriangleDocument(models), "Bay.gltf");
+	// Imported first, with its sub-assets, so the only registry save the command needs is the prefab's.
+	fixture.Run("asset.import", {{"path", "Models/Bay.gltf"}});
+
+	// A directory where the registry file belongs: the registry cannot be saved, so the prefab's import fails.
+	const std::filesystem::path registry = assets / AssetManager::RegistryFileName;
+	std::error_code error;
+	std::filesystem::remove(registry, error);
+	std::filesystem::create_directories(registry);
+	Paralax::Testing::ScopedLogCapture capture;
+	const CommandResult failed = fixture.Context.Execute("model.create_prefab", {{"model", "Models/Bay.gltf"}});
+	CHECK_FALSE(failed.Success);
+	CHECK(failed.Error.find("console.get") != std::string::npos);
+	CHECK_FALSE(std::filesystem::exists(assets / "Prefabs" / "Bay.pxprefab"));
+
+	// Writable again: the same call goes through.
+	std::filesystem::remove_all(registry);
+	fixture.Run("model.create_prefab", {{"model", "Models/Bay.gltf"}});
+	CHECK(std::filesystem::is_regular_file(assets / "Prefabs" / "Bay.pxprefab"));
+}
+
 TEST_CASE("ScriptingCommands: scripts run in play mode and script.eval reaches the running scene")
 {
 	ProjectFixture fixture("ScriptPlay");

@@ -477,7 +477,9 @@ TEST_CASE("AssetManager: removing and reloading fail without losing the registry
 	CHECK(assets.GetRegisteredAssets().size() == registered);
 	CHECK(assets.IsLoaded(model));
 	CHECK(assets.GetAsset<MeshAsset>(model) == mesh);
-	CHECK(assets.GetMetadata(subAsset)->Parent == model);
+	const AssetMetadata* subMetadata = assets.GetMetadata(subAsset);
+	REQUIRE(subMetadata);
+	CHECK(subMetadata->Parent == model);
 	CHECK(assets.IsLoaded(subAsset));
 	CHECK(assets.GetAsset(subAsset) == loadedSubAsset);
 	// Reloads that change nothing in the registry need no save; a material's never does.

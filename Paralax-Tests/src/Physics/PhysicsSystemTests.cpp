@@ -905,7 +905,7 @@ TEST_CASE("PhysicsSystem: in Release and Dist, Jolt's own assertions are compile
 {
 	// Jolt compiles them in exactly when NDEBUG is not defined.
 	CHECK_FALSE(PhysicsSystem::JoltAssertionsEnabled());
-	CHECK_FALSE(PhysicsSystem::RaiseJoltAssertion("testMadeUpCondition", "never checked"));
+	CHECK_FALSE(PhysicsSystem::RaiseJoltAssertion("testMadeUpCondition", "never checked", "Jolt/Test/MadeUp.cpp", 4242));
 }
 #else
 TEST_CASE("PhysicsSystem: a failed Jolt assertion is an engine assertion failure, except Jolt's update-error check")
@@ -914,17 +914,19 @@ TEST_CASE("PhysicsSystem: a failed Jolt assertion is an engine assertion failure
 	Paralax::Testing::ScopedLogCapture log;
 
 	// Misuse of Jolt fails as PX_CORE_ASSERT does, with Jolt's expression, message and location.
-	const std::optional<AssertionInfo> failure = Paralax::Testing::CaptureAssertion([] { PhysicsSystem::RaiseJoltAssertion("testMadeUpCondition", "made up by the test"); });
+	const std::optional<AssertionInfo> failure = Paralax::Testing::CaptureAssertion([] { PhysicsSystem::RaiseJoltAssertion("testMadeUpCondition", "made up by the test", "Jolt/Test/MadeUp.cpp", 4242); });
 	REQUIRE(failure);
 	CHECK(std::string(failure->Expression) == "testMadeUpCondition");
-	CHECK(failure->Message.find("made up by the test") != std::string::npos);
-	CHECK(std::string(failure->File).find("PhysicsSystem") != std::string::npos);
-	CHECK(CountLogs(log, "testMadeUpCondition") == 1);
+	CHECK(failure->Message == "Jolt: made up by the test");
+	CHECK(std::string(failure->File) == "Jolt/Test/MadeUp.cpp");
+	CHECK(failure->Line == 4242);
+	// Reported once, by the assertion handler (here the capture, which throws instead), not also by the Jolt hook.
+	CHECK(CountLogs(log, "testMadeUpCondition") == 0);
 
-	// Jolt's check that an update reported no error is a runtime condition: it continues, logged once.
+	// Jolt's check that an update reported no error is a runtime condition: it continues, logged once per site.
 	for (int i = 0; i < 3; i++)
-		CHECK_FALSE(PhysicsSystem::RaiseJoltAssertion("errors == EPhysicsUpdateError::None", "An error occurred during the physics update"));
-	CHECK(CountLogs(log, "errors == EPhysicsUpdateError::None") == 1);
+		CHECK_FALSE(PhysicsSystem::RaiseJoltAssertion("errors == EPhysicsUpdateError::None", "An error occurred during the physics update", "Jolt/Test/MadeUp.cpp", 4242));
+	CHECK(CountLogs(log, "errors == EPhysicsUpdateError::None (Jolt/Test/MadeUp.cpp:4242)") == 1);
 }
 #endif
 

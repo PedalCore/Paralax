@@ -85,8 +85,8 @@ return {name}
 		}
 
 		// Imports a file the command has just written to a NewAssetPath. If the import fails (the asset registry cannot
-		// be saved, say), the file is removed again: a failed command leaves nothing behind, and a retry is not refused
-		// because the file exists.
+		// be saved, say), the file is removed again, so a retry is not refused because the file exists. (Folders created
+		// for it stay.)
 		AssetHandle ImportNewFile(EditorContext& context, const std::filesystem::path& path)
 		{
 			const AssetHandle handle = context.GetAssets().ImportAsset(path);
@@ -304,6 +304,9 @@ return {name}
 								   if (!file)
 									   return CommandResult::Fail(error);
 								   handle = assets.ImportAsset(*file);
+								   // The log says why (a missing file, an unsupported type, a registry that cannot be saved).
+								   if (!handle.IsValid())
+									   return CommandResult::Fail("Import failed (see the log for details: console.get)");
 							   }
 							   const AssetMetadata* metadata = handle.IsValid() ? assets.GetMetadata(handle) : nullptr;
 							   if (!metadata || metadata->Type != AssetType::Mesh || metadata->Parent.IsValid() || metadata->FilePath.empty())

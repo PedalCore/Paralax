@@ -70,21 +70,25 @@ namespace Paralax {
 		{
 			expression = expression ? expression : "";
 			file = file ? file : "";
-			// Logged once per site and expression: the update-error assertion repeats every step while it holds.
-			static std::mutex s_ReportedMutex;
-			static std::set<std::tuple<std::string, JPH::uint, std::string>> s_Reported;
-			bool first = false;
-			{
-				std::scoped_lock lock(s_ReportedMutex);
-				first = s_Reported.emplace(file, line, expression).second;
-			}
-			if (first)
-				PX_CORE_ERROR("Jolt assertion failed: {} ({}:{}){}{}", expression, file, line, message ? " - " : "", message ? message : "");
 			if (std::string_view(expression) == UpdateErrorAssertion)
-				return false; // Continue; never break into the debugger.
-			// Misuse of Jolt fails like the engine's own assertions: the default handler reports it and stops the
-			// process, and tests capture it. A capturing handler throws; Jolt is built without exceptions, so that
-			// is only well-defined where no Jolt code is being unwound (PhysicsSystem::RaiseJoltAssertion).
+			{
+				// Logged once per site: it repeats every step while the condition holds. Never breaks into the
+				// debugger.
+				static std::mutex s_ReportedMutex;
+				static std::set<std::pair<std::string, JPH::uint>> s_Reported;
+				bool first = false;
+				{
+					std::scoped_lock lock(s_ReportedMutex);
+					first = s_Reported.emplace(file, line).second;
+				}
+				if (first)
+					PX_CORE_ERROR("Jolt assertion failed: {} ({}:{}){}{}", expression, file, line, message ? " - " : "", message ? message : "");
+				return false;
+			}
+			// Misuse of Jolt fails like the engine's own assertions, with Jolt's expression, location and message: the
+			// default handler reports it once and stops the process, and tests capture it. A capturing handler throws;
+			// Jolt is built without exceptions, so that is only well-defined where no Jolt code is being unwound
+			// (PhysicsSystem::RaiseJoltAssertion).
 			Assertion::Fail(expression, file, static_cast<int>(line), fmt::format("Jolt: {}", message ? message : "assertion failed"));
 		}
 #endif
@@ -1131,12 +1135,13 @@ namespace Paralax {
 #endif
 	}
 
-	bool PhysicsSystem::RaiseJoltAssertion([[maybe_unused]] const char* expression, [[maybe_unused]] const char* message)
+	bool PhysicsSystem::RaiseJoltAssertion([[maybe_unused]] const char* expression, [[maybe_unused]] const char* message, [[maybe_unused]] const char* file,
+										   [[maybe_unused]] uint32_t line)
 	{
 #ifdef JPH_ENABLE_ASSERTS
 		// Through JPH::AssertFailed, so this exercises the handler actually installed.
 		EnsureJoltInitialized();
-		return JPH::AssertFailed(expression, message, __FILE__, __LINE__);
+		return JPH::AssertFailed(expression, message, file, line);
 #else
 		return false;
 #endif

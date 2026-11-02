@@ -52,7 +52,7 @@ TEST_CASE("ImGuiRenderer: rendering without draw data or a framebuffer is an ass
 
 // A device cannot be made to refuse an allocation without validation errors, so the bookkeeping the renderer logs
 // through is tested on its own.
-TEST_CASE("ImGuiRenderer: a texture that keeps failing to be created is reported once until it is created or destroyed")
+TEST_CASE("ImGuiTextureFailures: a texture that keeps failing to be created is reported once until it is created or destroyed")
 {
 	ImGuiTextureFailures failures;
 	// ImGui asks again every frame: three failing frames, one report.
