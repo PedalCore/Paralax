@@ -42,7 +42,39 @@ namespace Paralax::Editor {
 			json ids = json::array();
 			for (uint64_t id : stats.ShadowedLocalLightIDs)
 				ids.push_back(std::to_string(id));
-			return {{"drawCalls", stats.DrawCalls}, {"shadowDrawCalls", stats.ShadowDrawCalls}, {"triangles", stats.Triangles}, {"culledSubmeshes", stats.CulledSubmeshes}, {"textGlyphs", stats.TextGlyphs}, {"lights", stats.Lights}, {"staticLightingGenerations", stats.StaticLightingGenerations}, {"requestedLocalShadows", stats.RequestedLocalShadows}, {"shadowedLocalLights", stats.ShadowedLocalLights}, {"localShadowLayers", stats.LocalShadowLayers}, {"localShadowCapacity", stats.LocalShadowCapacity}, {"localShadowDrawCalls", stats.LocalShadowDrawCalls}, {"localShadowAllocationAttempts", stats.LocalShadowAllocationAttempts}, {"shadowedLocalLightIDs", std::move(ids)}};
+			const auto pathName = [](RenderPath path) {
+				switch (path)
+				{
+					case RenderPath::Forward: return "Forward";
+					case RenderPath::Deferred: return "Deferred";
+					case RenderPath::Visibility: return "Visibility";
+				}
+				return "Invalid";
+			};
+			return {{"requestedRenderPath", pathName(stats.RequestedPath)},
+					{"effectiveRenderPath", pathName(stats.EffectivePath)},
+					{"renderPathFallbackReason", stats.PathFallbackReason},
+					{"surfaceOwnedBytes", stats.SurfaceOwnedBytes},
+					{"surfaceAllocationAttempts", stats.SurfaceAllocationAttempts},
+					{"surfaceResolveDrawCalls", stats.SurfaceResolveDrawCalls},
+					{"visibilityResolveDrawCalls", stats.VisibilityResolveDrawCalls},
+					{"visibilityOwnedBytes", stats.VisibilityOwnedBytes},
+					{"visibilityGeometryBytes", stats.VisibilityGeometryBytes},
+					{"visibilityAllocationAttempts", stats.VisibilityAllocationAttempts},
+					{"drawCalls", stats.DrawCalls},
+					{"shadowDrawCalls", stats.ShadowDrawCalls},
+					{"triangles", stats.Triangles},
+					{"culledSubmeshes", stats.CulledSubmeshes},
+					{"textGlyphs", stats.TextGlyphs},
+					{"lights", stats.Lights},
+					{"staticLightingGenerations", stats.StaticLightingGenerations},
+					{"requestedLocalShadows", stats.RequestedLocalShadows},
+					{"shadowedLocalLights", stats.ShadowedLocalLights},
+					{"localShadowLayers", stats.LocalShadowLayers},
+					{"localShadowCapacity", stats.LocalShadowCapacity},
+					{"localShadowDrawCalls", stats.LocalShadowDrawCalls},
+					{"localShadowAllocationAttempts", stats.LocalShadowAllocationAttempts},
+					{"shadowedLocalLightIDs", std::move(ids)}};
 		}
 
 		std::string IdString(UUID id)
