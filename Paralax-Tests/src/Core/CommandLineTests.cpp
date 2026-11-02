@@ -306,6 +306,38 @@ TEST_CASE("SplitWindowsCommandLine: converts each argument to UTF-8")
 																		"\xEF\xBF\xBD", "c"});
 }
 
+TEST_CASE("ProcessArgumentsFromCommandLine: an empty line gives the executable's path whole")
+{
+	// The C runtime would split this path at its space, as if it were the command line.
+	const std::optional<std::vector<std::string>> arguments = ProcessArgumentsFromCommandLine(u"", uR"(C:\Program Files\Game\Game.exe)");
+	REQUIRE(arguments.has_value());
+	CHECK(*arguments == std::vector<std::string>{R"(C:\Program Files\Game\Game.exe)"});
+
+	// Converted to UTF-8 like every argument.
+	CHECK(ProcessArgumentsFromCommandLine(u"", u"C:/Spiele/Projekt-\u00E9-\u65E5\u672C-\u03A9/Game.exe") == std::vector<std::string>{"C:/Spiele/" + std::string(ProjectName) + "/Game.exe"});
+	// Without a known path the program path is empty, as SplitWindowsCommandLine gives for an empty line.
+	CHECK(ProcessArgumentsFromCommandLine(u"", u"") == std::vector<std::string>{""});
+}
+
+TEST_CASE("ProcessArgumentsFromCommandLine: a line of blanks is split, not replaced by the executable's path")
+{
+	// Not empty, so the C runtime splits it too: an empty program path and nothing else.
+	CHECK(ProcessArgumentsFromCommandLine(u" ", u"C:/Game.exe") == std::vector<std::string>{""});
+	CHECK(ProcessArgumentsFromCommandLine(u"\t ", u"C:/Game.exe") == std::vector<std::string>{""});
+}
+
+TEST_CASE("ProcessArgumentsFromCommandLine: a normal line is split and the executable's path is ignored")
+{
+	CHECK(ProcessArgumentsFromCommandLine(uR"("C:\Games\Game.exe" --project "My Game")", u"D:/Other.exe") == std::vector<std::string>{R"(C:\Games\Game.exe)", "--project", "My Game"});
+	CHECK(ProcessArgumentsFromCommandLine(u"prog", u"D:/Other.exe") == std::vector<std::string>{"prog"});
+}
+
+TEST_CASE("ProcessArgumentsFromCommandLine: no line gives nothing, so the caller falls back to argv")
+{
+	CHECK_FALSE(ProcessArgumentsFromCommandLine(nullptr, u"C:/Game.exe").has_value());
+	CHECK_FALSE(ProcessArgumentsFromCommandLine(nullptr, u"").has_value());
+}
+
 TEST_CASE("GetProcessArguments: gives this process's arguments as the C runtime split them, the program first")
 {
 	// main's own arguments. On Windows this splits the test runner's real UTF-16 command line, which checks
