@@ -1,9 +1,13 @@
 #include <doctest/doctest.h>
 
+#include "TestUtilities.h"
+
 #include <Paralax/Math/Math.h>
 #include <Paralax/Scene/SceneCamera.h>
 
 #include <glm/gtc/epsilon.hpp>
+
+#include <limits>
 
 using namespace Paralax;
 
@@ -85,4 +89,61 @@ TEST_CASE("SceneCamera: orthographic projection maps the view volume and handles
 	// Zero/NaN aspect falls back to 1 instead of producing NaNs.
 	const glm::mat4 fallback = camera.GetProjection(0.0f);
 	CHECK(std::isfinite(fallback[0][0]));
+}
+
+TEST_CASE("SceneCamera: clip planes that cannot form a projection fall back to the defaults, warned once")
+{
+	Paralax::Testing::ScopedLogCapture log;
+	auto allFinite = [](const glm::mat4& m) {
+		for (int column = 0; column < 4; column++)
+		{
+			for (int row = 0; row < 4; row++)
+			{
+				if (!std::isfinite(m[column][row]))
+					return false;
+			}
+		}
+		return true;
+	};
+	const SceneCamera defaults;
+
+	// Each plane is within its reflected range; together they divide by zero.
+	SceneCamera camera;
+	camera.PerspectiveNear = 10.0f;
+	camera.PerspectiveFar = 10.0f;
+	CHECK_FALSE(camera.HasValidClipPlanes());
+	CHECK(camera.GetEffectiveNear() == defaults.PerspectiveNear);
+	CHECK(camera.GetEffectiveFar() == defaults.PerspectiveFar);
+	CHECK(camera.GetProjection(1.5f) == defaults.GetProjection(1.5f));
+	CHECK(allFinite(camera.GetProjection(1.5f)));
+	CHECK(log.Contains(spdlog::level::warn, "cannot form a projection"));
+
+	camera.PerspectiveFar = 11.0f;
+	CHECK(camera.HasValidClipPlanes());
+	CHECK(camera.GetEffectiveNear() == 10.0f);
+	CHECK(camera.GetEffectiveFar() == 11.0f);
+	CHECK(camera.GetProjection(1.5f) != defaults.GetProjection(1.5f));
+	for (float nearPlane : {0.0f, -1.0f, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()})
+	{
+		CAPTURE(nearPlane);
+		camera.PerspectiveNear = nearPlane;
+		CHECK_FALSE(camera.HasValidClipPlanes());
+		CHECK(allFinite(camera.GetProjection(1.5f)));
+	}
+
+	// Orthographic planes may be negative; only the order and finiteness matter.
+	SceneCamera orthographic;
+	orthographic.Projection = SceneCamera::ProjectionType::Orthographic;
+	SceneCamera orthographicDefaults = orthographic;
+	orthographic.OrthographicNear = -5.0f;
+	orthographic.OrthographicFar = 5.0f;
+	CHECK(orthographic.HasValidClipPlanes());
+	orthographic.OrthographicFar = -5.0f;
+	CHECK_FALSE(orthographic.HasValidClipPlanes());
+	CHECK(orthographic.GetEffectiveNear() == defaults.OrthographicNear);
+	CHECK(orthographic.GetEffectiveFar() == defaults.OrthographicFar);
+	CHECK(orthographic.GetProjection(2.0f) == orthographicDefaults.GetProjection(2.0f));
+	orthographic.OrthographicFar = std::numeric_limits<float>::infinity();
+	CHECK_FALSE(orthographic.HasValidClipPlanes());
+	CHECK(allFinite(orthographic.GetProjection(2.0f)));
 }

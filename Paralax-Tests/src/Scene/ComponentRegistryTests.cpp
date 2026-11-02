@@ -161,6 +161,24 @@ TEST_CASE("ComponentRegistry: numbers beyond float range are rejected")
 	CHECK_FALSE(ComponentRegistry::SetField(*ComponentRegistry::Find("Camera")->FindField("OrthographicNear"), &camera, -1e300, error));
 }
 
+TEST_CASE("ComponentRegistry: orthographic clip planes have a range like the perspective ones")
+{
+	CameraComponent camera;
+	const ComponentInfo& info = *ComponentRegistry::Find("Camera");
+	std::string error;
+	for (const char* name : {"OrthographicNear", "OrthographicFar"})
+	{
+		CAPTURE(name);
+		const FieldInfo& field = *info.FindField(name);
+		CHECK(field.Min < field.Max);
+		CHECK_FALSE(ComponentRegistry::SetField(field, &camera, -1e7, error));
+		CHECK_FALSE(ComponentRegistry::SetField(field, &camera, 1e7, error));
+		CHECK(ComponentRegistry::SetField(field, &camera, -250.0, error));
+	}
+	CHECK(camera.Camera.OrthographicNear == -250.0f);
+	CHECK(camera.Camera.OrthographicFar == -250.0f);
+}
+
 TEST_CASE("ComponentRegistry: names and tags are limited to 256 bytes by the registry")
 {
 	TagComponent tag;

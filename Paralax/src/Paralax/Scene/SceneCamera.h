@@ -23,8 +23,18 @@ namespace Paralax {
 		float OrthographicNear = -100.0f;
 		float OrthographicFar = 100.0f;
 
+		// Whether the active projection's clip planes can form a projection: both finite, far greater than near, and
+		// near positive for perspective. Each plane's reflected range allows pairs that are not (near == far), which
+		// would divide by zero; GetProjection and the effective planes then use the defaults instead.
+		bool HasValidClipPlanes() const;
+		// The clip planes GetProjection uses: the camera's own when they are valid, otherwise the defaults of the
+		// active projection. Read these, not the fields, wherever the planes must agree with the projection.
+		float GetEffectiveNear() const;
+		float GetEffectiveFar() const;
+
 		// Projection for the given aspect ratio (width / height), D3D-style clip space with reversed-Z depth:
-		// the near plane maps to depth 1 and the far plane to 0, for precision at distance.
+		// the near plane maps to depth 1 and the far plane to 0, for precision at distance. Always finite: an aspect
+		// ratio that is not positive is treated as 1, and invalid clip planes as the defaults (warned once per process).
 		glm::mat4 GetProjection(float aspectRatio) const;
 	};
 

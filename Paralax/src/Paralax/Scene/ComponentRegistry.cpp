@@ -68,8 +68,8 @@ namespace Paralax {
 																	MakeNestedField<&CameraComponent::Camera, &SceneCamera::PerspectiveNear>("PerspectiveNear", FieldOptions().Range(0.0001f, 100000.0f)),
 																	MakeNestedField<&CameraComponent::Camera, &SceneCamera::PerspectiveFar>("PerspectiveFar", FieldOptions().Range(0.001f, 1000000.0f)),
 																	MakeNestedField<&CameraComponent::Camera, &SceneCamera::OrthographicSize>("OrthographicSize", FieldOptions().Range(0.0001f, 1000000.0f)),
-																	MakeNestedField<&CameraComponent::Camera, &SceneCamera::OrthographicNear>("OrthographicNear"),
-																	MakeNestedField<&CameraComponent::Camera, &SceneCamera::OrthographicFar>("OrthographicFar"),
+																	MakeNestedField<&CameraComponent::Camera, &SceneCamera::OrthographicNear>("OrthographicNear", FieldOptions().Range(-1000000.0f, 1000000.0f)),
+																	MakeNestedField<&CameraComponent::Camera, &SceneCamera::OrthographicFar>("OrthographicFar", FieldOptions().Range(-1000000.0f, 1000000.0f)),
 																	MakeField<&CameraComponent::Primary>("Primary"),
 																}));
 
