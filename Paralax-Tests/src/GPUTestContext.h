@@ -18,6 +18,10 @@ namespace Paralax::Testing {
 
 	// True if GPU tests should run; otherwise records a warning or failure as described above.
 	bool RequireTestGraphicsDevice();
+	// Like RequireTestGraphicsDevice, and also requires the validation layer's synchronization validation (see
+	// GraphicsDeviceInfo::SynchronizationValidation). Without it the test is skipped with a warning, or fails when
+	// PX_REQUIRE_VALIDATION_LAYER is set (Linux CI installs the layer; Windows CI has only the lavapipe driver).
+	bool RequireSynchronizationValidation();
 
 	// Directory for images written by tests (inspected by humans and CI artifacts).
 	std::filesystem::path GetTestOutputDirectory();

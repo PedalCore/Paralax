@@ -413,6 +413,7 @@ namespace Paralax {
 
 		std::vector<const char*> layers;
 		const bool debugUtilsAvailable = ContainsExtension(available, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+		bool synchronizationValidation = false;
 		if (specification.EnableValidation)
 		{
 			uint32_t layerCount = 0;
@@ -425,7 +426,27 @@ namespace Paralax {
 			const bool hasValidationLayer = std::any_of(availableLayers.begin(), availableLayers.end(),
 														[](const VkLayerProperties& l) { return std::strcmp(l.layerName, "VK_LAYER_KHRONOS_validation") == 0; });
 			if (hasValidationLayer)
+			{
 				layers.push_back("VK_LAYER_KHRONOS_validation");
+				if (specification.EnableSynchronizationValidation)
+				{
+					// Extensions a layer provides are listed only when enumerating with that layer's name. The newer
+					// VK_EXT_layer_settings is not offered by the layer Ubuntu 24.04 ships (1.3.275), so the deprecated but
+					// universally supported VK_EXT_validation_features is the one to ask for.
+					uint32_t layerExtensionCount = 0;
+					m_Functions.EnumerateInstanceExtensionProperties("VK_LAYER_KHRONOS_validation", &layerExtensionCount, nullptr);
+					std::vector<VkExtensionProperties> layerExtensions(layerExtensionCount);
+					if (layerExtensionCount > 0)
+						m_Functions.EnumerateInstanceExtensionProperties("VK_LAYER_KHRONOS_validation", &layerExtensionCount, layerExtensions.data());
+					if (ContainsExtension(layerExtensions, VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME))
+					{
+						m_EnabledInstanceExtensions.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
+						synchronizationValidation = true;
+					}
+					else
+						PX_CORE_WARN("Vulkan synchronization validation requested but the validation layer lacks VK_EXT_validation_features");
+				}
+			}
 			else
 				PX_CORE_WARN("Vulkan validation requested but VK_LAYER_KHRONOS_validation is not installed; using NVRHI validation only");
 
@@ -450,8 +471,18 @@ namespace Paralax {
 
 		const bool useMessenger = specification.EnableValidation && debugUtilsAvailable;
 
+		const VkValidationFeatureEnableEXT enabledValidationFeatures[] = {VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT};
+		VkValidationFeaturesEXT validationFeatures = MakeVkStruct<VkValidationFeaturesEXT>(VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT);
+		validationFeatures.enabledValidationFeatureCount = 1;
+		validationFeatures.pEnabledValidationFeatures = enabledValidationFeatures;
+		// Both structures extend VkInstanceCreateInfo. The messenger structure is reused for
+		// vkCreateDebugUtilsMessengerEXT below, which requires its own pNext to be null, so it ends the chain.
+		validationFeatures.pNext = useMessenger ? &messengerInfo : nullptr;
+		m_Info.SynchronizationValidation = synchronizationValidation;
+
 		VkInstanceCreateInfo createInfo = MakeVkStruct<VkInstanceCreateInfo>(VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO);
-		createInfo.pNext = useMessenger ? &messengerInfo : nullptr; // Also captures messages from instance creation itself.
+		// The messenger in the chain also captures messages from instance creation itself.
+		createInfo.pNext = synchronizationValidation ? static_cast<const void*>(&validationFeatures) : (useMessenger ? static_cast<const void*>(&messengerInfo) : nullptr);
 		createInfo.flags = flags;
 		createInfo.pApplicationInfo = &applicationInfo;
 		createInfo.enabledLayerCount = static_cast<uint32_t>(layers.size());
@@ -708,7 +739,7 @@ namespace Paralax {
 			m_Device = nvrhi::validation::createValidationLayer(m_Device);
 
 		PX_CORE_INFO("Graphics device: {} (Vulkan {}.{}, {}){}", m_Info.AdapterName, m_Info.ApiVersionMajor, m_Info.ApiVersionMinor, m_Info.DriverName,
-					 specification.EnableValidation ? " with validation" : "");
+					 specification.EnableValidation ? (m_Info.SynchronizationValidation ? " with validation and synchronization validation" : " with validation") : "");
 		return true;
 	}
 

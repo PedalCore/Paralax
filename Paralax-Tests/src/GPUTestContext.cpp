@@ -56,6 +56,21 @@ namespace Paralax::Testing {
 		return false;
 	}
 
+	bool RequireSynchronizationValidation()
+	{
+		if (!RequireTestGraphicsDevice())
+			return false;
+		if (GetTestGraphicsDevice()->GetInfo().SynchronizationValidation)
+			return true;
+
+		const char* required = std::getenv("PX_REQUIRE_VALIDATION_LAYER");
+		if (required && *required && std::string(required) != "0")
+			FAIL("Synchronization validation is unavailable but PX_REQUIRE_VALIDATION_LAYER is set");
+		else
+			WARN_MESSAGE(false, "Synchronization validation is unavailable (no validation layer); test skipped");
+		return false;
+	}
+
 	std::filesystem::path GetTestOutputDirectory()
 	{
 		std::filesystem::path directory = std::filesystem::current_path() / "TestOutput";

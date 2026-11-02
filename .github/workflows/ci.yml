@@ -59,6 +59,7 @@ jobs:
             mesa-vulkan-drivers vulkan-validationlayers libvulkan1 xvfb xauth
           # GPU tests run on lavapipe (software Vulkan) and must not be skipped on Linux.
           echo "PX_REQUIRE_GPU=1" >> "$GITHUB_ENV"
+          echo "PX_REQUIRE_VALIDATION_LAYER=1" >> "$GITHUB_ENV"
 
       - name: Install Windows Vulkan driver (lavapipe)
         if: runner.os == 'Windows'

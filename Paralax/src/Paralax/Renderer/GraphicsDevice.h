@@ -15,6 +15,12 @@ namespace Paralax {
 		// Enables the Khronos validation layer (when installed) and NVRHI's validation layer. Validation errors are
 		// logged and counted (see GetValidationErrorCount).
 		bool EnableValidation = false;
+		// With EnableValidation: also enables the layer's synchronization validation, which reports GPU work that
+		// reads or writes a resource without a barrier ordering it after the previous access. NVRHI re-places
+		// barriers for a draw or dispatch only when one of its binding sets changed or a copy, clear or write preceded
+		// it, so this is what catches a missed one. Costs recording time; tests and --validation keep it on. Ignored
+		// when the layer lacks VK_EXT_validation_features.
+		bool EnableSynchronizationValidation = true;
 		// When true, no window-system (surface/swapchain) extensions are requested; rendering is offscreen only.
 		bool Headless = false;
 		// When non-empty, the first adapter whose name contains this string (case-insensitive) is preferred.
@@ -32,6 +38,8 @@ namespace Paralax {
 		uint32_t ApiVersionMajor = 0;
 		uint32_t ApiVersionMinor = 0;
 		bool IsSoftwareRasterizer = false;
+		// The Khronos layer's synchronization validation is active (see GraphicsDeviceSpecification).
+		bool SynchronizationValidation = false;
 		bool SupportsRayQuery = false;
 		bool SupportsRayTracingPipeline = false;
 		bool SupportsMeshShaders = false;

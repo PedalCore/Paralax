@@ -10,6 +10,8 @@
 #include <glm/glm.hpp>
 #include <nvrhi/utils.h>
 
+#include <cstdlib>
+
 using namespace Paralax;
 using Paralax::Testing::GetTestGraphicsDevice;
 using Paralax::Testing::GetTestOutputDirectory;
@@ -94,6 +96,49 @@ TEST_CASE("GraphicsDevice: a preferred adapter that does not exist falls back to
 	Scope<GraphicsDevice> device = GraphicsDevice::Create(specification);
 	REQUIRE(device);
 	CHECK(capture.Contains(spdlog::level::warn, "not found"));
+}
+
+TEST_CASE("GraphicsDevice: synchronization validation reports a read of a buffer written without a barrier")
+{
+	if (!Paralax::Testing::RequireSynchronizationValidation())
+		return;
+	Paralax::GraphicsDevice& graphics = *Paralax::Testing::GetTestGraphicsDevice();
+	nvrhi::IDevice* device = graphics.GetDevice();
+	const uint32_t errorsBefore = graphics.GetValidationErrorCount();
+	Paralax::Testing::ScopedLogCapture logs;
+
+	const auto makeBuffer = [&](const char* name, nvrhi::ResourceStates state) {
+		return device->createBuffer(nvrhi::BufferDesc().setByteSize(256).setInitialState(state).setKeepInitialState(true).setDebugName(name));
+	};
+	nvrhi::BufferHandle source = makeBuffer("SyncValidationSource", nvrhi::ResourceStates::CopySource);
+	nvrhi::BufferHandle middle = makeBuffer("SyncValidationMiddle", nvrhi::ResourceStates::CopyDest);
+	nvrhi::BufferHandle destination = makeBuffer("SyncValidationDestination", nvrhi::ResourceStates::CopyDest);
+	REQUIRE(source);
+	REQUIRE(middle);
+	REQUIRE(destination);
+
+	nvrhi::CommandListHandle commands = device->createCommandList();
+	REQUIRE(commands);
+	commands->open();
+	// NVRHI would order the second copy after the first by itself; recording them without its barriers is the
+	// hazard the layer must report (a read of 'middle' racing the write that fills it).
+	commands->setEnableAutomaticBarriers(false);
+	commands->copyBuffer(middle, 0, source, 0, 256);
+	commands->copyBuffer(destination, 0, middle, 0, 256);
+	commands->setEnableAutomaticBarriers(true);
+	commands->close();
+	device->executeCommandList(commands);
+	device->waitForIdle();
+
+	CHECK(graphics.GetValidationErrorCount() > errorsBefore);
+	CHECK(logs.Contains(spdlog::level::err, "SYNC-HAZARD-READ-AFTER-WRITE"));
+
+	// The deliberate error stays counted on the shared device; later tests expect a clean one.
+	commands = nullptr;
+	source = nullptr;
+	middle = nullptr;
+	destination = nullptr;
+	Paralax::Testing::ReleaseTestGraphicsDevice();
 }
 
 TEST_CASE("GraphicsDevice: missing required instance extensions fail creation with an error")
