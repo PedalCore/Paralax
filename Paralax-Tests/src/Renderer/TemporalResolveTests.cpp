@@ -194,7 +194,7 @@ TEST_CASE("TemporalResolve: each history tap rejects incompatible identity depth
 	CHECK(graphics.GetValidationErrorCount() == errors);
 }
 
-TEST_CASE("TemporalResolve: mixed silhouettes retain full fractional current coverage and store rejection for the next frame")
+TEST_CASE("TemporalResolve: mixed silhouettes reconstruct current color without history and store rejection for the next frame")
 {
 	if (!Testing::RequireTestGraphicsDevice())
 		return;
@@ -207,12 +207,18 @@ TEST_CASE("TemporalResolve: mixed silhouettes retain full fractional current cov
 			fixture.Reset();
 			fixture.Push.JitterHistory.x = 0.25f;
 			fixture.Push.JitterHistory.y = 0.25f;
-			fixture.Color[12] = glm::vec4(1);
-			for (size_t pixel : {13u, 17u, 18u})
-			{
-				fixture.ID[pixel] = adjacent;
-				fixture.Color[pixel] = glm::vec4(0);
-			}
+			fixture.Color.fill(glm::vec4(0));
+			fixture.ID.fill(adjacent);
+			for (uint32_t y = 0; y <= 2; ++y)
+				for (uint32_t x = 0; x <= 2; ++x)
+				{
+					fixture.Color[y * ResolveFixture::Size + x] = glm::vec4(1);
+					fixture.ID[y * ResolveFixture::Size + x] = 7;
+				}
+			// The aligned quadrant covers 3/4 of each dimension of this shifted pixel.
+			// Its analytic area is 9/16, independent of any reconstruction implementation.
+			CHECK(fixture.Run().x == doctest::Approx(0.5625));
+			fixture.History.fill(glm::vec4(100));
 			CHECK(fixture.Run().x == doctest::Approx(0.5625));
 			CHECK(fixture.Run(1).z == 1);
 		}

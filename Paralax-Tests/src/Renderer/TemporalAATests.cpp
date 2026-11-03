@@ -15,6 +15,7 @@
 
 #include <bit>
 #include <cstring>
+#include <limits>
 
 using namespace Paralax;
 
@@ -470,7 +471,7 @@ TEST_CASE("TemporalAA: same-address scene replacement and material mutation reje
 	CHECK(graphics.GetValidationErrorCount() == errors);
 }
 
-TEST_CASE("TemporalAA: masked POM mirrored materials preserve the unjittered first frame across all paths and minimal sizes")
+TEST_CASE("TemporalAA: masked POM mirrored materials preserve guides interior shading and fresh history across paths and minimal sizes")
 {
 	if (!Testing::RequireTestGraphicsDevice())
 		return;
@@ -502,6 +503,9 @@ TEST_CASE("TemporalAA: masked POM mirrored materials preserve the unjittered fir
 		REQUIRE(renderer.Initialize());
 		Configure(renderer);
 		const auto camera = CameraView::LookAt({0.2f, 0.1f, 2}, {0, 0, 0}, glm::radians(60.0f), 1);
+		std::array<Image, 3> forward;
+		std::array<std::vector<uint32_t>, 3> forwardIDs, forwardNormals;
+		std::array<std::vector<float>, 3> forwardDepth;
 		for (auto path : {RenderPath::Forward, RenderPath::Deferred, RenderPath::Visibility})
 			for (uint32_t size : {1u, 3u, 33u})
 			{
@@ -512,14 +516,81 @@ TEST_CASE("TemporalAA: masked POM mirrored materials preserve the unjittered fir
 				settings.Path = path;
 				settings.AntiAliasing = AntiAliasingMode::Off;
 				renderer.Render(scene, camera, output.Framebuffer);
+				REQUIRE(renderer.GetStats().EffectivePath == path);
 				const auto baseline = ReadbackTexture(graphics.GetDevice(), output.Texture);
 				settings.AntiAliasing = AntiAliasingMode::Temporal;
 				renderer.Render(scene, camera, output.Framebuffer);
-				CHECK(renderer.GetStats().EffectiveAA == AntiAliasingMode::Temporal);
-				CHECK(Image::MaxChannelDifference(baseline, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
+				REQUIRE(renderer.GetStats().EffectiveAA == AntiAliasingMode::Temporal);
+				REQUIRE(renderer.GetStats().EffectivePath == path);
+				const auto reconstructed = ReadbackTexture(graphics.GetDevice(), output.Texture);
+				auto& history = renderer.GetDefaultTemporalHistory();
+				REQUIRE(history.GetGuideFramebuffer());
+				const auto& guide = history.GetGuideFramebuffer()->getDesc();
+				// These two formats contain one 32-bit word per texel. Preserve the raw
+				// identity/half-normal bits without interpreting them as floating values.
+				auto words = [&](nvrhi::ITexture* guideTexture) {
+					const auto raw = ReadFloat(graphics.GetDevice(), guideTexture, 1);
+					std::vector<uint32_t> result(raw.size());
+					for (size_t i = 0; i < raw.size(); ++i)
+						result[i] = std::bit_cast<uint32_t>(raw[i]);
+					return result;
+				};
+				auto ids = words(guide.colorAttachments[1].texture);
+				for (auto& id : ids)
+					id &= 0x7fffffffu;
+				const auto normals = words(guide.colorAttachments[0].texture);
+				const auto depth = ReadFloat(graphics.GetDevice(), guide.depthAttachment.texture, 1);
+				uint32_t interior = 0;
+				for (uint32_t y = 0; y < size; ++y)
+					for (uint32_t x = 0; x < size; ++x)
+					{
+						const size_t index = static_cast<size_t>(y) * size + x;
+						CHECK((ids[index] != 0) == (baseline.GetPixel(x, y).r > 1));
+						if (x == 0 || y == 0 || x + 1 == size || y + 1 == size || ids[index] == 0)
+							continue;
+						bool homogeneous = true;
+						for (int dy = -1; dy <= 1; ++dy)
+							for (int dx = -1; dx <= 1; ++dx)
+							{
+								const auto nx = static_cast<uint32_t>(int(x) + dx), ny = static_cast<uint32_t>(int(y) + dy);
+								const size_t neighbor = static_cast<size_t>(ny) * size + nx;
+								homogeneous &= ids[neighbor] == ids[index] && normals[neighbor] == normals[index];
+							}
+						if (homogeneous)
+						{
+							++interior;
+							CHECK(reconstructed.GetPixel(x, y) == baseline.GetPixel(x, y));
+						}
+					}
+				if (size == 33)
+					CHECK(interior >= 4);
+				const size_t sizeIndex = size == 1 ? 0 : size == 3 ? 1
+																   : 2;
+				if (path == RenderPath::Forward)
+				{
+					forward[sizeIndex] = reconstructed;
+					forwardIDs[sizeIndex] = ids;
+					forwardNormals[sizeIndex] = normals;
+					forwardDepth[sizeIndex] = depth;
+				}
+				else
+				{
+					CHECK(ids == forwardIDs[sizeIndex]);
+					CHECK(normals == forwardNormals[sizeIndex]);
+					for (size_t i = 0; i < depth.size(); ++i)
+						CHECK(std::abs(depth[i] - forwardDepth[sizeIndex][i]) <= 8 * std::numeric_limits<float>::epsilon());
+					// Deferred material storage can move the final sRGB quantization by one code value.
+					CHECK(Image::MaxChannelDifference(forward[sizeIndex], reconstructed) <= 1);
+				}
 				for (int frame = 0; frame < 2; ++frame)
 					renderer.Render(scene, camera, output.Framebuffer);
 				CHECK(renderer.GetStats().AAHistoryValid);
+				history.GetState().Reset("fresh history determinism test");
+				renderer.Render(scene, camera, output.Framebuffer);
+				CHECK(Image::MaxChannelDifference(reconstructed, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
+				settings.AntiAliasing = AntiAliasingMode::Off;
+				renderer.Render(scene, camera, output.Framebuffer);
+				CHECK(Image::MaxChannelDifference(baseline, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
 			}
 	}
 	CHECK(graphics.GetValidationErrorCount() == errors);
