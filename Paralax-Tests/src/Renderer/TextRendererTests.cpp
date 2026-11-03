@@ -312,7 +312,7 @@ TEST_CASE("TextRenderer: world-space text sits in the scene and is hidden by wha
 		CHECK(WhiteBox(hidden, 0, 0, 320, 180).Count == 0);
 		CHECK(renderer.GetStats().TextGlyphs == 5); // Still submitted; the depth test rejects it.
 
-		for (float scale : {0.75f, 0.5f})
+		for (float scale : {0.75f, 0.5f, 1.5f, 2.0f})
 		{
 			renderer.GetSettings().InternalRenderScale = scale;
 			renderer.Render(scene, camera, output.Framebuffer);

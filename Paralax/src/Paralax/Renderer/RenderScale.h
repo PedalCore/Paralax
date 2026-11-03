@@ -6,7 +6,7 @@
 
 namespace Paralax {
 
-	// Main-thread-only native text-depth reconstruction for a smaller scene raster. Graphics/budget/factory outlive it.
+	// Main-thread-only native text-depth reconstruction for a scaled scene raster. Graphics/budget/factory outlive it.
 	// The caller releases text framebuffer references before replacement. Failure requires effective scale one.
 	class RenderScale
 	{
@@ -15,7 +15,7 @@ namespace Paralax {
 		~RenderScale();
 		RenderScale(const RenderScale&) = delete;
 		RenderScale& operator=(const RenderScale&) = delete;
-		// Pure dimension policy: finite scale clamped to [0.5,1], nonfinite treated as one; zero output stays zero.
+		// Pure dimension policy: finite scale clamped to [0.5,2], nonfinite treated as one; zero output stays zero and overflow saturates to UINT32_MAX.
 		static glm::uvec2 CalculateDimensions(uint32_t outputWidth, uint32_t outputHeight, float scale);
 		bool Prepare(bool needed, nvrhi::ITexture* sceneDepth, uint32_t outputWidth, uint32_t outputHeight);
 		void Release();

@@ -619,6 +619,7 @@ namespace Paralax {
 				m_Info.TimestampPeriodNanoseconds = props.limits.timestampPeriod;
 				m_Info.Limits.MaxStorageBufferBytes = props.limits.maxStorageBufferRange;
 				m_Info.Limits.MaxTextureArrayLayers = props.limits.maxImageArrayLayers;
+				m_Info.Limits.MaxTextureDimension2D = props.limits.maxImageDimension2D;
 				m_Info.Limits.MaxStorageBuffersPerStage = props.limits.maxPerStageDescriptorStorageBuffers;
 				m_Info.Limits.MaxStorageBuffersPerSet = props.limits.maxDescriptorSetStorageBuffers;
 				m_Info.Limits.SubPixelPrecisionBits = props.limits.subPixelPrecisionBits;

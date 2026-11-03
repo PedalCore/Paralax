@@ -308,7 +308,7 @@ namespace Paralax {
 		};
 
 		bool CreatePipelines();
-		void EnsureTargets(uint32_t width, uint32_t height);
+		bool EnsureTargets(uint32_t width, uint32_t height, bool supersampled = false);
 		nvrhi::IGraphicsPipeline* GetTonemapPipeline(nvrhi::IFramebuffer* output);
 		void RenderProbeMarkers(const CameraView& camera, nvrhi::IFramebuffer* output);
 		MaterialEntry* GetMaterial(AssetHandle handle);
@@ -337,6 +337,9 @@ namespace Paralax {
 		LocalShadowMaps m_LocalShadowMaps;
 		RenderProfiler m_Profiler;
 		PostEffectBudget m_EffectBudget;
+		Scope<PostEffectTextures> m_SupersampleTargets;
+		uint64_t m_SupersampleAllocationAttempts = 0;
+		std::string m_TargetFailure;
 		AmbientOcclusion m_AmbientOcclusion;
 		Bloom m_Bloom;
 		RenderScale m_RenderScale;

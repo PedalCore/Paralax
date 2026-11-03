@@ -99,7 +99,8 @@ namespace Paralax::GPU {
 		float Exposure;
 		uint32_t Operator;
 		float BloomIntensity;
-		float Upscale;
+		float Upscale;           // 0 native, 1 bilinear enlargement, 2 normalized area reduction.
+		glm::uvec4 Dimensions{}; // Source xy, output zw; used by area reduction.
 	};
 
 }

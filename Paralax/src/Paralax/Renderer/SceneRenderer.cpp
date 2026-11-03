@@ -27,7 +27,7 @@ namespace Paralax {
 		using Reflection::MakeField;
 		static const std::vector<FieldInfo> s_Fields = {
 			MakeField<&SceneRendererSettings::Path>("RenderPath", FieldOptions().Enum({"Forward", "Deferred", "Visibility"}).Describe("Opaque shading path; transparency remains forward. See render.stats for effective path and fallback reason.")),
-			MakeField<&SceneRendererSettings::InternalRenderScale>("InternalRenderScale", FieldOptions().Range(0.5f, 1.0f).Describe("Scene raster scale with spatial HDR upscaling; UI/text stay native. Failed scale retries after scale, output size or text-depth requirement changes.")),
+			MakeField<&SceneRendererSettings::InternalRenderScale>("InternalRenderScale", FieldOptions().Range(0.5f, 2.0f).Describe("Scene raster scale: below 1 upscales; 1.5 or 2 supersamples with linear HDR area reduction. UI/text stay native. Failed scale retries after scale, output size or text-depth requirement changes.")),
 			MakeField<&SceneRendererSettings::AntiAliasing>("AntiAliasing", FieldOptions().Enum({"Off", "Spatial", "Temporal"}).Describe("Temporal uses conservative motion history; mixed silhouettes and transparent surfaces use current spatial reconstruction.")),
 			MakeField<&SceneRendererSettings::AAHistoryWeight>("AAHistoryWeight", FieldOptions().Range(0.0f, 0.95f)),
 			MakeField<&SceneRendererSettings::ProfilingEnabled>("ProfilingEnabled", FieldOptions().Describe("Nonblocking GPU pass timestamps and separate CPU Render duration; profiling can add GPU overhead.")),
@@ -254,6 +254,13 @@ namespace Paralax {
 		m_RenderScale.Release();
 		m_TemporalAA.Release();
 		m_SpatialAA.Release();
+		m_Visibility.Prepare(false, nullptr, nullptr, nullptr, nullptr, nullptr);
+		m_Deferred.Prepare(false, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+		m_Text.InvalidateDepthFramebuffers(m_DepthTarget);
+		m_HDRFramebuffer = nullptr;
+		m_HDRTarget = nullptr;
+		m_DepthTarget = nullptr;
+		m_SupersampleTargets.reset();
 		m_GraphicsDevice.CollectGarbage();
 		m_EffectBudget.CollectRetired();
 	}
@@ -398,14 +405,21 @@ namespace Paralax {
 		return m_InputLayout && m_ViewLayout && m_MaterialLayout && m_ShadowViewLayout && m_TonemapLayout && m_ShadowViewBindings;
 	}
 
-	void SceneRenderer::EnsureTargets(uint32_t width, uint32_t height)
+	bool SceneRenderer::EnsureTargets(uint32_t width, uint32_t height, bool supersampled)
 	{
-		const bool sizeChanged = width != m_Width || height != m_Height;
+		m_TargetFailure.clear();
+		const uint32_t limit = m_GraphicsDevice.GetInfo().Limits.MaxTextureDimension2D;
+		if (!width || !height || width > limit || height > limit || (supersampled && (width > 8192 || height > 8192)))
+		{
+			m_TargetFailure = "scene raster dimensions exceed capacity";
+			return false;
+		}
+		const bool sizeChanged = width != m_Width || height != m_Height || supersampled != bool(m_SupersampleTargets);
 		const bool shadowChanged = m_ShadowMapSize != m_Settings.GetShadowMapSize();
 		const uint32_t localLights = m_Settings.Shadows ? static_cast<uint32_t>(std::clamp(m_Settings.MaxShadowedLocalLights, 0, 16)) : 0;
 		const bool localChanged = m_LocalShadowMaps.NeedsUpdate(m_Settings.GetLocalShadowMapSize(), localLights);
 		if (!sizeChanged && !shadowChanged && !localChanged && m_HDRTarget && m_ShadowMap && m_LocalShadowPipeline && m_LocalShadowMaskPipeline)
-			return;
+			return true;
 
 		m_GraphicsDevice.WaitForIdle();
 		m_StaticLightingDirty = true;
@@ -423,7 +437,10 @@ namespace Paralax {
 			hdr.initialState = nvrhi::ResourceStates::RenderTarget;
 			hdr.keepInitialState = true;
 			hdr.setClearValue(nvrhi::Color(0.0f));
-			m_HDRTarget = m_Device->createTexture(hdr);
+			// Stage the whole group before publishing it. Supersampling backing counts toward
+			// the shared peak-live effect budget, including overlap with the previous group.
+			auto textures = supersampled ? CreateScope<PostEffectTextures>(m_GraphicsDevice, m_EffectBudget, m_EffectFactory) : nullptr;
+			nvrhi::TextureHandle nextHDR = textures ? nvrhi::TextureHandle(textures->Create(hdr)) : m_Device->createTexture(hdr);
 
 			nvrhi::TextureDesc depth;
 			depth.width = width;
@@ -434,9 +451,37 @@ namespace Paralax {
 			depth.initialState = nvrhi::ResourceStates::DepthWrite;
 			depth.keepInitialState = true;
 			depth.setClearValue(nvrhi::Color(0.0f)); // Reversed Z: far plane = 0.
-			m_DepthTarget = m_Device->createTexture(depth);
-
-			m_HDRFramebuffer = m_Device->createFramebuffer(nvrhi::FramebufferDesc().addColorAttachment(m_HDRTarget).setDepthAttachment(m_DepthTarget));
+			nvrhi::TextureHandle nextDepth;
+			if (nextHDR)
+				nextDepth = textures ? nvrhi::TextureHandle(textures->Create(depth)) : m_Device->createTexture(depth);
+			nvrhi::FramebufferHandle nextFramebuffer;
+			if (nextHDR && nextDepth)
+			{
+				const auto desc = nvrhi::FramebufferDesc().addColorAttachment(nextHDR).setDepthAttachment(nextDepth);
+				nextFramebuffer = supersampled && m_EffectFactory ? m_EffectFactory->CreateFramebuffer(m_Device, desc) : m_Device->createFramebuffer(desc);
+			}
+			if (textures)
+				m_SupersampleAllocationAttempts += textures->GetAllocationAttempts();
+			if (!nextFramebuffer)
+			{
+				m_TargetFailure = textures && (!nextHDR || !nextDepth) ? textures->GetFailureReason() : "scene target allocation failed";
+				return false;
+			}
+			m_ViewBindings = nullptr;
+			m_TonemapBindings = nullptr;
+			m_Text.InvalidateDepthFramebuffers(m_DepthTarget);
+			m_Text.InvalidateDepthFramebuffers(m_RenderScale.GetDepth());
+			m_RenderScale.Release();
+			m_Visibility.Prepare(false, nullptr, nullptr, nullptr, nullptr, nullptr);
+			m_Deferred.Prepare(false, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+			m_HDRFramebuffer = nullptr;
+			m_HDRTarget = nullptr;
+			m_DepthTarget = nullptr;
+			m_SupersampleTargets.reset();
+			m_SupersampleTargets = std::move(textures);
+			m_HDRTarget = std::move(nextHDR);
+			m_DepthTarget = std::move(nextDepth);
+			m_HDRFramebuffer = std::move(nextFramebuffer);
 			m_Width = width;
 			m_Height = height;
 			m_TonemapBindings = nullptr;
@@ -538,6 +583,7 @@ namespace Paralax {
 				PX_CORE_ERROR("Local shadow pipeline creation failed; retrying on the next frame");
 			m_ReportedLocalPipelineFailure = failed;
 		}
+		return true;
 	}
 
 	nvrhi::IGraphicsPipeline* SceneRenderer::GetTonemapPipeline(nvrhi::IFramebuffer* output)
@@ -1324,7 +1370,7 @@ namespace Paralax {
 		const double cpuStart = m_Settings.ProfilingEnabled ? ProfilingTimeSeconds() : 0;
 		m_Stats = SceneRenderStats();
 		m_FrameIndex++;
-		const float requestedScale = std::isfinite(m_Settings.InternalRenderScale) ? std::clamp(m_Settings.InternalRenderScale, 0.5f, 1.0f) : 1.0f;
+		const float requestedScale = std::isfinite(m_Settings.InternalRenderScale) ? std::clamp(m_Settings.InternalRenderScale, 0.5f, 2.0f) : 1.0f;
 		const glm::uvec2 outputSize(outputInfo.width, outputInfo.height);
 		const auto requestedSize = RenderScale::CalculateDimensions(outputInfo.width, outputInfo.height, requestedScale);
 		bool worldText = false;
@@ -1336,7 +1382,7 @@ namespace Paralax {
 		if (failedScale && (failedScale->Output != outputSize || failedScale->Scale != requestedScale || failedScale->WorldText != worldText))
 			failedScale.reset();
 		const bool cachedFailure = bool(failedScale);
-		const glm::uvec2 internalSize = cachedFailure ? outputSize : requestedSize;
+		glm::uvec2 internalSize = cachedFailure ? outputSize : requestedSize;
 		const bool temporalRequested = m_Settings.AntiAliasing == AntiAliasingMode::Temporal && m_Settings.DebugView == RenderDebugView::None;
 		const bool bloomRequested = m_Settings.BloomEnabled && std::isfinite(m_Settings.BloomIntensity) && m_Settings.BloomIntensity > 0 && m_Settings.DebugView == RenderDebugView::None;
 		const auto bloomLevels = static_cast<uint32_t>(std::clamp(m_Settings.BloomLevels, 1, 6));
@@ -1373,7 +1419,29 @@ namespace Paralax {
 			m_Bloom.Release();
 			m_EffectBudget.CollectRetired();
 		}
-		EnsureTargets(internalSize.x, internalSize.y);
+		// Retire disabled AA and depth from the previous raster before reserving supersampling.
+		// Otherwise an affordable transition can become a cached budget failure.
+		if (m_SpatialAA.IsReady() && (m_Settings.AntiAliasing == AntiAliasingMode::Off || m_Settings.DebugView != RenderDebugView::None ||
+									  m_SpatialAA.GetFramebuffer()->getFramebufferInfo().width != outputInfo.width ||
+									  m_SpatialAA.GetFramebuffer()->getFramebufferInfo().height != outputInfo.height))
+			m_SpatialAA.Release();
+		if (m_RenderScale.IsReady() && (!worldText || internalSize == outputSize || m_Width != internalSize.x || m_Height != internalSize.y ||
+										!m_RenderScale.MatchesInputs(m_DepthTarget, outputInfo.width, outputInfo.height)))
+		{
+			m_Text.InvalidateDepthFramebuffers(m_RenderScale.GetDepth());
+			m_RenderScale.Release();
+		}
+		m_EffectBudget.CollectRetired();
+		if (!EnsureTargets(internalSize.x, internalSize.y, internalSize.x > outputSize.x || internalSize.y > outputSize.y))
+		{
+			failedScale = TemporalAA::ScaleFailure{outputSize, requestedScale, worldText, m_TargetFailure};
+			internalSize = outputSize;
+			if (!EnsureTargets(outputInfo.width, outputInfo.height))
+			{
+				PX_CORE_ERROR("Native scene targets unavailable: {}", m_TargetFailure);
+				return;
+			}
+		}
 		const bool nativeDepthNeeded = worldText && internalSize != outputSize;
 		if (m_RenderScale.IsReady() && (!nativeDepthNeeded || !m_RenderScale.MatchesInputs(m_DepthTarget, outputInfo.width, outputInfo.height)))
 			m_Text.InvalidateDepthFramebuffers(m_RenderScale.GetDepth());
@@ -1383,7 +1451,8 @@ namespace Paralax {
 		{
 			failedScale = TemporalAA::ScaleFailure{outputSize, requestedScale, worldText, m_RenderScale.GetFallbackReason()};
 			// One fallback decision before effect preparation/jitter; cache it to avoid resize oscillation.
-			EnsureTargets(outputInfo.width, outputInfo.height);
+			if (!EnsureTargets(outputInfo.width, outputInfo.height))
+				return;
 		}
 		m_StaticLightingDirty |= nativeDepthBackingAttempts != m_RenderScale.GetBackingAttempts();
 		m_Stats.RequestedRenderScale = requestedScale;
@@ -1577,7 +1646,7 @@ namespace Paralax {
 		m_Stats.BloomFallbackReason = m_Bloom.GetFallbackReason();
 		m_Stats.EffectOwnedBytes = m_EffectBudget.GetUsedBytes();
 		m_Stats.EffectPeakBytes = m_EffectBudget.GetPeakBytes();
-		m_Stats.EffectAllocationAttempts = m_AmbientOcclusion.GetAllocationAttempts() + m_Bloom.GetAllocationAttempts() + m_RenderScale.GetAllocationAttempts() + aa.GetAllocationAttempts() + m_SpatialAA.GetAllocationAttempts();
+		m_Stats.EffectAllocationAttempts = m_AmbientOcclusion.GetAllocationAttempts() + m_Bloom.GetAllocationAttempts() + m_RenderScale.GetAllocationAttempts() + aa.GetAllocationAttempts() + m_SpatialAA.GetAllocationAttempts() + m_SupersampleAllocationAttempts;
 
 		if (m_StaticLightingDirty)
 		{
@@ -1775,7 +1844,9 @@ namespace Paralax {
 		tonemap.viewport.addViewportAndScissorRect(nvrhi::Viewport(static_cast<float>(outputInfo.width), static_cast<float>(outputInfo.height)));
 		m_CommandList->setGraphicsState(tonemap);
 		GPU::TonemapConstants tonemapConstants{};
-		tonemapConstants.Upscale = (m_Width != outputInfo.width || m_Height != outputInfo.height) ? 1.0f : 0.0f;
+		tonemapConstants.Upscale = (m_Width > outputInfo.width || m_Height > outputInfo.height) ? 2.0f : (m_Width != outputInfo.width || m_Height != outputInfo.height) ? 1.0f
+																																										: 0.0f;
+		tonemapConstants.Dimensions = {m_Width, m_Height, outputInfo.width, outputInfo.height};
 		tonemapConstants.BloomIntensity = m_Bloom.IsReady() ? std::clamp(m_Settings.BloomIntensity, 0.0f, 2.0f) : 0.0f;
 		const bool rawDiagnostic = static_cast<uint32_t>(m_Settings.DebugView) >= 3;
 		tonemapConstants.Exposure = (m_Settings.DebugView == RenderDebugView::LocalShadow || m_Settings.DebugView == RenderDebugView::AmbientOcclusion) ? 1.0f : (rawDiagnostic ? m_Settings.GIDebugScale : m_Settings.Exposure);

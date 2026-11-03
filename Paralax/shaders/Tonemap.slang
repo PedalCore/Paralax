@@ -1,6 +1,7 @@
 // HDR -> display: exposure, AgX tone mapping (with a punchy look) and dithering. Output is linear; the sRGB back
 // buffer applies the transfer function.
 import Common.Fullscreen;
+import Common.AreaFootprint;
 
 struct TonemapConstants
 {
@@ -8,6 +9,7 @@ struct TonemapConstants
 	uint Operator; // 0 AgX, 1 ACES (fitted), 2 none (clamp), 3 raw diagnostic (no dither)
 	float BloomIntensity;
 	float Upscale;
+	uint4 Dimensions;
 };
 [[vk::push_constant]] ConstantBuffer<TonemapConstants> g_Tonemap;
 
@@ -64,7 +66,27 @@ float3 ACESFitted(float3 color)
 	[shader("fragment")] float4 TonemapPS(FullscreenVertex input)
 	: SV_Target
 {
-	float3 hdr = g_Tonemap.Upscale > 0.5 ? g_HDR.SampleLevel(g_LinearClamp, input.UV, 0.0).rgb * g_Tonemap.Exposure : g_HDR.SampleLevel(g_PointClamp, input.UV, 0.0).rgb * g_Tonemap.Exposure;
+	float3 hdr;
+	if (g_Tonemap.Upscale > 1.5)
+	{
+		uint2 pixel = uint2(input.Position.xy);
+		uint2 first = AreaFirst(pixel, g_Tonemap.Dimensions.xy, g_Tonemap.Dimensions.zw);
+		hdr = 0;
+		[unroll] for (uint y = 0; y < 3; ++y)
+			[unroll] for (uint x = 0; x < 3; ++x)
+		{
+			uint2 source = first + uint2(x, y);
+			uint2 overlap = AreaOverlap(pixel, source, g_Tonemap.Dimensions.xy, g_Tonemap.Dimensions.zw);
+			if (all(source < g_Tonemap.Dimensions.xy) && all(overlap > 0))
+			{
+				float2 weight = float2(overlap) / float2(g_Tonemap.Dimensions.xy);
+				hdr += g_HDR.Load(int3(source, 0)).rgb * (weight.x * weight.y);
+			}
+		}
+		hdr *= g_Tonemap.Exposure;
+	}
+	else
+		hdr = g_Tonemap.Upscale > 0.5 ? g_HDR.SampleLevel(g_LinearClamp, input.UV, 0.0).rgb * g_Tonemap.Exposure : g_HDR.SampleLevel(g_PointClamp, input.UV, 0.0).rgb * g_Tonemap.Exposure;
 	if (g_Tonemap.BloomIntensity > 0)
 		hdr += g_Bloom.SampleLevel(g_LinearClamp, input.UV, 0).rgb * g_Tonemap.BloomIntensity * g_Tonemap.Exposure;
 	if ((g_Tonemap.Operator & 0xffu) == 3)
