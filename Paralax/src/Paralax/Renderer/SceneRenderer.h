@@ -5,13 +5,19 @@
 #include "Paralax/Core/Reflection.h"
 #include "Paralax/Math/AABB.h"
 #include "Paralax/Renderer/DeferredSurfaces.h"
+#include "Paralax/Renderer/AmbientOcclusion.h"
+#include "Paralax/Renderer/Bloom.h"
 #include "Paralax/Renderer/EnvironmentLighting.h"
 #include "Paralax/Renderer/GPUResourceCache.h"
 #include "Paralax/Renderer/LocalShadowMaps.h"
 #include "Paralax/Renderer/LocalShadowSelection.h"
 #include "Paralax/Renderer/ProbeGI.h"
+#include "Paralax/Renderer/RenderProfiler.h"
+#include "Paralax/Renderer/RenderScale.h"
 #include "Paralax/Renderer/SceneRendererTypes.h"
 #include "Paralax/Renderer/TextRenderer.h"
+#include "Paralax/Renderer/TemporalAA.h"
+#include "Paralax/Renderer/SpatialAA.h"
 #include "Paralax/Renderer/VisibilitySurfaces.h"
 
 #include <glm/glm.hpp>
@@ -37,6 +43,13 @@ namespace Paralax {
 		Forward = 0,
 		Deferred = 1,
 		Visibility = 2
+	};
+
+	enum class AmbientOcclusionQuality
+	{
+		Low = 0,
+		Medium = 1,
+		High = 2
 	};
 
 	enum class TonemapOperator
@@ -65,7 +78,9 @@ namespace Paralax {
 		GIMeanDistance = 14,
 		GISecondMoment = 15,
 		GIVariance = 16,
-		LocalShadow = 17
+		LocalShadow = 17,
+		AmbientOcclusion = 18,
+		AmbientFill = 19
 	};
 
 	enum class ShadowQuality
@@ -86,6 +101,23 @@ namespace Paralax {
 	struct SceneRendererSettings
 	{
 		RenderPath Path = RenderPath::Forward;
+		bool ProfilingEnabled = false;
+		float InternalRenderScale = 1.0f;
+		AntiAliasingMode AntiAliasing = AntiAliasingMode::Off;
+		float AAHistoryWeight = 0.9f;
+		bool SSAOEnabled = false;
+		float SSAORadius = 0.5f;
+		float SSAOBias = 0.02f;
+		float SSAOStrength = 1.0f;
+		// 0/1/2 select 8/16/32 fixed hemisphere samples.
+		AmbientOcclusionQuality SSAOQuality = AmbientOcclusionQuality::Medium;
+		glm::vec3 AmbientFillColor{1.0f};
+		float AmbientFillIntensity = 0.0f;
+		bool BloomEnabled = false;
+		float BloomThreshold = 1.0f;
+		float BloomSoftKnee = 0.5f;
+		float BloomIntensity = 0.0f;
+		int BloomLevels = 5;
 		float Exposure = 1.0f;
 		TonemapOperator Tonemapper = TonemapOperator::AgX;
 		bool Shadows = true;
@@ -144,6 +176,7 @@ namespace Paralax {
 		float Far = 1000.0f;
 		float VerticalFOV = glm::radians(60.0f); // Perspective cameras (used for shadow cascade fitting).
 		bool Orthographic = false;
+		uint64_t Identity = 0; // Camera entity UUID, or zero for an explicitly controlled view.
 
 		// Builds the view of a camera entity (CameraComponent + world transform) for the given aspect ratio.
 		static std::optional<CameraView> FromEntity(Scene& scene, Entity entity, float aspectRatio);
@@ -152,8 +185,31 @@ namespace Paralax {
 
 	struct SceneRenderStats
 	{
+		AntiAliasingMode RequestedAA = AntiAliasingMode::Off, EffectiveAA = AntiAliasingMode::Off;
+		std::string AAFallbackReason, AAResetReason;
+		bool AAHistoryValid = false;
+		uint64_t AACompletedFrames = 0;
+		uint32_t AASampleIndex = 0, AAPasses = 0;
 		RenderPath RequestedPath = RenderPath::Forward, EffectivePath = RenderPath::Forward;
 		std::string PathFallbackReason;
+		float RequestedRenderScale = 1.0f, EffectiveRenderScale = 1.0f;
+		uint32_t InternalWidth = 0, InternalHeight = 0, OutputWidth = 0, OutputHeight = 0, NativeDepthPasses = 0;
+		std::string ScaleFallbackReason;
+		bool ProfilingEnabled = false;
+		std::optional<double> CPURenderMilliseconds;
+		std::optional<RenderTimingSample> GPUTiming;
+		std::optional<GraphicsDeviceInfo> ProfilingDevice;
+		std::string GPUProfilingStatus = "disabled";
+		uint32_t GPUProfilingPending = 0;
+		uint64_t GPUProfilingSkipped = 0, GPUProfilingInvalid = 0;
+		std::string GPUProfilingLastResult = "none";
+		bool BloomActive = false;
+		std::string BloomFallbackReason;
+		uint32_t BloomPasses = 0;
+		bool SSAOActive = false;
+		const char* SSAOFallbackReason = "";
+		uint64_t EffectOwnedBytes = 0, EffectPeakBytes = 0, EffectAllocationAttempts = 0;
+		uint32_t SSAOPasses = 0;
 		uint64_t SurfaceOwnedBytes = 0, SurfaceAllocationAttempts = 0;
 		uint32_t SurfaceResolveDrawCalls = 0, VisibilityResolveDrawCalls = 0;
 		uint64_t VisibilityOwnedBytes = 0, VisibilityGeometryBytes = 0, VisibilityAllocationAttempts = 0;
@@ -178,7 +234,7 @@ namespace Paralax {
 	{
 	public:
 		// The optional allocation factory is non-owning and must outlive the renderer.
-		SceneRenderer(GraphicsDevice& device, AssetManager& assets, LocalShadowResourceFactory* shadowFactory = nullptr, DeferredResourceFactory* deferredFactory = nullptr);
+		SceneRenderer(GraphicsDevice& device, AssetManager& assets, LocalShadowResourceFactory* shadowFactory = nullptr, DeferredResourceFactory* deferredFactory = nullptr, PostEffectResourceFactory* effectFactory = nullptr, uint64_t effectBudgetCapacity = PostEffectBudget::DefaultCapacity);
 		~SceneRenderer();
 
 		SceneRenderer(const SceneRenderer&) = delete;
@@ -189,8 +245,11 @@ namespace Paralax {
 
 		// Renders the scene into output (a framebuffer with one 8-bit color attachment, e.g. a swapchain image).
 		// Internal targets are resized to the output's size as needed.
-		// History belongs to one viewport; omit it for deterministic, independent captures.
-		void Render(Scene& scene, const CameraView& camera, nvrhi::IFramebuffer* output, LocalShadowHistory* shadowHistory = nullptr);
+		// Shadow history is optional. Temporal history defaults to the renderer-owned view; captures pass a fresh owner.
+		void Render(Scene& scene, const CameraView& camera, nvrhi::IFramebuffer* output, LocalShadowHistory* shadowHistory = nullptr, TemporalAA* temporalHistory = nullptr);
+		// The returned independent view/capture history must be destroyed before this renderer.
+		Scope<TemporalAA> CreateTemporalHistory();
+		TemporalAA& GetDefaultTemporalHistory() { return m_TemporalAA; }
 
 		SceneRendererSettings& GetSettings() { return m_Settings; }
 		const SceneRenderStats& GetStats() const { return m_Stats; }
@@ -216,7 +275,8 @@ namespace Paralax {
 		struct DrawItem
 		{
 			const GPUMesh* Mesh = nullptr;
-			uint64_t EntityID = 0;
+			uint64_t EntityID = 0, MeshID = 0, TemporalVersion = 0;
+			uint32_t TemporalIndex = 0;
 			uint32_t SubmeshOrdinal = 0, TriangleBase = 0;
 			uint32_t IndexOffset = 0;
 			uint32_t IndexCount = 0;
@@ -262,6 +322,7 @@ namespace Paralax {
 		void RenderForward(const GPU::ViewConstants& view);
 		bool PrepareVisibilityDraws();
 		void RenderVisibilityOpaque();
+		void RenderTemporalGuides(TemporalAA& history);
 
 	private:
 		GraphicsDevice& m_GraphicsDevice;
@@ -274,6 +335,15 @@ namespace Paralax {
 		TextRenderer m_Text;
 		ProbeGI m_ProbeGI;
 		LocalShadowMaps m_LocalShadowMaps;
+		RenderProfiler m_Profiler;
+		PostEffectBudget m_EffectBudget;
+		AmbientOcclusion m_AmbientOcclusion;
+		Bloom m_Bloom;
+		RenderScale m_RenderScale;
+		TemporalAA m_TemporalAA;
+		SpatialAA m_SpatialAA;
+		PostEffectResourceFactory* m_EffectFactory;
+		uint64_t m_TemporalResetGeneration = 0;
 		DeferredSurfaces m_Deferred;
 		VisibilitySurfaces m_Visibility;
 		LocalShadowResourceFactory* m_ShadowFactory;

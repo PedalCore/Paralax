@@ -108,12 +108,13 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
     # statistics are the capture's, whose camera sees the ground and the ball (and no point or spot lights).
     captured, stats = editor.batch([("render.capture", {"path": str(image), "width": 320, "height": 180}), ("render.stats", {})])
     check(not isinstance(captured, AgentError) and not isinstance(stats, AgentError), f"batch failed: {captured}, {stats}")
-    check(set(stats) == {"drawCalls", "shadowDrawCalls", "triangles", "culledSubmeshes", "textGlyphs", "lights",
+    check(set(stats) == {"antiAliasing", "requestedRenderScale", "effectiveRenderScale", "internalSize", "outputSize", "scaleFallbackReason", "nativeDepthPasses", "upscaler", "profiling", "drawCalls", "shadowDrawCalls", "triangles", "culledSubmeshes", "textGlyphs", "lights",
                          "staticLightingGenerations", "requestedLocalShadows", "shadowedLocalLights", "localShadowLayers",
                          "localShadowCapacity", "localShadowDrawCalls", "localShadowAllocationAttempts", "shadowedLocalLightIDs",
                          "requestedRenderPath", "effectiveRenderPath", "renderPathFallbackReason",
                          "surfaceOwnedBytes", "surfaceAllocationAttempts", "surfaceResolveDrawCalls",
-                         "visibilityOwnedBytes", "visibilityAllocationAttempts", "visibilityGeometryBytes", "visibilityResolveDrawCalls"},
+                         "visibilityOwnedBytes", "visibilityAllocationAttempts", "visibilityGeometryBytes", "visibilityResolveDrawCalls",
+                         "bloomActive", "bloomFallbackReason", "bloomPasses", "ssaoActive", "ssaoFallbackReason", "ssaoPasses", "effectOwnedBytes", "effectPeakBytes", "effectAllocationAttempts"},
           f"unexpected render statistics: {stats}")
     check(settings["RenderPath"] == "Forward" and stats["requestedRenderPath"] == "Forward"
           and stats["effectiveRenderPath"] == "Forward" and stats["renderPathFallbackReason"] == "",
@@ -133,6 +134,35 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
         raise AssertionError("expected a non-PNG capture path to fail")
     except AgentError:
         pass
+
+    ambient_saved = editor.call("render.settings.get")
+    for render_path in ("Forward", "Deferred", "Visibility"):
+        editor.call("render.settings.set", settings={"RenderPath": render_path, "SSAOEnabled": True,
+                    "SSAOQuality": "Medium", "AmbientFillIntensity": 0.25, "BloomEnabled": True, "BloomIntensity": 0.2, "InternalRenderScale": 0.75})
+        ambient = editor.call("render.capture", path=str(output / f"Ambient-{render_path}.png"), width=97, height=65)
+        check(ambient["stats"]["ssaoActive"] and ambient["stats"]["bloomActive"] and ambient["stats"]["effectOwnedBytes"] > 0,
+              f"ambient settings did not reach {render_path} capture: {ambient['stats']}")
+        check(ambient["stats"]["effectiveRenderPath"] == render_path, "ambient effects changed render path")
+        check(ambient["stats"]["internalSize"] == [73, 49] and ambient["stats"]["outputSize"] == [97, 65],
+              "render scale did not reach capture raster dimensions")
+    editor.call("render.settings.set", settings=ambient_saved)
+    ambient_off = editor.call("render.capture", path=str(output / "Ambient-Off.png"), width=97, height=65)
+    check(not ambient_off["stats"]["ssaoActive"] and ambient_off["stats"]["effectOwnedBytes"] == 0,
+          "disabling AO retained optional resources")
+
+    # A batch prevents viewport frames between reset/state and two fresh deterministic captures.
+    editor.call("render.settings.set", settings={"AntiAliasing": "Temporal", "GIEnabled": False})
+    temporal_path = output / "TemporalRepeat.png"
+    temporal_params = {"path": str(temporal_path), "width": 65, "height": 49, "temporalFrames": 3}
+    first = editor.call("render.capture", temporal_params)
+    first_bytes = temporal_path.read_bytes()
+    second = editor.call("render.capture", temporal_params)
+    check(first["stats"]["antiAliasing"]["completedFrames"] == 3
+          and second["stats"]["antiAliasing"]["completedFrames"] == 3, "capture history was not fresh")
+    check(temporal_path.read_bytes() == first_bytes, "fixed temporal capture did not repeat")
+    reset, state = editor.batch([("render.aa.reset", {}), ("render.aa.state", {})])
+    check(reset == state and not state["historyValid"] and state["sampleIndex"] == 0, "AA reset failed")
+    editor.call("render.settings.set", settings=ambient_saved)
 
     # GI diagnostic updates are counted independently of application frames.
     state_keys = {"enabled", "supported", "frozen", "historyValid", "updates", "queued", "origin", "spacing", "counts", "frame"}

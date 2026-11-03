@@ -215,7 +215,7 @@ EnvironmentContribution EvaluateEnvironment(SurfaceData surface)
 }
 
 public
-float4 ShadeSurface(MaterialSurface material, float2 pixel, float viewDepth)
+float4 ShadeSurface(MaterialSurface material, float2 pixel, float viewDepth, bool screenAOEligible = true)
 {
 	SurfaceData surface = material.Surface;
 	float3 N = surface.Normal;
@@ -258,7 +258,25 @@ float4 ShadeSurface(MaterialSurface material, float2 pixel, float viewDepth)
 	}
 
 	EnvironmentContribution environment = EvaluateEnvironment(surface);
+	float screenAO = 1;
+	if (g_View.ScreenEffects.x > 0.5 && screenAOEligible)
+	{
+		screenAO = g_ScreenAO.Load(int3(int2(pixel), 0));
+		environment.Diffuse *= screenAO;
+		environment.Indirect *= screenAO;
+	}
+	float3 fill = float3(0);
+	if (g_View.AmbientFill.w > 0)
+	{
+		float3 F0 = lerp(float3(0.04), surface.BaseColor, surface.Metallic);
+		float3 F = FresnelSchlickRoughness(max(dot(N, surface.View), 1e-4), F0, surface.Roughness);
+		float3 kd = (1 - F) * (1 - surface.Metallic);
+		fill = kd * surface.BaseColor * g_View.AmbientFill.rgb * g_View.AmbientFill.w * surface.Occlusion * screenAO;
+	}
 	float3 color = surface.Emissive + directDiffuse + directSpecular + environment.Diffuse + environment.Specular + environment.Indirect;
+
+	if (g_View.AmbientFill.w > 0)
+		color += fill;
 
 	if (g_View.DebugView == 1)
 		color = N * 0.5 + 0.5;
@@ -280,6 +298,10 @@ float4 ShadeSurface(MaterialSurface material, float2 pixel, float viewDepth)
 		color = surface.Emissive;
 	else if (g_View.DebugView == 17)
 		color = float3(localVisibility);
+	else if (g_View.DebugView == 18)
+		color = float3(screenAO);
+	else if (g_View.DebugView == 19)
+		color = fill;
 	else if (g_View.DebugView >= 11)
 	{
 		float4 probeView = ProbeCameraRay(surface.Position);

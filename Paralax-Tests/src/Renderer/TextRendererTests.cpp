@@ -312,6 +312,30 @@ TEST_CASE("TextRenderer: world-space text sits in the scene and is hidden by wha
 		CHECK(WhiteBox(hidden, 0, 0, 320, 180).Count == 0);
 		CHECK(renderer.GetStats().TextGlyphs == 5); // Still submitted; the depth test rejects it.
 
+		for (float scale : {0.75f, 0.5f})
+		{
+			renderer.GetSettings().InternalRenderScale = scale;
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(renderer.GetStats().NativeDepthPasses == 1);
+			CHECK(WhiteBox(ReadbackTexture(graphics.GetDevice(), output.Texture), 0, 0, 320, 180).Count == 0);
+			wall.GetTransform().Translation.x = 10;
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(WhiteBox(ReadbackTexture(graphics.GetDevice(), output.Texture), 0, 0, 320, 180).Count == label.Count);
+			wall.GetTransform().Translation.x = 0;
+		}
+		renderer.GetSettings().AntiAliasing = AntiAliasingMode::Temporal;
+		for (int frame = 0; frame < 3; ++frame)
+		{
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(renderer.GetStats().NativeDepthPasses == 1);
+			CHECK(WhiteBox(ReadbackTexture(graphics.GetDevice(), output.Texture), 0, 0, 320, 180).Count == 0);
+		}
+		wall.GetTransform().Translation.x = 10;
+		renderer.Render(scene, camera, output.Framebuffer);
+		CHECK(WhiteBox(ReadbackTexture(graphics.GetDevice(), output.Texture), 0, 0, 320, 180).Count > 100);
+		renderer.GetSettings().AntiAliasing = AntiAliasingMode::Off;
+		renderer.GetSettings().InternalRenderScale = 1;
+
 		// Behind the camera's back it is not drawn at all.
 		scene.DestroyEntity(wall);
 		Entity behind = AddText(scene, "BEHIND", {0.0f, 0.6f, 8.0f}, 0.5f, false);
@@ -336,4 +360,47 @@ TEST_CASE("Text: the component's text is limited in length through reflection")
 	CHECK(ComponentRegistry::SetField(*info->FindField("Alignment"), &text, "Center", error));
 	CHECK(text.Alignment == TextAlignment::Center);
 	CHECK_FALSE(ComponentRegistry::SetField(*info->FindField("Alignment"), &text, "Justified", error));
+}
+
+TEST_CASE("TextRenderer: temporal and spatial AA keep moving UI native and outside history")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		AssetManager assets;
+		Scene scene("AAUI");
+		auto hud = AddText(scene, "HUD", {0.1f, 0.1f, 0}, 160, true);
+		SceneRenderer renderer(graphics, assets);
+		REQUIRE(renderer.Initialize());
+		auto& settings = renderer.GetSettings();
+		settings.GIEnabled = settings.Shadows = false;
+		settings.DefaultEnvironmentIntensity = 0;
+		settings.InternalRenderScale = 0.75f;
+		auto output = CreateOutput(graphics.GetDevice(), 160, 90);
+		const auto camera = CameraView::LookAt({0, 0, 3}, {0, 0, 0}, glm::radians(60.0f), 160.0f / 90);
+		renderer.Render(scene, camera, output.Framebuffer);
+		const auto baseline = ReadbackTexture(graphics.GetDevice(), output.Texture);
+		REQUIRE(WhiteBox(baseline, 0, 0, 160, 90).Count > 10);
+		for (auto mode : {AntiAliasingMode::Temporal, AntiAliasingMode::Spatial})
+		{
+			hud.GetTransform().Translation = {0.1f, 0.1f, 0};
+			settings.AntiAliasing = mode;
+			for (int frame = 0; frame < 3; ++frame)
+			{
+				renderer.Render(scene, camera, output.Framebuffer);
+				CHECK(Image::MaxChannelDifference(baseline, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
+			}
+			hud.GetTransform().Translation = {0.6f, 0.6f, 0};
+			renderer.Render(scene, camera, output.Framebuffer);
+			const auto moved = ReadbackTexture(graphics.GetDevice(), output.Texture);
+			CHECK(WhiteBox(moved, 0, 0, 80, 45).Count == 0);
+			CHECK(WhiteBox(moved, 80, 45, 160, 90).Count > 10);
+			settings.AntiAliasing = AntiAliasingMode::Off;
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(Image::MaxChannelDifference(moved, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
 }

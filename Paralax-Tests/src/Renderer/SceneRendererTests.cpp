@@ -10,6 +10,7 @@
 #include <Paralax/Core/PathEncoding.h>
 #include <Paralax/Renderer/GraphicsDevice.h>
 #include <Paralax/Renderer/SceneRenderer.h>
+#include <Paralax/Renderer/ShaderLibrary.h>
 #include <Paralax/Renderer/TextureReadback.h>
 #include <Paralax/Scene/Entity.h>
 
@@ -17,6 +18,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <array>
+#include <bit>
 #include <cstring>
 #include <limits>
 #include <tuple>
@@ -2212,6 +2214,1236 @@ TEST_CASE("SceneRenderer: clipped POM helpers at a projective pole preserve fini
 					CHECK(current.GetPixels() == ReadbackTexture(graphics.GetDevice(), output.Texture).GetPixels());
 				}
 			}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+namespace {
+
+	void CheckAmbientEffects(RenderPath path)
+	{
+		if (!Testing::RequireTestGraphicsDevice())
+			return;
+		auto& graphics = *Testing::GetTestGraphicsDevice();
+		const auto errors = graphics.GetValidationErrorCount();
+		{
+			AssetManager assets;
+			Scene scene("AmbientEffects");
+			BuildTestScene(scene, assets);
+			SceneRenderer renderer(graphics, assets);
+			REQUIRE(renderer.Initialize());
+			auto& settings = renderer.GetSettings();
+			settings.Path = path;
+			settings.Shadows = false;
+			settings.GIEnabled = false;
+			auto target = CreateOutput(graphics.GetDevice(), 97, 65);
+			auto camera = CameraView::LookAt({2.5f, 2.0f, 3.5f}, {0, 0.3f, 0}, glm::radians(55.0f), 97.0f / 65.0f);
+			auto render = [&]() {
+				renderer.Render(scene, camera, target.Framebuffer);
+				return ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget());
+			};
+			const auto baseline = render();
+			CHECK(renderer.GetStats().EffectOwnedBytes == 0);
+			settings.SSAOEnabled = true;
+			settings.SSAOStrength = 0;
+			CHECK(render() == baseline);
+			CHECK(renderer.GetStats().EffectOwnedBytes == 0);
+			settings.SSAOStrength = 2;
+			settings.DebugView = RenderDebugView::AmbientOcclusion;
+			const auto ao = render();
+			const auto aoDisplay = ReadbackTexture(graphics.GetDevice(), target.Texture);
+			settings.GIDebugScale = 8;
+			render();
+			CHECK(Image::MaxChannelDifference(aoDisplay, ReadbackTexture(graphics.GetDevice(), target.Texture)) == 0);
+			settings.GIDebugScale = 1;
+			REQUIRE(renderer.GetStats().SSAOActive);
+			CHECK(renderer.GetStats().SSAOPasses == (path == RenderPath::Forward ? 6 : 5));
+			CHECK(renderer.GetStats().EffectOwnedBytes > 0);
+			CHECK(renderer.GetStats().EffectPeakBytes <= PostEffectBudget::DefaultCapacity);
+			uint32_t contactPixels = 0;
+			for (const auto& pixel : ao)
+			{
+				CHECK(std::isfinite(pixel.x));
+				CHECK(pixel.x >= 0);
+				CHECK(pixel.x <= 1);
+				contactPixels += pixel.x > 0 && pixel.x < 0.98f;
+			}
+			CHECK(contactPixels > 5);
+			const auto attempts = renderer.GetStats().EffectAllocationAttempts;
+			CHECK(render() == ao);
+			CHECK(renderer.GetStats().EffectAllocationAttempts == attempts);
+			for (auto diagnostic : {RenderDebugView::DirectDiffuse, RenderDebugView::DirectSpecular, RenderDebugView::Emissive, RenderDebugView::EnvironmentSpecular})
+			{
+				settings.DebugView = diagnostic;
+				const auto enabled = render();
+				settings.SSAOEnabled = false;
+				CHECK(render() == enabled);
+				CHECK(renderer.GetStats().EffectOwnedBytes == 0);
+				settings.SSAOEnabled = true;
+			}
+			settings.SSAOEnabled = false;
+			settings.DebugView = RenderDebugView::None;
+			CHECK(render() == baseline);
+			CHECK(renderer.GetStats().EffectOwnedBytes == 0);
+			settings.GIFreeze = true;
+			for (auto mode : {RenderDebugView::EnvironmentDiffuse, RenderDebugView::AmbientFill, RenderDebugView::IndirectDiffuse})
+			{
+				CAPTURE(mode);
+				settings.DebugView = mode;
+				settings.AmbientFillIntensity = mode == RenderDebugView::AmbientFill ? 0.5f : 0;
+				if (mode == RenderDebugView::IndirectDiffuse)
+				{
+					auto volume = scene.CreateEntity("AmbientProbeVolume");
+					volume.GetTransform().Translation = glm::vec3(-2);
+					volume.AddComponent<GIVolumeComponent>().ProbeSpacing = 2;
+					settings.GIEnabled = true;
+				}
+				settings.SSAOEnabled = true;
+				const auto attenuated = render();
+				settings.SSAOEnabled = false;
+				const auto unoccluded = render();
+				uint32_t darkened = 0;
+				for (size_t i = 0; i < ao.size(); ++i)
+				{
+					darkened += glm::length(unoccluded[i] - attenuated[i]) > 0.001f;
+					for (int channel = 0; channel < 3; ++channel)
+						CHECK(std::abs(attenuated[i][channel] - unoccluded[i][channel] * ao[i].x) < 0.003f * std::max(1.0f, unoccluded[i][channel]));
+				}
+				CHECK(darkened > 5);
+			}
+		}
+		CHECK(graphics.GetValidationErrorCount() == errors);
+	}
+
+}
+
+TEST_CASE("SceneRenderer: Forward SSAO is deterministic and affects only diffuse ambient lighting")
+{
+	CheckAmbientEffects(RenderPath::Forward);
+}
+
+TEST_CASE("SceneRenderer: Deferred SSAO is deterministic and affects only diffuse ambient lighting")
+{
+	CheckAmbientEffects(RenderPath::Deferred);
+}
+
+TEST_CASE("SceneRenderer: Visibility SSAO is deterministic and affects only diffuse ambient lighting")
+{
+	CheckAmbientEffects(RenderPath::Visibility);
+}
+
+TEST_CASE("SceneRenderer: artistic fill works without environment or GI and obeys diffuse material response")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		AssetManager assets;
+		auto material = CreateRef<MaterialAsset>();
+		material->Handle = AssetHandle(51001);
+		material->BaseColorFactor = {0.5f, 0.25f, 0.125f, 1};
+		material->RoughnessFactor = 1;
+		assets.AddMemoryAsset(material);
+		Scene scene("ArtisticFill");
+		auto entity = scene.CreateEntity("DiffuseCube");
+		auto& mesh = entity.AddComponent<MeshComponent>();
+		mesh.Mesh = AssetHandle(AssetManager::BuiltinCube);
+		mesh.Materials = {material->Handle};
+		SceneRenderer renderer(graphics, assets);
+		REQUIRE(renderer.Initialize());
+		auto& settings = renderer.GetSettings();
+		settings.Shadows = false;
+		settings.GIEnabled = false;
+		settings.DefaultEnvironmentIntensity = 0;
+		settings.DebugView = RenderDebugView::AmbientFill;
+		auto target = CreateOutput(graphics.GetDevice(), 33, 33);
+		auto camera = CameraView::LookAt({0, 0, 3}, {0, 0, 0}, glm::radians(60.0f), 1);
+		for (auto path : {RenderPath::Forward, RenderPath::Deferred, RenderPath::Visibility})
+		{
+			settings.Path = path;
+			settings.AmbientFillColor = {1, 0.5f, 0.25f};
+			settings.AmbientFillIntensity = 2;
+			renderer.Render(scene, camera, target.Framebuffer);
+			const auto hdr = ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget());
+			const glm::vec3 expected = glm::vec3(material->BaseColorFactor) * settings.AmbientFillColor * 2.0f * 0.96f;
+			for (int channel = 0; channel < 3; ++channel)
+				CHECK(hdr[16 * 33 + 16][channel] == doctest::Approx(double(expected[channel])).epsilon(0.002));
+			settings.AmbientFillIntensity = 0;
+			renderer.Render(scene, camera, target.Framebuffer);
+			CHECK(ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget())[16 * 33 + 16] == glm::vec3(0));
+			settings.AmbientFillIntensity = 2;
+			material->MetallicFactor = 1;
+			++material->Version;
+			renderer.Render(scene, camera, target.Framebuffer);
+			CHECK(ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget())[16 * 33 + 16] == glm::vec3(0));
+			material->MetallicFactor = 0;
+			++material->Version;
+		}
+		auto volume = scene.CreateEntity("FillGIVolume");
+		volume.GetTransform().Translation = glm::vec3(-2);
+		volume.AddComponent<GIVolumeComponent>().ProbeSpacing = 2;
+		settings.GIFreeze = true;
+		settings.GIEnabled = true;
+		renderer.Render(scene, camera, target.Framebuffer);
+		const auto coveredFill = ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget());
+		CHECK(renderer.GetGIState().Available);
+		settings.GIEnabled = false;
+		renderer.Render(scene, camera, target.Framebuffer);
+		CHECK(ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget()) == coveredFill);
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("SceneRenderer: SSAO separates coverage from signed orthographic depth on tiny and odd targets")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		AssetManager assets;
+		Scene scene("OrthographicAO");
+		auto cube = scene.CreateEntity("FlatReceiver");
+		cube.AddComponent<MeshComponent>().Mesh = AssetHandle(AssetManager::BuiltinCube);
+		SceneRenderer renderer(graphics, assets);
+		REQUIRE(renderer.Initialize());
+		auto& settings = renderer.GetSettings();
+		settings.Shadows = false;
+		settings.GIEnabled = false;
+		settings.DefaultEnvironmentIntensity = 0;
+		settings.SSAOEnabled = true;
+		settings.DebugView = RenderDebugView::AmbientOcclusion;
+		CameraView camera;
+		camera.Orthographic = true;
+		camera.Near = -100;
+		camera.Far = 100;
+		camera.Projection = glm::orthoRH_ZO(-2.0f, 2.0f, -2.0f, 2.0f, camera.Far, camera.Near);
+		for (auto path : {RenderPath::Forward, RenderPath::Deferred, RenderPath::Visibility})
+		{
+			settings.Path = path;
+			for (uint32_t size : {1u, 3u, 17u})
+			{
+				auto output = CreateOutput(graphics.GetDevice(), size, size);
+				// Front face at signed negative, zero, positive and exactly far-plane depth.
+				for (float z : {1.0f, -0.5f, -2.0f, -100.5f})
+				{
+					CAPTURE(path);
+					CAPTURE(size);
+					CAPTURE(z);
+					cube.GetTransform().Translation.z = z;
+					renderer.Render(scene, camera, output.Framebuffer);
+					REQUIRE(renderer.GetStats().SSAOActive);
+					const auto hdr = ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget());
+					CHECK(hdr[(size / 2) * size + size / 2] == glm::vec3(1));
+					for (const auto& pixel : hdr)
+					{
+						CHECK(std::isfinite(pixel.x));
+						CHECK(pixel.x >= 0);
+						CHECK(pixel.x <= 1);
+					}
+				}
+			}
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("SceneRenderer: SSAO allocation failure falls back locally and recovers without changing render path")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		class FailureFactory : public PostEffectResourceFactory
+		{
+		public:
+			uint32_t FailAt = 0, Calls = 0;
+			int FailLayoutSpace = -1;
+			bool Unsupported = false;
+			bool SupportsVirtualResources(nvrhi::IDevice* device) override { return !Unsupported && PostEffectResourceFactory::SupportsVirtualResources(device); }
+			nvrhi::BindingLayoutHandle CreateBindingLayout(nvrhi::IDevice* device, const nvrhi::BindingLayoutDesc& desc) override
+			{
+				if (int(desc.registerSpace) == FailLayoutSpace)
+				{
+					FailLayoutSpace = -1;
+					return nullptr;
+				}
+				return PostEffectResourceFactory::CreateBindingLayout(device, desc);
+			}
+			nvrhi::TextureHandle CreateTexture(nvrhi::IDevice* device, const nvrhi::TextureDesc& desc) override
+			{
+				return ++Calls == FailAt ? nullptr : PostEffectResourceFactory::CreateTexture(device, desc);
+			}
+			nvrhi::FramebufferHandle CreateFramebuffer(nvrhi::IDevice* device, const nvrhi::FramebufferDesc& desc) override
+			{
+				return ++Calls == FailAt ? nullptr : PostEffectResourceFactory::CreateFramebuffer(device, desc);
+			}
+			nvrhi::BindingSetHandle CreateBindingSet(nvrhi::IDevice* device, const nvrhi::BindingSetDesc& desc, nvrhi::IBindingLayout* layout) override
+			{
+				return ++Calls == FailAt ? nullptr : PostEffectResourceFactory::CreateBindingSet(device, desc, layout);
+			}
+			nvrhi::GraphicsPipelineHandle CreatePipeline(nvrhi::IDevice* device, const nvrhi::GraphicsPipelineDesc& desc, const nvrhi::FramebufferInfo& info) override
+			{
+				return ++Calls == FailAt ? nullptr : PostEffectResourceFactory::CreatePipeline(device, desc, info);
+			}
+		} factory;
+		AssetManager assets;
+		Scene scene("FailedAO");
+		BuildTestScene(scene, assets);
+		SceneRenderer renderer(graphics, assets, nullptr, nullptr, &factory);
+		REQUIRE(renderer.Initialize());
+		auto& settings = renderer.GetSettings();
+		settings.Shadows = false;
+		settings.GIEnabled = false;
+		settings.Path = RenderPath::Deferred;
+		auto target = CreateOutput(graphics.GetDevice(), 17, 17);
+		auto camera = CameraView::LookAt({2, 2, 3}, {0, 0, 0}, glm::radians(60.0f), 1);
+		renderer.Render(scene, camera, target.Framebuffer);
+		const auto baseline = ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget());
+		// Query, backing, framebuffer, binding and pipeline failures after partial allocation.
+		for (uint32_t failAt : {1u, 4u, 12u, 13u, 14u})
+		{
+			CAPTURE(failAt);
+			factory.Calls = 0;
+			factory.FailAt = failAt;
+			settings.SSAOEnabled = true;
+			renderer.Render(scene, camera, target.Framebuffer);
+			CHECK_FALSE(renderer.GetStats().SSAOActive);
+			CHECK_FALSE(std::string(renderer.GetStats().SSAOFallbackReason).empty());
+			CHECK(renderer.GetStats().EffectOwnedBytes == 0);
+			CHECK(renderer.GetStats().EffectivePath == RenderPath::Deferred);
+			CHECK(ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget()) == baseline);
+			factory.FailAt = 0;
+			renderer.Render(scene, camera, target.Framebuffer);
+			CHECK(renderer.GetStats().SSAOActive);
+			settings.SSAOEnabled = false;
+			renderer.Render(scene, camera, target.Framebuffer);
+			CHECK(renderer.GetStats().EffectOwnedBytes == 0);
+		}
+		factory.Unsupported = true;
+		settings.SSAOEnabled = true;
+		for (int frame = 0; frame < 3; ++frame)
+		{
+			renderer.Render(scene, camera, target.Framebuffer);
+			CHECK_FALSE(renderer.GetStats().SSAOActive);
+			CHECK(renderer.GetStats().EffectOwnedBytes == 0);
+			CHECK(renderer.GetStats().StaticLightingGenerations == 0);
+			CHECK_FALSE(std::string(renderer.GetStats().SSAOFallbackReason).empty());
+		}
+		factory.Unsupported = false;
+		for (int space : {0, 1})
+		{
+			SceneRenderer retry(graphics, assets, nullptr, nullptr, &factory);
+			REQUIRE(retry.Initialize());
+			retry.GetSettings().Shadows = false;
+			retry.GetSettings().GIEnabled = false;
+			retry.GetSettings().SSAOEnabled = true;
+			factory.FailLayoutSpace = space;
+			retry.Render(scene, camera, target.Framebuffer);
+			CHECK_FALSE(retry.GetStats().SSAOActive);
+			CHECK(retry.GetStats().EffectOwnedBytes == 0);
+			retry.Render(scene, camera, target.Framebuffer);
+			CHECK(retry.GetStats().SSAOActive);
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("SceneRenderer: optional profiling records completed GPU samples without changing pixels")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		AssetManager assets;
+		Scene scene("ProfiledScene");
+		BuildTestScene(scene, assets);
+		SceneRenderer renderer(graphics, assets);
+		REQUIRE(renderer.Initialize());
+		auto& settings = renderer.GetSettings();
+		settings.Shadows = false;
+		settings.GIEnabled = false;
+		auto target = CreateOutput(graphics.GetDevice(), 33, 33);
+		auto camera = CameraView::LookAt({2, 2, 3}, {0, 0, 0}, glm::radians(60.0f), 1);
+		renderer.Render(scene, camera, target.Framebuffer);
+		const auto baseline = ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget());
+		CHECK_FALSE(renderer.GetStats().CPURenderMilliseconds);
+		CHECK_FALSE(renderer.GetStats().GPUTiming);
+		settings.ProfilingEnabled = true;
+		for (int frame = 0; frame < 3; ++frame)
+		{
+			renderer.Render(scene, camera, target.Framebuffer);
+			// Tests may retire deterministically; production Render never waits for profiling queries.
+			graphics.WaitForIdle();
+			CHECK(ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget()) == baseline);
+			REQUIRE(renderer.GetStats().CPURenderMilliseconds);
+			CHECK(std::isfinite(*renderer.GetStats().CPURenderMilliseconds));
+			CHECK(*renderer.GetStats().CPURenderMilliseconds >= 0);
+		}
+		if (graphics.GetInfo().GraphicsTimestampValidBits >= 32 && graphics.GetInfo().TimestampPeriodNanoseconds > 0)
+		{
+			const auto& stats = renderer.GetStats();
+			REQUIRE(stats.GPUTiming);
+			CHECK(stats.GPUTiming->Context.InternalWidth == 33);
+			REQUIRE(stats.GPUTiming->Milliseconds[0]);
+			CHECK(std::isfinite(*stats.GPUTiming->Milliseconds[0]));
+			CHECK(*stats.GPUTiming->Milliseconds[0] >= 0);
+			CHECK_FALSE(stats.GPUTiming->Milliseconds[static_cast<size_t>(RenderTimingSection::AmbientOcclusion)]);
+			REQUIRE(stats.ProfilingDevice);
+			CHECK(stats.ProfilingDevice->AdapterName == graphics.GetInfo().AdapterName);
+		}
+		else
+			CHECK(renderer.GetStats().GPUProfilingStatus == "timestamps unavailable");
+		settings.ProfilingEnabled = false;
+		renderer.Render(scene, camera, target.Framebuffer);
+		CHECK_FALSE(renderer.GetStats().CPURenderMilliseconds);
+		CHECK(renderer.GetStats().GPUProfilingStatus == "disabled");
+		CHECK(ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget()) == baseline);
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("SceneRenderer: AO rejects sloped self occlusion and keeps separated foreground edges unoccluded")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		AssetManager assets;
+		Scene scene("AOGuides");
+		auto makePlane = [&](uint64_t handle, float left, float right, float depth, float slope) {
+			auto mesh = CreateRef<MeshAsset>();
+			mesh->Handle = AssetHandle(handle);
+			const auto normal = glm::normalize(glm::vec3(0, -slope, 1));
+			mesh->Vertices = {{{left, -2, depth - 2 * slope}, normal, {1, 0, 0, 1}, {0, 1}},
+							  {{right, -2, depth - 2 * slope}, normal, {1, 0, 0, 1}, {1, 1}},
+							  {{right, 2, depth + 2 * slope}, normal, {1, 0, 0, 1}, {1, 0}},
+							  {{left, 2, depth + 2 * slope}, normal, {1, 0, 0, 1}, {0, 0}}};
+			mesh->Indices = {0, 1, 2, 0, 2, 3};
+			Submesh submesh;
+			submesh.VertexCount = 4;
+			submesh.IndexCount = 6;
+			mesh->Submeshes.push_back(submesh);
+			mesh->ComputeBounds();
+			assets.AddMemoryAsset(mesh);
+			return mesh;
+		};
+		auto sloped = makePlane(52001, -2, 2, -3, 0.3f);
+		auto receiver = scene.CreateEntity("Receiver");
+		receiver.AddComponent<MeshComponent>().Mesh = sloped->Handle;
+		SceneRenderer renderer(graphics, assets);
+		REQUIRE(renderer.Initialize());
+		auto& settings = renderer.GetSettings();
+		settings.Shadows = false;
+		settings.GIEnabled = false;
+		settings.DefaultEnvironmentIntensity = 0;
+		settings.SSAOEnabled = true;
+		settings.SSAORadius = 0.6f;
+		settings.SSAOStrength = 2;
+		settings.DebugView = RenderDebugView::AmbientOcclusion;
+		auto output = CreateOutput(graphics.GetDevice(), 97, 65);
+		CameraView camera;
+		camera.Orthographic = true;
+		camera.Near = 0.1f;
+		camera.Far = 10;
+		camera.Projection = glm::orthoRH_ZO(-2.0f, 2.0f, -2.0f, 2.0f, camera.Far, camera.Near);
+		auto render = [&]() {
+			renderer.Render(scene, camera, output.Framebuffer);
+			return ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget());
+		};
+		for (auto path : {RenderPath::Forward, RenderPath::Deferred, RenderPath::Visibility})
+		{
+			settings.Path = path;
+			for (const auto& pixel : render())
+				CHECK(pixel == glm::vec3(1));
+		}
+		auto flat = makePlane(52002, -2, 2, -3, 0);
+		receiver.GetComponent<MeshComponent>().Mesh = flat->Handle;
+		auto occluder = scene.CreateEntity("Contact");
+		occluder.GetTransform().Translation = {-0.1f, 0, -2.8f};
+		occluder.GetTransform().Scale = {0.4f, 1, 0.4f};
+		occluder.AddComponent<MeshComponent>().Mesh = AssetHandle(AssetManager::BuiltinCube);
+		auto foregroundMesh = makePlane(52003, 0, 2, -1, 0);
+		auto foreground = scene.CreateEntity("SeparatedForeground");
+		foreground.AddComponent<MeshComponent>().Mesh = foregroundMesh->Handle;
+		for (auto path : {RenderPath::Forward, RenderPath::Deferred, RenderPath::Visibility})
+		{
+			settings.Path = path;
+			const auto contact = render();
+			uint32_t dark = 0;
+			for (uint32_t y = 0; y < 65; ++y)
+				for (uint32_t x = 0; x < 97; ++x)
+				{
+					const auto value = contact[y * 97 + x].x;
+					if (x >= 49)
+						CHECK(value == 1);
+					else
+						dark += value < 0.98f;
+				}
+			CHECK(dark > 5);
+			occluder.GetTransform().Translation.z = -6;
+			for (const auto& pixel : render())
+				CHECK(pixel == glm::vec3(1));
+			occluder.GetTransform().Translation.z = -2.8f;
+		}
+		std::array<uint8_t, 32 * 32 * 4> checks{};
+		for (size_t i = 0; i < 32 * 32; ++i)
+		{
+			const bool high = (i % 32 / 4 + i / 32 / 4) % 2 != 0;
+			checks[4 * i] = high ? 220 : 30;
+			checks[4 * i + 1] = checks[4 * i + 2] = 128;
+			checks[4 * i + 3] = high ? 255 : 0;
+		}
+		auto texture = TextureAsset::CreateRGBA8(32, 32, checks.data(), false);
+		texture->Handle = AssetHandle(52004);
+		assets.AddMemoryAsset(texture);
+		auto material = CreateRef<MaterialAsset>();
+		material->Handle = AssetHandle(52005);
+		material->Alpha = AlphaMode::Mask;
+		material->BaseColorTexture = material->HeightTexture = texture->Handle;
+		material->HeightScale = 0.12f;
+		material->DoubleSided = true;
+		assets.AddMemoryAsset(material);
+		foreground.GetComponent<MeshComponent>().Materials = {material->Handle};
+		for (float handedness : {1.0f, -1.0f})
+		{
+			foreground.GetTransform().Scale.x = handedness;
+			settings.Path = RenderPath::Forward;
+			const auto reference = render();
+			for (auto path : {RenderPath::Deferred, RenderPath::Visibility})
+			{
+				settings.Path = path;
+				const auto actual = render();
+				for (size_t i = 0; i < actual.size(); ++i)
+					CHECK(std::abs(actual[i].x - reference[i].x) < 0.005f);
+			}
+		}
+		// Alpha-one blending still takes the transparent path and must not inherit opaque screen AO.
+		foreground.GetTransform().Scale.x = 1;
+		foreground.GetTransform().Translation.x = -1;
+		material->Alpha = AlphaMode::Blend;
+		material->BaseColorTexture = material->HeightTexture = AssetHandle(0);
+		material->BaseColorFactor.a = 1;
+		++material->Version;
+		for (auto path : {RenderPath::Forward, RenderPath::Deferred, RenderPath::Visibility})
+		{
+			settings.Path = path;
+			const auto transparent = render();
+			for (uint32_t y = 10; y < 55; ++y)
+				for (uint32_t x = 25; x < 72; ++x)
+					CHECK(transparent[y * 97 + x] == glm::vec3(1));
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("Bloom: black and constant HDR fields keep threshold and level normalization on odd and tiny targets")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		PostEffectBudget budget;
+		Bloom bloom(graphics, budget);
+		auto* device = graphics.GetDevice();
+		{
+			Testing::ScopedAssertionCapture capture;
+			CHECK_THROWS_AS(bloom.Render(nullptr, 0, 0), Testing::AssertionFailedError);
+		}
+		CHECK_FALSE(bloom.Prepare(true, nullptr, nullptr, 0));
+		CHECK(budget.GetUsedBytes() == 0);
+		for (uint32_t size : {1u, 17u, 32u})
+		{
+			nvrhi::TextureDesc desc;
+			desc.width = size;
+			desc.height = size == 17 ? 13 : size;
+			desc.format = nvrhi::Format::RGBA16_FLOAT;
+			desc.isRenderTarget = true;
+			desc.initialState = nvrhi::ResourceStates::RenderTarget;
+			desc.keepInitialState = true;
+			auto hdr = device->createTexture(desc);
+			REQUIRE(hdr);
+			for (uint32_t levels : {1u, 3u, 6u})
+			{
+				REQUIRE(bloom.Prepare(true, hdr, hdr, levels));
+				if (size == 1 && levels == 1)
+				{
+					Testing::ScopedAssertionCapture capture;
+					auto invalidCommands = device->createCommandList();
+					CHECK_THROWS_AS(bloom.Render(nullptr, 0, 0), Testing::AssertionFailedError);
+					for (float invalid : {-1.0f, 65.0f, std::numeric_limits<float>::quiet_NaN()})
+						CHECK_THROWS_AS(bloom.Render(invalidCommands, invalid, 0), Testing::AssertionFailedError);
+					for (float invalid : {-1.0f, 2.0f, std::numeric_limits<float>::quiet_NaN()})
+						CHECK_THROWS_AS(bloom.Render(invalidCommands, 0, invalid), Testing::AssertionFailedError);
+				}
+				const auto attempts = bloom.GetAllocationAttempts();
+				REQUIRE(bloom.Prepare(true, hdr, hdr, levels));
+				CHECK(bloom.GetAllocationAttempts() == attempts);
+				for (uint32_t scenario = 0; scenario < 4; ++scenario)
+				{
+					CAPTURE(size);
+					CAPTURE(levels);
+					CAPTURE(scenario);
+					auto commands = device->createCommandList();
+					commands->open();
+					PostEffectTextures::TrackUsage(commands, hdr, nvrhi::ResourceStates::CopyDest);
+					commands->clearTextureFloat(hdr, nvrhi::AllSubresources, scenario == 0 ? nvrhi::Color(0) : nvrhi::Color(4, 2, 1, 1));
+					const float threshold = scenario == 2 ? 64.0f : scenario == 3 ? 4.0f
+																				  : 2.0f;
+					bloom.Render(commands, threshold, scenario == 3 ? 1.0f : 0.0f);
+					commands->close();
+					device->executeCommandList(commands);
+					const float luminance = glm::dot(glm::vec3(4, 2, 1), glm::vec3(0.2126f, 0.7152f, 0.0722f));
+					const glm::vec3 expected = scenario == 1   ? glm::vec3(4, 2, 1) * ((luminance - 2) / luminance)
+											   : scenario == 3 ? glm::vec3(4, 2, 1) * (luminance / 16)
+															   : glm::vec3(0);
+					for (const auto& pixel : ReadLinearHDR(device, bloom.GetTexture()))
+						for (int channel = 0; channel < 3; ++channel)
+						{
+							CHECK(std::isfinite(pixel[channel]));
+							CHECK(std::abs(pixel[channel] - expected[channel]) < 0.003f);
+						}
+				}
+			}
+			bloom.Release();
+			CHECK(budget.GetUsedBytes() == 0);
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("Bloom: additional normalized levels spread a bright impulse without modifying the HDR source")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		auto* device = graphics.GetDevice();
+		nvrhi::TextureDesc desc;
+		desc.width = desc.height = 32;
+		desc.format = nvrhi::Format::RGBA16_FLOAT;
+		desc.isRenderTarget = true;
+		desc.initialState = nvrhi::ResourceStates::ShaderResource;
+		desc.keepInitialState = true;
+		auto hdr = device->createTexture(desc);
+		REQUIRE(hdr);
+		std::vector<uint16_t> pixels(32 * 32 * 4, 0);
+		for (uint32_t channel = 0; channel < 3; ++channel)
+			pixels[(16 * 32 + 16) * 4 + channel] = glm::packHalf1x16(32);
+		auto commands = device->createCommandList();
+		commands->open();
+		commands->writeTexture(hdr, 0, 0, pixels.data(), 32 * 8);
+		commands->close();
+		device->executeCommandList(commands);
+		const auto original = ReadLinearHDR(device, hdr);
+		PostEffectBudget budget;
+		Bloom bloom(graphics, budget);
+		std::array<double, 2> spread{};
+		for (size_t trial = 0; trial < 2; ++trial)
+		{
+			REQUIRE(bloom.Prepare(true, hdr, hdr, trial == 0 ? 1 : 5));
+			commands->open();
+			bloom.Render(commands, 0, 0);
+			commands->close();
+			device->executeCommandList(commands);
+			const auto filtered = ReadLinearHDR(device, bloom.GetTexture());
+			double weight = 0;
+			for (uint32_t y = 0; y < 16; ++y)
+				for (uint32_t x = 0; x < 16; ++x)
+				{
+					const double value = static_cast<double>(filtered[y * 16 + x].x);
+					REQUIRE(std::isfinite(value));
+					CHECK(value >= 0);
+					const double dx = static_cast<double>(x) - 8, dy = static_cast<double>(y) - 8;
+					spread[trial] += value * (dx * dx + dy * dy);
+					weight += value;
+				}
+			REQUIRE(weight > 0);
+			spread[trial] /= weight;
+			CHECK(ReadLinearHDR(device, hdr) == original);
+		}
+		CHECK(spread[1] > spread[0] + 1);
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("SceneRenderer: bloom bypass is exact and enabled bloom preserves HDR while glowing before tonemapping")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		AssetManager assets;
+		auto material = CreateRef<MaterialAsset>();
+		material->Handle = AssetHandle(53001);
+		material->BaseColorFactor = {0, 0, 0, 1};
+		material->EmissiveFactor = {8, 2, 1};
+		assets.AddMemoryAsset(material);
+		Scene scene("BloomEmitter");
+		auto emitter = scene.CreateEntity("Emitter");
+		emitter.GetTransform().Scale = glm::vec3(0.25f);
+		auto& mesh = emitter.AddComponent<MeshComponent>();
+		mesh.Mesh = AssetHandle(AssetManager::BuiltinCube);
+		mesh.Materials = {material->Handle};
+		SceneRenderer renderer(graphics, assets);
+		REQUIRE(renderer.Initialize());
+		auto& settings = renderer.GetSettings();
+		settings.Shadows = false;
+		settings.GIEnabled = false;
+		settings.DefaultEnvironmentIntensity = 0;
+		settings.Tonemapper = TonemapOperator::None;
+		auto output = CreateOutput(graphics.GetDevice(), 65, 65);
+		auto camera = CameraView::LookAt({0, 0, 3}, {0, 0, 0}, glm::radians(60.0f), 1);
+		for (auto path : {RenderPath::Forward, RenderPath::Deferred, RenderPath::Visibility})
+		{
+			settings.Path = path;
+			settings.BloomEnabled = false;
+			settings.DebugView = RenderDebugView::None;
+			renderer.Render(scene, camera, output.Framebuffer);
+			const auto baseline = ReadbackTexture(graphics.GetDevice(), output.Texture);
+			const auto hdr = ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget());
+			settings.BloomEnabled = true;
+			settings.BloomIntensity = 0;
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(Image::MaxChannelDifference(baseline, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
+			CHECK(renderer.GetStats().EffectOwnedBytes == 0);
+			settings.BloomIntensity = 0.5f;
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(renderer.GetStats().BloomActive);
+			CHECK(renderer.GetStats().BloomPasses == 9);
+			CHECK(ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget()) == hdr);
+			const auto bloom = ReadbackTexture(graphics.GetDevice(), output.Texture);
+			uint32_t halo = 0;
+			for (uint32_t y = 0; y < 65; ++y)
+				for (uint32_t x = 0; x < 65; ++x)
+					halo += baseline.GetPixel(x, y).r < 2 && bloom.GetPixel(x, y).r > 5;
+			CHECK(halo > 10);
+			const auto attempts = renderer.GetStats().EffectAllocationAttempts;
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(renderer.GetStats().EffectAllocationAttempts == attempts);
+			CHECK(Image::MaxChannelDifference(bloom, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
+			settings.DebugView = RenderDebugView::Emissive;
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK_FALSE(renderer.GetStats().BloomActive);
+			CHECK(renderer.GetStats().EffectOwnedBytes == 0);
+			settings.DebugView = RenderDebugView::None;
+			settings.BloomEnabled = false;
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(Image::MaxChannelDifference(baseline, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("Bloom: partial resource failures release backing and retry every missing object")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		class FailureFactory : public PostEffectResourceFactory
+		{
+		public:
+			uint32_t Calls = 0, FailAt = 0;
+			nvrhi::TextureHandle CreateTexture(nvrhi::IDevice* device, const nvrhi::TextureDesc& desc) override
+			{
+				return ++Calls == FailAt ? nullptr : PostEffectResourceFactory::CreateTexture(device, desc);
+			}
+			nvrhi::FramebufferHandle CreateFramebuffer(nvrhi::IDevice* device, const nvrhi::FramebufferDesc& desc) override
+			{
+				return ++Calls == FailAt ? nullptr : PostEffectResourceFactory::CreateFramebuffer(device, desc);
+			}
+			nvrhi::BindingLayoutHandle CreateBindingLayout(nvrhi::IDevice* device, const nvrhi::BindingLayoutDesc& desc) override
+			{
+				return ++Calls == FailAt ? nullptr : PostEffectResourceFactory::CreateBindingLayout(device, desc);
+			}
+			nvrhi::SamplerHandle CreateSampler(nvrhi::IDevice* device, const nvrhi::SamplerDesc& desc) override
+			{
+				return ++Calls == FailAt ? nullptr : PostEffectResourceFactory::CreateSampler(device, desc);
+			}
+			nvrhi::BindingSetHandle CreateBindingSet(nvrhi::IDevice* device, const nvrhi::BindingSetDesc& desc, nvrhi::IBindingLayout* layout) override
+			{
+				return ++Calls == FailAt ? nullptr : PostEffectResourceFactory::CreateBindingSet(device, desc, layout);
+			}
+			nvrhi::GraphicsPipelineHandle CreatePipeline(nvrhi::IDevice* device, const nvrhi::GraphicsPipelineDesc& desc, const nvrhi::FramebufferInfo& info) override
+			{
+				return ++Calls == FailAt ? nullptr : PostEffectResourceFactory::CreatePipeline(device, desc, info);
+			}
+		} factory;
+		nvrhi::TextureDesc desc;
+		desc.width = 17;
+		desc.height = 13;
+		desc.format = nvrhi::Format::RGBA16_FLOAT;
+		desc.isRenderTarget = true;
+		desc.initialState = nvrhi::ResourceStates::ShaderResource;
+		desc.keepInitialState = true;
+		auto hdr = graphics.GetDevice()->createTexture(desc);
+		REQUIRE(hdr);
+		PostEffectBudget budget;
+		for (uint32_t failAt : {1u, 2u, 11u, 12u, 13u, 14u, 23u, 24u})
+		{
+			CAPTURE(failAt);
+			Bloom bloom(graphics, budget, &factory);
+			factory.Calls = 0;
+			factory.FailAt = failAt;
+			CHECK_FALSE(bloom.Prepare(true, hdr, hdr, 3));
+			CHECK_FALSE(bloom.IsReady());
+			CHECK(budget.GetUsedBytes() == 0);
+			CHECK_FALSE(std::string(bloom.GetFallbackReason()).empty());
+			factory.FailAt = 0;
+			REQUIRE(bloom.Prepare(true, hdr, hdr, 3));
+			CHECK(budget.GetUsedBytes() > 0);
+			CHECK(bloom.GetPassCount() == 5);
+			bloom.Release();
+			CHECK(budget.GetUsedBytes() == 0);
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("Bloom: invalid and negative channels are isolated before filtering and original HDR bits are preserved")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		auto* device = graphics.GetDevice();
+		nvrhi::TextureDesc desc;
+		desc.width = desc.height = 16;
+		desc.format = nvrhi::Format::RGBA16_FLOAT;
+		desc.isRenderTarget = true;
+		desc.initialState = nvrhi::ResourceStates::ShaderResource;
+		desc.keepInitialState = true;
+		auto hdr = device->createTexture(desc);
+		REQUIRE(hdr);
+		std::vector<uint16_t> pixels(16 * 16 * 4, 0);
+		pixels[(8 * 16 + 8) * 4] = 0x7c00;     // +Inf
+		pixels[(8 * 16 + 8) * 4 + 1] = 0x7e00; // NaN
+		pixels[(8 * 16 + 8) * 4 + 2] = 0xfc00; // -Inf
+		for (uint32_t channel = 0; channel < 3; ++channel)
+		{
+			pixels[(8 * 16 + 9) * 4 + channel] = glm::packHalf1x16(8);
+			pixels[(9 * 16 + 8) * 4 + channel] = glm::packHalf1x16(-4);
+		}
+		auto commands = device->createCommandList();
+		commands->open();
+		commands->writeTexture(hdr, 0, 0, pixels.data(), 16 * 8);
+		commands->close();
+		device->executeCommandList(commands);
+		const auto original = ReadLinearHDR(device, hdr);
+		PostEffectBudget budget;
+		Bloom bloom(graphics, budget);
+		REQUIRE(bloom.Prepare(true, hdr, hdr, 1));
+		commands->open();
+		bloom.Render(commands, 0, 0);
+		commands->close();
+		device->executeCommandList(commands);
+		const auto filtered = ReadLinearHDR(device, bloom.GetTexture());
+		CHECK(filtered[4 * 8 + 4] == glm::vec3(2));
+		for (const auto& pixel : filtered)
+			for (int channel = 0; channel < 3; ++channel)
+			{
+				CHECK(std::isfinite(pixel[channel]));
+				CHECK(pixel[channel] >= 0);
+			}
+		const auto after = ReadLinearHDR(device, hdr);
+		for (size_t pixel = 0; pixel < after.size(); ++pixel)
+			for (int channel = 0; channel < 3; ++channel)
+				CHECK(std::bit_cast<uint32_t>(after[pixel][channel]) == std::bit_cast<uint32_t>(original[pixel][channel]));
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("Bloom: equal scene linear luminance receives equal threshold gain across different hues")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		auto* device = graphics.GetDevice();
+		nvrhi::TextureDesc desc;
+		desc.width = desc.height = 8;
+		desc.format = nvrhi::Format::RGBA16_FLOAT;
+		desc.isRenderTarget = true;
+		desc.initialState = nvrhi::ResourceStates::RenderTarget;
+		desc.keepInitialState = true;
+		auto hdr = device->createTexture(desc);
+		REQUIRE(hdr);
+		PostEffectBudget budget;
+		Bloom bloom(graphics, budget);
+		REQUIRE(bloom.Prepare(true, hdr, hdr, 3));
+		const glm::vec3 weights(0.2126f, 0.7152f, 0.0722f);
+		for (int channel = 0; channel < 3; ++channel)
+		{
+			glm::vec3 color(0);
+			color[channel] = 2 / weights[channel];
+			auto commands = device->createCommandList();
+			commands->open();
+			PostEffectTextures::TrackUsage(commands, hdr, nvrhi::ResourceStates::CopyDest);
+			commands->clearTextureFloat(hdr, nvrhi::AllSubresources, nvrhi::Color(color.x, color.y, color.z, 1));
+			bloom.Render(commands, 1, 0);
+			commands->close();
+			device->executeCommandList(commands);
+			for (const auto& pixel : ReadLinearHDR(device, bloom.GetTexture()))
+				CHECK(std::abs(glm::dot(pixel, weights) - 1) < 0.002f);
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("Bloom: area downsampling and integrated upsampling preserve odd center and edge impulse means")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		auto* device = graphics.GetDevice();
+		PostEffectBudget budget;
+		Bloom bloom(graphics, budget);
+		for (auto size : {glm::uvec2(3, 1), glm::uvec2(1, 3), glm::uvec2(3, 3), glm::uvec2(9, 1), glm::uvec2(17, 13)})
+		{
+			nvrhi::TextureDesc desc;
+			desc.width = size.x;
+			desc.height = size.y;
+			desc.format = nvrhi::Format::RGBA16_FLOAT;
+			desc.isRenderTarget = true;
+			desc.initialState = nvrhi::ResourceStates::ShaderResource;
+			desc.keepInitialState = true;
+			auto hdr = device->createTexture(desc);
+			REQUIRE(hdr);
+
+			for (uint32_t levels : {1u, 2u, 3u, 6u})
+			{
+				REQUIRE(bloom.Prepare(true, hdr, hdr, levels));
+				CAPTURE(levels);
+				for (auto position : {glm::uvec2(0), size / 2u, size - 1u})
+				{
+					CAPTURE(size.x);
+					CAPTURE(size.y);
+					CAPTURE(position.x);
+					CAPTURE(position.y);
+					std::vector<uint16_t> pixels(size.x * size.y * 4, 0);
+					for (uint32_t channel = 0; channel < 3; ++channel)
+						pixels[(position.y * size.x + position.x) * 4 + channel] = glm::packHalf1x16(1);
+					auto commands = device->createCommandList();
+					commands->open();
+					commands->writeTexture(hdr, 0, 0, pixels.data(), size.x * 8);
+					bloom.Render(commands, 0, 0);
+					commands->close();
+					device->executeCommandList(commands);
+					const auto result = ReadLinearHDR(device, bloom.GetTexture());
+					double sum = 0;
+					for (const auto& pixel : result)
+						sum += static_cast<double>(pixel.r);
+					const double expected = 1.0 / (size.x * size.y);
+					CHECK(std::abs(sum / static_cast<double>(result.size()) - expected) < expected * 0.001);
+				}
+			}
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("SceneRenderer: render scale changes only scene raster dimensions and restores the native baseline on every path")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		AssetManager assets;
+		Scene scene("ScaledScene");
+		BuildTestScene(scene, assets);
+		SceneRenderer renderer(graphics, assets);
+		REQUIRE(renderer.Initialize());
+		auto& settings = renderer.GetSettings();
+		settings.Shadows = false;
+		settings.GIEnabled = false;
+		auto output = CreateOutput(graphics.GetDevice(), 65, 49);
+		auto camera = CameraView::LookAt({0, 2, 4}, {0, 0.5f, 0}, glm::radians(60.0f), 65.0f / 49);
+		const auto projection = camera.Projection;
+		for (auto path : {RenderPath::Forward, RenderPath::Deferred, RenderPath::Visibility})
+		{
+			settings.Path = path;
+			settings.InternalRenderScale = 1;
+			renderer.Render(scene, camera, output.Framebuffer);
+			const auto baseline = ReadbackTexture(graphics.GetDevice(), output.Texture);
+			for (float factor : {0.75f, 0.5f, 1.0f})
+			{
+				settings.InternalRenderScale = factor;
+				renderer.Render(scene, camera, output.Framebuffer);
+				const auto expected = RenderScale::CalculateDimensions(65, 49, factor);
+				CHECK(renderer.GetHDRTarget()->getDesc().width == expected.x);
+				CHECK(renderer.GetHDRTarget()->getDesc().height == expected.y);
+				const auto& stats = renderer.GetStats();
+				CHECK(stats.InternalWidth == expected.x);
+				CHECK(stats.InternalHeight == expected.y);
+				CHECK(stats.OutputWidth == 65);
+				CHECK(stats.OutputHeight == 49);
+				CHECK(stats.EffectiveRenderScale == factor);
+				CHECK(stats.NativeDepthPasses == 0);
+				CHECK(stats.EffectOwnedBytes == 0);
+				CHECK(camera.Projection == projection);
+			}
+			CHECK(Image::MaxChannelDifference(baseline, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("SceneRenderer: scaled scene keeps screen text native and caches world text depth allocation failure until request changes")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		class FailureFactory : public PostEffectResourceFactory
+		{
+		public:
+			bool Fail = false;
+			nvrhi::TextureHandle CreateTexture(nvrhi::IDevice* device, const nvrhi::TextureDesc& desc) override
+			{
+				return Fail ? nullptr : PostEffectResourceFactory::CreateTexture(device, desc);
+			}
+		} factory;
+		AssetManager assets;
+		Scene scene("ScaledText");
+		auto entity = scene.CreateEntity("Text");
+		entity.GetTransform().Translation = {0.05f, 0.05f, 0};
+		auto& text = entity.AddComponent<TextComponent>();
+		text.Text = "Native UI";
+		text.Size = 180;
+		text.ScreenSpace = true;
+		SceneRenderer renderer(graphics, assets, nullptr, nullptr, &factory);
+		REQUIRE(renderer.Initialize());
+		auto& settings = renderer.GetSettings();
+		settings.GIEnabled = false;
+		settings.Shadows = false;
+		settings.DefaultEnvironmentIntensity = 0;
+		auto output = CreateOutput(graphics.GetDevice(), 129, 65);
+		auto camera = CameraView::LookAt({0, 0, 3}, {0, 0, 0}, glm::radians(60.0f), 129.0f / 65);
+		renderer.Render(scene, camera, output.Framebuffer);
+		const auto baseline = ReadbackTexture(graphics.GetDevice(), output.Texture);
+		CHECK(renderer.GetStats().TextGlyphs == 8);
+		uint32_t whitePixels = 0;
+		for (uint32_t y = 0; y < 65; ++y)
+			for (uint32_t x = 0; x < 129; ++x)
+			{
+				const auto pixel = baseline.GetPixel(x, y);
+				whitePixels += pixel.r > 200 && pixel.g > 200 && pixel.b > 200;
+			}
+		CHECK(whitePixels > 10);
+		settings.InternalRenderScale = 0.5f;
+		renderer.Render(scene, camera, output.Framebuffer);
+		CHECK(Image::MaxChannelDifference(baseline, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
+		CHECK(renderer.GetStats().NativeDepthPasses == 0);
+		text.ScreenSpace = false;
+		text.Size = 0.2f;
+		entity.GetTransform().Translation = {0, 0, 0};
+		factory.Fail = true;
+		renderer.Render(scene, camera, output.Framebuffer);
+		CHECK(renderer.GetStats().EffectiveRenderScale == 1);
+		CHECK_FALSE(renderer.GetStats().ScaleFallbackReason.empty());
+		const auto attempts = renderer.GetStats().EffectAllocationAttempts;
+		factory.Fail = false;
+		for (int frame = 0; frame < 3; ++frame)
+		{
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(renderer.GetStats().EffectiveRenderScale == 1);
+			CHECK(renderer.GetStats().EffectAllocationAttempts == attempts);
+			CHECK(renderer.GetStats().StaticLightingGenerations == 0);
+		}
+		settings.InternalRenderScale = 0.75f;
+		renderer.Render(scene, camera, output.Framebuffer);
+		CHECK(renderer.GetStats().EffectiveRenderScale == 0.75f);
+		CHECK(renderer.GetStats().NativeDepthPasses == 1);
+		CHECK(renderer.GetStats().EffectOwnedBytes > 0);
+		settings.InternalRenderScale = 1;
+		renderer.Render(scene, camera, output.Framebuffer);
+		CHECK(renderer.GetStats().EffectOwnedBytes == 0);
+		CHECK(renderer.GetStats().NativeDepthPasses == 0);
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("SceneRenderer: scale transition retires incompatible bloom before deciding the native depth budget")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		AssetManager assets;
+		Scene scene("ScaleBudget");
+		auto entity = scene.CreateEntity("WorldText");
+		auto& text = entity.AddComponent<TextComponent>();
+		text.Text = "Budget";
+		text.ScreenSpace = false;
+		auto output = CreateOutput(graphics.GetDevice(), 129, 97);
+		auto camera = CameraView::LookAt({0, 0, 3}, {0, 0, 0}, glm::radians(60.0f), 129.0f / 97);
+		auto configure = [](SceneRenderer& renderer) {
+			auto& settings = renderer.GetSettings();
+			settings.GIEnabled = false;
+			settings.Shadows = false;
+			settings.BloomEnabled = true;
+			settings.BloomIntensity = 0.2f;
+			settings.BloomLevels = 6;
+		};
+		uint64_t oldBloom = 0, nativeDepth = 0, finalUsage = 0;
+		{
+			SceneRenderer renderer(graphics, assets);
+			REQUIRE(renderer.Initialize());
+			configure(renderer);
+			renderer.Render(scene, camera, output.Framebuffer);
+			oldBloom = renderer.GetStats().EffectOwnedBytes;
+			renderer.GetSettings().InternalRenderScale = 0.5f;
+			renderer.Render(scene, camera, output.Framebuffer);
+			finalUsage = renderer.GetStats().EffectOwnedBytes;
+			renderer.GetSettings().BloomEnabled = false;
+			renderer.Render(scene, camera, output.Framebuffer);
+			nativeDepth = renderer.GetStats().EffectOwnedBytes;
+		}
+		const uint64_t capacity = std::max(oldBloom, finalUsage);
+		REQUIRE(oldBloom + nativeDepth > capacity);
+		SceneRenderer bounded(graphics, assets, nullptr, nullptr, nullptr, capacity);
+		REQUIRE(bounded.Initialize());
+		configure(bounded);
+		bounded.Render(scene, camera, output.Framebuffer);
+		REQUIRE(bounded.GetStats().BloomActive);
+		bounded.GetSettings().InternalRenderScale = 0.5f;
+		bounded.Render(scene, camera, output.Framebuffer);
+		CHECK(bounded.GetStats().EffectiveRenderScale == 0.5f);
+		CHECK(bounded.GetStats().ScaleFallbackReason.empty());
+		CHECK(bounded.GetStats().BloomActive);
+		CHECK(bounded.GetStats().NativeDepthPasses == 1);
+		CHECK(bounded.GetStats().EffectOwnedBytes == finalUsage);
+		CHECK(bounded.GetStats().EffectPeakBytes <= capacity);
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("RenderScale: nonconstant HDR interpolation and bloom precede nonlinear tonemapping")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		auto* device = graphics.GetDevice();
+		nvrhi::TextureDesc desc;
+		desc.width = 2;
+		desc.height = 1;
+		desc.format = nvrhi::Format::RGBA16_FLOAT;
+		desc.initialState = nvrhi::ResourceStates::ShaderResource;
+		desc.keepInitialState = true;
+		auto hdr = device->createTexture(desc);
+		desc.width = 1;
+		auto bloom = device->createTexture(desc);
+		REQUIRE(hdr);
+		REQUIRE(bloom);
+		auto output = CreateOutput(device, 5, 1);
+		nvrhi::BindingLayoutDesc layoutDesc;
+		layoutDesc.visibility = nvrhi::ShaderType::Pixel;
+		layoutDesc.bindings = {nvrhi::BindingLayoutItem::PushConstants(0, sizeof(GPU::TonemapConstants)), nvrhi::BindingLayoutItem::Texture_SRV(0),
+							   nvrhi::BindingLayoutItem::Texture_SRV(1), nvrhi::BindingLayoutItem::Sampler(0), nvrhi::BindingLayoutItem::Sampler(1)};
+		auto layout = device->createBindingLayout(layoutDesc);
+		auto point = device->createSampler(nvrhi::SamplerDesc().setAllAddressModes(nvrhi::SamplerAddressMode::Clamp).setAllFilters(false));
+		auto linear = device->createSampler(nvrhi::SamplerDesc().setAllAddressModes(nvrhi::SamplerAddressMode::Clamp).setAllFilters(true));
+		nvrhi::BindingSetDesc bindingDesc;
+		bindingDesc.bindings = {nvrhi::BindingSetItem::PushConstants(0, sizeof(GPU::TonemapConstants)), nvrhi::BindingSetItem::Texture_SRV(0, hdr),
+								nvrhi::BindingSetItem::Texture_SRV(1, bloom), nvrhi::BindingSetItem::Sampler(0, point), nvrhi::BindingSetItem::Sampler(1, linear)};
+		auto bindings = device->createBindingSet(bindingDesc, layout);
+		nvrhi::GraphicsPipelineDesc pipelineDesc;
+		pipelineDesc.VS = ShaderLibrary::CreateShader(device, "Tonemap", "TonemapVS", nvrhi::ShaderType::Vertex);
+		pipelineDesc.PS = ShaderLibrary::CreateShader(device, "Tonemap", "TonemapPS", nvrhi::ShaderType::Pixel);
+		pipelineDesc.bindingLayouts = {layout};
+		pipelineDesc.renderState.rasterState.setCullNone();
+		pipelineDesc.renderState.depthStencilState.disableDepthTest().disableDepthWrite();
+		auto pipeline = device->createGraphicsPipeline(pipelineDesc, output.Framebuffer->getFramebufferInfo());
+		REQUIRE(pipeline);
+		std::array<uint16_t, 8> values{0, 0, 0, 0, glm::packHalf1x16(4), glm::packHalf1x16(4), glm::packHalf1x16(4), 0};
+		const std::array<uint16_t, 4> bloomValues{glm::packHalf1x16(0.25f), glm::packHalf1x16(0.25f), glm::packHalf1x16(0.25f), 0};
+		auto commands = device->createCommandList();
+		commands->open();
+		commands->writeTexture(hdr, 0, 0, values.data(), 16);
+		commands->writeTexture(bloom, 0, 0, bloomValues.data(), 8);
+		nvrhi::GraphicsState state;
+		state.pipeline = pipeline;
+		state.framebuffer = output.Framebuffer;
+		state.bindings = {bindings};
+		state.viewport.addViewportAndScissorRect(nvrhi::Viewport(5.0f, 1.0f));
+		commands->setGraphicsState(state);
+		const GPU::TonemapConstants constants{1, 1, 0.5f, 1};
+		commands->setPushConstants(&constants, sizeof(constants));
+		commands->draw(nvrhi::DrawArguments().setVertexCount(3));
+		commands->close();
+		device->executeCommandList(commands);
+		const auto image = ReadbackTexture(device, output.Texture);
+		auto aces = [](float value) { return std::clamp((value * (value + 0.0245786f) - 0.000090537f) / (value * (0.983729f * value + 0.4329510f) + 0.238081f), 0.0f, 1.0f); };
+		auto encode = [](float value) { return value <= 0.0031308f ? value * 12.92f : 1.055f * std::pow(value, 1.0f / 2.4f) - 0.055f; };
+		for (uint32_t x = 0; x < 5; ++x)
+		{
+			const float fraction = std::clamp((static_cast<float>(x) + 0.5f) * 2 / 5 - 0.5f, 0.0f, 1.0f);
+			const float expected = encode(aces(4 * fraction + 0.125f)) * 255;
+			// Neutral RGB remains neutral through the ACES matrices. Allow one dither step and quantization.
+			CHECK(std::abs(static_cast<float>(image.GetPixel(x, 0).r) - expected) < 2);
+		}
+		CHECK(std::abs(static_cast<float>(image.GetPixel(1, 0).r) - encode(aces(0.125f)) * 255) > 30);
+		CHECK(std::abs(static_cast<float>(image.GetPixel(1, 0).r) - encode(aces(0.125f) * 0.9f + aces(4.125f) * 0.1f) * 255) > 20);
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("Bloom: pyramid storage rounds halfway normal and subnormal results to nearest even")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		auto* device = graphics.GetDevice();
+		nvrhi::TextureDesc desc;
+		desc.width = desc.height = 2;
+		desc.format = nvrhi::Format::RGBA16_FLOAT;
+		desc.isRenderTarget = true;
+		desc.initialState = nvrhi::ResourceStates::ShaderResource;
+		desc.keepInitialState = true;
+		auto hdr = device->createTexture(desc);
+		REQUIRE(hdr);
+		PostEffectBudget budget;
+		Bloom bloom(graphics, budget);
+		REQUIRE(bloom.Prepare(true, hdr, hdr, 1));
+		for (const auto& [low, high, expected] : std::array<std::array<uint16_t, 3>, 5>{{{0x3c00, 0x3c01, 0x3c00}, {0x3c01, 0x3c02, 0x3c02}, {0, 1, 0}, {1, 2, 2}, {0x7bff, 0x7bff, 0x7bff}}})
+		{
+			std::array<uint16_t, 16> pixels{};
+			for (uint32_t pixel = 0; pixel < 4; ++pixel)
+				for (uint32_t channel = 0; channel < 3; ++channel)
+					pixels[pixel * 4 + channel] = pixel < 2 ? low : high;
+			auto commands = device->createCommandList();
+			commands->open();
+			commands->writeTexture(hdr, 0, 0, pixels.data(), 16);
+			bloom.Render(commands, 0, 0);
+			commands->close();
+			device->executeCommandList(commands);
+			CAPTURE(low);
+			CAPTURE(high);
+			CAPTURE(expected);
+			const auto actual = ReadLinearHDR(device, bloom.GetTexture())[0];
+			for (int channel = 0; channel < 3; ++channel)
+				CHECK(actual[channel] == glm::unpackHalf1x16(expected));
+		}
 	}
 	CHECK(graphics.GetValidationErrorCount() == errors);
 }

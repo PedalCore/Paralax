@@ -22,6 +22,8 @@ Texture2DArray<float> g_LocalShadowMap : register(t6, space0);
 public
 StructuredBuffer<LocalShadowSlot> g_LocalShadowSlots : register(t7, space0);
 public
+Texture2D<float> g_ScreenAO : register(t8, space0);
+public
 SamplerComparisonState g_LocalShadowSampler : register(s3, space0);
 public
 SamplerState g_LinearWrap : register(s0, space0);

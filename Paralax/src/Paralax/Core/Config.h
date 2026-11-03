@@ -9,6 +9,7 @@
 #endif
 
 #if defined(PX_DEBUG)
+	#define PX_BUILD_CONFIGURATION_NAME "Debug"
 	#if defined(PX_PLATFORM_WINDOWS)
 		#define PX_DEBUGBREAK() __debugbreak()
 	#elif defined(__clang__)
@@ -19,9 +20,11 @@
 	#endif
 	#define PX_ENABLE_ASSERTS
 #elif defined(PX_RELEASE)
+	#define PX_BUILD_CONFIGURATION_NAME "Release"
 	#define PX_DEBUGBREAK() ((void)0)
 	#define PX_ENABLE_ASSERTS
 #else
+	#define PX_BUILD_CONFIGURATION_NAME "Dist"
 	#define PX_DEBUGBREAK() ((void)0)
 #endif
 

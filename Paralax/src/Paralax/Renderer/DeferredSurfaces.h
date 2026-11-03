@@ -40,6 +40,7 @@ namespace Paralax {
 		nvrhi::IFramebuffer* GetFramebuffer() const { return m_Framebuffer; }
 		nvrhi::IGraphicsPipeline* GetMaterialPipeline(bool doubleSided, bool mirrored) const { return m_MaterialPipelines[doubleSided ? 2 : mirrored ? 1
 																																					 : 0]; }
+		nvrhi::ITexture* GetReceiverGuide() const { return m_Ready ? m_Surfaces[2].Get() : nullptr; }
 		// Clears coverage before material rasterization; positive roughness distinguishes geometry even at depth zero.
 		void ClearCoverage(nvrhi::ICommandList* commands);
 		// Records into an open list after material rasterization; reads depth and adds lighting to HDR.
