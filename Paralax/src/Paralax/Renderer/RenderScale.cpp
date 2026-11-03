@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 namespace Paralax {
 
@@ -23,9 +24,9 @@ namespace Paralax {
 
 	glm::uvec2 RenderScale::CalculateDimensions(uint32_t outputWidth, uint32_t outputHeight, float scale)
 	{
-		const double factor = std::isfinite(scale) ? static_cast<double>(std::clamp(scale, 0.5f, 1.0f)) : 1.0;
+		const double factor = std::isfinite(scale) ? static_cast<double>(std::clamp(scale, 0.5f, 2.0f)) : 1.0;
 		auto dimension = [&](uint32_t output) {
-			return output == 0 ? 0u : static_cast<uint32_t>(std::clamp(std::floor(static_cast<double>(output) * factor + 0.5), 1.0, static_cast<double>(output)));
+			return output == 0 ? 0u : static_cast<uint32_t>(std::clamp(std::floor(static_cast<double>(output) * factor + 0.5), 1.0, static_cast<double>(std::numeric_limits<uint32_t>::max())));
 		};
 		return {dimension(outputWidth), dimension(outputHeight)};
 	}
@@ -68,6 +69,10 @@ namespace Paralax {
 		Release();
 		if (!sceneDepth || !outputWidth || !outputHeight || sceneDepth->getDesc().format != nvrhi::Format::D32)
 			return Fail("invalid scene depth or output dimensions");
+		const auto& source = sceneDepth->getDesc();
+		if (uint64_t(source.width) > 2ull * outputWidth || uint64_t(source.height) > 2ull * outputHeight ||
+			source.width > 8192 || source.height > 8192)
+			return Fail("native depth reduction exceeds bounded footprint");
 		auto* device = m_Graphics.GetDevice();
 		nvrhi::TextureDesc desc;
 		desc.width = outputWidth;

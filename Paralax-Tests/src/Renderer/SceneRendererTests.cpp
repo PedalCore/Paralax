@@ -3216,7 +3216,7 @@ TEST_CASE("SceneRenderer: render scale changes only scene raster dimensions and 
 			settings.InternalRenderScale = 1;
 			renderer.Render(scene, camera, output.Framebuffer);
 			const auto baseline = ReadbackTexture(graphics.GetDevice(), output.Texture);
-			for (float factor : {0.75f, 0.5f, 1.0f})
+			for (float factor : {0.75f, 0.5f, 1.5f, 2.0f, 1.0f})
 			{
 				settings.InternalRenderScale = factor;
 				renderer.Render(scene, camera, output.Framebuffer);
@@ -3230,7 +3230,8 @@ TEST_CASE("SceneRenderer: render scale changes only scene raster dimensions and 
 				CHECK(stats.OutputHeight == 49);
 				CHECK(stats.EffectiveRenderScale == factor);
 				CHECK(stats.NativeDepthPasses == 0);
-				CHECK(stats.EffectOwnedBytes == 0);
+				CHECK((stats.EffectOwnedBytes > 0) == (factor > 1));
+				CHECK(stats.EffectivePath == path);
 				CHECK(camera.Projection == projection);
 			}
 			CHECK(Image::MaxChannelDifference(baseline, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
@@ -3282,6 +3283,13 @@ TEST_CASE("SceneRenderer: scaled scene keeps screen text native and caches world
 				whitePixels += pixel.r > 200 && pixel.g > 200 && pixel.b > 200;
 			}
 		CHECK(whitePixels > 10);
+		for (float factor : {1.5f, 2.0f})
+		{
+			settings.InternalRenderScale = factor;
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(renderer.GetStats().EffectiveRenderScale == factor);
+			CHECK(Image::MaxChannelDifference(baseline, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
+		}
 		settings.InternalRenderScale = 0.5f;
 		renderer.Render(scene, camera, output.Framebuffer);
 		CHECK(Image::MaxChannelDifference(baseline, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
@@ -3480,6 +3488,324 @@ TEST_CASE("Bloom: pyramid storage rounds halfway normal and subnormal results to
 			const auto actual = ReadLinearHDR(device, bloom.GetTexture())[0];
 			for (int channel = 0; channel < 3; ++channel)
 				CHECK(actual[channel] == glm::unpackHalf1x16(expected));
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("SceneRenderer: supersampling target failures fall back transactionally and cache the failed request")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		class FailureFactory : public PostEffectResourceFactory
+		{
+		public:
+			uint32_t Calls = 0, FailAt = 0;
+			nvrhi::TextureHandle CreateTexture(nvrhi::IDevice* device, const nvrhi::TextureDesc& desc) override
+			{
+				return ++Calls == FailAt ? nullptr : PostEffectResourceFactory::CreateTexture(device, desc);
+			}
+			nvrhi::FramebufferHandle CreateFramebuffer(nvrhi::IDevice* device, const nvrhi::FramebufferDesc& desc) override
+			{
+				return ++Calls == FailAt ? nullptr : PostEffectResourceFactory::CreateFramebuffer(device, desc);
+			}
+		} factory;
+		AssetManager assets;
+		Scene scene("SupersampleFailure");
+		BuildTestScene(scene, assets);
+		auto output = CreateOutput(graphics.GetDevice(), 33, 25);
+		auto camera = CameraView::LookAt({0, 2, 4}, {0, 0.5f, 0}, glm::radians(60.0f), 33.0f / 25);
+		for (uint32_t failure = 1; failure <= 5; ++failure)
+		{
+			CAPTURE(failure);
+			factory.FailAt = 0;
+			SceneRenderer renderer(graphics, assets, nullptr, nullptr, &factory);
+			REQUIRE(renderer.Initialize());
+			auto& settings = renderer.GetSettings();
+			settings.GIEnabled = settings.Shadows = false;
+			renderer.Render(scene, camera, output.Framebuffer);
+			const auto baseline = ReadbackTexture(graphics.GetDevice(), output.Texture);
+			factory.Calls = 0;
+			factory.FailAt = failure;
+			settings.InternalRenderScale = 2;
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(renderer.GetStats().RequestedRenderScale == 2);
+			CHECK(renderer.GetStats().EffectiveRenderScale == 1);
+			CHECK_FALSE(renderer.GetStats().ScaleFallbackReason.empty());
+			CHECK(renderer.GetStats().EffectOwnedBytes == 0);
+			CHECK(Image::MaxChannelDifference(baseline, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
+			const auto calls = factory.Calls;
+			factory.FailAt = 0;
+			for (uint32_t frame = 0; frame < 2; ++frame)
+			{
+				renderer.Render(scene, camera, output.Framebuffer);
+				CHECK(renderer.GetStats().EffectiveRenderScale == 1);
+				CHECK(factory.Calls == calls);
+			}
+			settings.InternalRenderScale = 1.5f;
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(renderer.GetStats().EffectiveRenderScale == 1.5f);
+			CHECK(renderer.GetStats().ScaleFallbackReason.empty());
+			CHECK(renderer.GetStats().EffectOwnedBytes > 0);
+			settings.InternalRenderScale = 1;
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(renderer.GetStats().EffectOwnedBytes == 0);
+			CHECK(Image::MaxChannelDifference(baseline, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
+		}
+		SceneRenderer bounded(graphics, assets, nullptr, nullptr, nullptr, 1);
+		REQUIRE(bounded.Initialize());
+		bounded.GetSettings().GIEnabled = bounded.GetSettings().Shadows = false;
+		bounded.GetSettings().InternalRenderScale = 2;
+		bounded.Render(scene, camera, output.Framebuffer);
+		CHECK(bounded.GetStats().EffectiveRenderScale == 1);
+		CHECK(bounded.GetStats().EffectOwnedBytes == 0);
+		CHECK(bounded.GetStats().EffectPeakBytes <= 1);
+		CHECK(bounded.GetStats().ScaleFallbackReason == "renderer effect memory budget exhausted");
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("SceneRenderer: disabled spatial AA retires before an affordable supersampling transition")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		AssetManager assets;
+		Scene scene("SupersampleBudgetTransition");
+		BuildTestScene(scene, assets);
+		auto output = CreateOutput(graphics.GetDevice(), 33, 25);
+		auto camera = CameraView::LookAt({0, 2, 4}, {0, 0.5f, 0}, glm::radians(60.0f), 33.0f / 25);
+		uint64_t capacity = 0;
+		{
+			SceneRenderer measure(graphics, assets);
+			REQUIRE(measure.Initialize());
+			measure.GetSettings().GIEnabled = measure.GetSettings().Shadows = false;
+			measure.GetSettings().InternalRenderScale = 2;
+			measure.Render(scene, camera, output.Framebuffer);
+			REQUIRE(measure.GetStats().EffectiveRenderScale == 2);
+			capacity = measure.GetStats().EffectOwnedBytes;
+			REQUIRE(capacity > 0);
+		}
+		SceneRenderer renderer(graphics, assets, nullptr, nullptr, nullptr, capacity);
+		REQUIRE(renderer.Initialize());
+		auto& settings = renderer.GetSettings();
+		settings.GIEnabled = settings.Shadows = false;
+		settings.AntiAliasing = AntiAliasingMode::Spatial;
+		renderer.Render(scene, camera, output.Framebuffer);
+		REQUIRE(renderer.GetStats().EffectiveAA == AntiAliasingMode::Spatial);
+		REQUIRE(renderer.GetStats().EffectOwnedBytes > 0);
+		settings.AntiAliasing = AntiAliasingMode::Off;
+		settings.InternalRenderScale = 2;
+		for (uint32_t frame = 0; frame < 2; ++frame)
+		{
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(renderer.GetStats().EffectiveRenderScale == 2);
+			CHECK(renderer.GetStats().ScaleFallbackReason.empty());
+			CHECK(renderer.GetStats().EffectOwnedBytes == capacity);
+			CHECK(renderer.GetStats().EffectPeakBytes <= capacity);
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("SceneRenderer: resized spatial AA retires before supersampling reserves the final affordable budget")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		AssetManager assets;
+		Scene scene("SupersampleSpatialResize");
+		BuildTestScene(scene, assets);
+		auto output = CreateOutput(graphics.GetDevice(), 33, 25);
+		auto larger = CreateOutput(graphics.GetDevice(), 256, 256);
+		auto camera = CameraView::LookAt({0, 2, 4}, {0, 0.5f, 0}, glm::radians(60.0f), 33.0f / 25);
+		uint64_t finalBytes = 0, smallSpatialBytes = 0, oldSpatialBytes = 0;
+		{
+			SceneRenderer measure(graphics, assets);
+			REQUIRE(measure.Initialize());
+			measure.GetSettings().GIEnabled = measure.GetSettings().Shadows = false;
+			measure.GetSettings().AntiAliasing = AntiAliasingMode::Spatial;
+			measure.Render(scene, camera, output.Framebuffer);
+			smallSpatialBytes = measure.GetStats().EffectOwnedBytes;
+			measure.GetSettings().InternalRenderScale = 2;
+			measure.Render(scene, camera, output.Framebuffer);
+			REQUIRE(measure.GetStats().EffectiveRenderScale == 2);
+			REQUIRE(measure.GetStats().EffectiveAA == AntiAliasingMode::Spatial);
+			finalBytes = measure.GetStats().EffectOwnedBytes;
+			measure.GetSettings().InternalRenderScale = 1;
+			measure.Render(scene, camera, larger.Framebuffer);
+			REQUIRE(measure.GetStats().EffectiveAA == AntiAliasingMode::Spatial);
+			oldSpatialBytes = measure.GetStats().EffectOwnedBytes;
+			REQUIRE(oldSpatialBytes > smallSpatialBytes);
+			REQUIRE(finalBytes > smallSpatialBytes);
+		}
+		const uint64_t capacity = std::max(finalBytes, oldSpatialBytes);
+		// The old Spatial allocation fits alone, but keeping it during target staging cannot fit.
+		REQUIRE(oldSpatialBytes + finalBytes - smallSpatialBytes > capacity);
+		SceneRenderer renderer(graphics, assets, nullptr, nullptr, nullptr, capacity);
+		REQUIRE(renderer.Initialize());
+		auto& settings = renderer.GetSettings();
+		settings.GIEnabled = settings.Shadows = false;
+		settings.AntiAliasing = AntiAliasingMode::Spatial;
+		renderer.Render(scene, camera, larger.Framebuffer);
+		REQUIRE(renderer.GetStats().EffectiveAA == AntiAliasingMode::Spatial);
+		settings.InternalRenderScale = 2;
+		for (uint32_t frame = 0; frame < 2; ++frame)
+		{
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(renderer.GetStats().EffectiveRenderScale == 2);
+			CHECK(renderer.GetStats().EffectiveAA == AntiAliasingMode::Spatial);
+			CHECK(renderer.GetStats().ScaleFallbackReason.empty());
+			CHECK(renderer.GetStats().EffectOwnedBytes == finalBytes);
+			CHECK(renderer.GetStats().EffectPeakBytes <= capacity);
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("SceneRenderer: native text depth failure retires successful supersampling targets and caches native fallback")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		class DepthFailureFactory : public PostEffectResourceFactory
+		{
+		public:
+			bool FailNativeDepth = false;
+			uint32_t SceneBackings = 0, NativeFailures = 0;
+			nvrhi::TextureHandle CreateTexture(nvrhi::IDevice* device, const nvrhi::TextureDesc& desc) override
+			{
+				if (FailNativeDepth && desc.debugName == "NativeTextDepth" && !desc.isVirtual)
+				{
+					++NativeFailures;
+					return nullptr;
+				}
+				auto texture = PostEffectResourceFactory::CreateTexture(device, desc);
+				if (texture && !desc.isVirtual && (desc.debugName == "HDRColor" || desc.debugName == "SceneDepth"))
+					++SceneBackings;
+				return texture;
+			}
+		} factory;
+		AssetManager assets;
+		Scene scene("SupersampleTextFallback");
+		BuildTestScene(scene, assets);
+		auto text = scene.CreateEntity("WorldText");
+		auto& component = text.AddComponent<TextComponent>();
+		component.Text = "Native";
+		component.ScreenSpace = false;
+		component.Size = 0.2f;
+		auto output = CreateOutput(graphics.GetDevice(), 33, 25);
+		auto camera = CameraView::LookAt({0, 2, 4}, {0, 0.5f, 0}, glm::radians(60.0f), 33.0f / 25);
+		for (auto path : {RenderPath::Forward, RenderPath::Deferred, RenderPath::Visibility})
+		{
+			CAPTURE(path);
+			factory.FailNativeDepth = false;
+			factory.SceneBackings = factory.NativeFailures = 0;
+			SceneRenderer renderer(graphics, assets, nullptr, nullptr, &factory);
+			REQUIRE(renderer.Initialize());
+			auto& settings = renderer.GetSettings();
+			settings.GIEnabled = settings.Shadows = false;
+			settings.Path = path;
+			renderer.Render(scene, camera, output.Framebuffer);
+			const auto baseline = ReadbackTexture(graphics.GetDevice(), output.Texture);
+			factory.FailNativeDepth = true;
+			settings.InternalRenderScale = 2;
+			renderer.Render(scene, camera, output.Framebuffer);
+			REQUIRE(factory.SceneBackings == 2);
+			REQUIRE(factory.NativeFailures == 1);
+			CHECK(renderer.GetStats().RequestedRenderScale == 2);
+			CHECK(renderer.GetStats().EffectiveRenderScale == 1);
+			CHECK(renderer.GetStats().EffectivePath == path);
+			CHECK_FALSE(renderer.GetStats().ScaleFallbackReason.empty());
+			CHECK(renderer.GetStats().EffectOwnedBytes == 0);
+			CHECK(renderer.GetStats().EffectPeakBytes > 0);
+			CHECK(renderer.GetStats().InternalWidth == 33);
+			CHECK(renderer.GetStats().InternalHeight == 25);
+			CHECK(renderer.GetStats().NativeDepthPasses == 0);
+			CHECK(Image::MaxChannelDifference(baseline, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
+			const auto attempts = renderer.GetStats().EffectAllocationAttempts;
+			factory.FailNativeDepth = false;
+			for (uint32_t frame = 0; frame < 2; ++frame)
+			{
+				renderer.Render(scene, camera, output.Framebuffer);
+				CHECK(renderer.GetStats().EffectiveRenderScale == 1);
+				CHECK(renderer.GetStats().EffectAllocationAttempts == attempts);
+				CHECK(renderer.GetStats().EffectOwnedBytes == 0);
+			}
+			settings.InternalRenderScale = 1.5f;
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(renderer.GetStats().EffectiveRenderScale == 1.5f);
+			CHECK(renderer.GetStats().NativeDepthPasses == 1);
+			CHECK(renderer.GetStats().ScaleFallbackReason.empty());
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("SceneRenderer: device dimension limits reject supersampling before optional allocations")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		// Non-owning view of the same device; exercise capacity rejection with small real textures.
+		class LimitedGraphicsDevice : public GraphicsDevice
+		{
+		public:
+			explicit LimitedGraphicsDevice(GraphicsDevice& device)
+				: m_Device(device)
+				, m_Info(device.GetInfo())
+			{
+				m_Info.Limits.MaxTextureDimension2D = 33;
+			}
+			nvrhi::IDevice* GetDevice() const override { return m_Device.GetDevice(); }
+			nvrhi::IDevice* GetBackendDevice() const override { return m_Device.GetBackendDevice(); }
+			const GraphicsDeviceInfo& GetInfo() const override { return m_Info; }
+			uint32_t GetValidationErrorCount() const override { return m_Device.GetValidationErrorCount(); }
+			void WaitForIdle() override { m_Device.WaitForIdle(); }
+			void CollectGarbage() override { m_Device.CollectGarbage(); }
+			void* GetNativeInstance() const override { return m_Device.GetNativeInstance(); }
+			void* GetNativePhysicalDevice() const override { return m_Device.GetNativePhysicalDevice(); }
+			void* GetNativeDevice() const override { return m_Device.GetNativeDevice(); }
+			void* GetNativeGraphicsQueue() const override { return m_Device.GetNativeGraphicsQueue(); }
+			uint32_t GetGraphicsQueueFamily() const override { return m_Device.GetGraphicsQueueFamily(); }
+			void* GetVulkanProcAddress(const char* name) const override { return m_Device.GetVulkanProcAddress(name); }
+
+		private:
+			GraphicsDevice& m_Device;
+			GraphicsDeviceInfo m_Info;
+		} limited(graphics);
+		AssetManager assets;
+		Scene scene("SupersampleCapacity");
+		BuildTestScene(scene, assets);
+		SceneRenderer renderer(limited, assets);
+		REQUIRE(renderer.Initialize());
+		auto& settings = renderer.GetSettings();
+		settings.GIEnabled = settings.Shadows = false;
+		auto output = CreateOutput(graphics.GetDevice(), 33, 25);
+		auto camera = CameraView::LookAt({0, 2, 4}, {0, 0.5f, 0}, glm::radians(60.0f), 33.0f / 25);
+		renderer.Render(scene, camera, output.Framebuffer);
+		const auto baseline = ReadbackTexture(graphics.GetDevice(), output.Texture);
+		const auto attempts = renderer.GetStats().EffectAllocationAttempts;
+		settings.InternalRenderScale = 2;
+		for (uint32_t frame = 0; frame < 2; ++frame)
+		{
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(renderer.GetStats().EffectiveRenderScale == 1);
+			CHECK(renderer.GetStats().ScaleFallbackReason == "scene raster dimensions exceed capacity");
+			CHECK(renderer.GetStats().EffectAllocationAttempts == attempts);
+			CHECK(renderer.GetStats().EffectOwnedBytes == 0);
+			CHECK(Image::MaxChannelDifference(baseline, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
 		}
 	}
 	CHECK(graphics.GetValidationErrorCount() == errors);

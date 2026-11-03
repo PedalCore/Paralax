@@ -84,7 +84,42 @@ namespace Paralax::Editor {
 				const auto& device = *stats.ProfilingDevice;
 				profiling["device"] = {{"adapter", device.AdapterName}, {"driver", device.DriverName}, {"backend", "Vulkan/NVRHI"}, {"build", PX_BUILD_CONFIGURATION_NAME}, {"software", device.IsSoftwareRasterizer}, {"validation", device.ValidationEnabled}, {"synchronizationValidation", device.SynchronizationValidation}};
 			}
-			return {{"antiAliasing", {{"requested", AAName(stats.RequestedAA)}, {"effective", AAName(stats.EffectiveAA)}, {"historyValid", stats.AAHistoryValid}, {"completedFrames", stats.AACompletedFrames}, {"sampleIndex", stats.AASampleIndex}, {"resetReason", stats.AAResetReason}, {"fallbackReason", stats.AAFallbackReason}, {"passes", stats.AAPasses}}}, {"requestedRenderScale", stats.RequestedRenderScale}, {"effectiveRenderScale", stats.EffectiveRenderScale}, {"internalSize", {stats.InternalWidth, stats.InternalHeight}}, {"outputSize", {stats.OutputWidth, stats.OutputHeight}}, {"scaleFallbackReason", stats.ScaleFallbackReason}, {"nativeDepthPasses", stats.NativeDepthPasses}, {"upscaler", stats.InternalWidth != stats.OutputWidth || stats.InternalHeight != stats.OutputHeight ? "SpatialBilinearHDR" : "None"}, {"profiling", std::move(profiling)}, {"requestedRenderPath", pathName(stats.RequestedPath)}, {"effectiveRenderPath", pathName(stats.EffectivePath)}, {"renderPathFallbackReason", stats.PathFallbackReason}, {"bloomActive", stats.BloomActive}, {"bloomFallbackReason", stats.BloomFallbackReason}, {"bloomPasses", stats.BloomPasses}, {"ssaoActive", stats.SSAOActive}, {"ssaoFallbackReason", stats.SSAOFallbackReason}, {"ssaoPasses", stats.SSAOPasses}, {"effectOwnedBytes", stats.EffectOwnedBytes}, {"effectPeakBytes", stats.EffectPeakBytes}, {"effectAllocationAttempts", stats.EffectAllocationAttempts}, {"surfaceOwnedBytes", stats.SurfaceOwnedBytes}, {"surfaceAllocationAttempts", stats.SurfaceAllocationAttempts}, {"surfaceResolveDrawCalls", stats.SurfaceResolveDrawCalls}, {"visibilityResolveDrawCalls", stats.VisibilityResolveDrawCalls}, {"visibilityOwnedBytes", stats.VisibilityOwnedBytes}, {"visibilityGeometryBytes", stats.VisibilityGeometryBytes}, {"visibilityAllocationAttempts", stats.VisibilityAllocationAttempts}, {"drawCalls", stats.DrawCalls}, {"shadowDrawCalls", stats.ShadowDrawCalls}, {"triangles", stats.Triangles}, {"culledSubmeshes", stats.CulledSubmeshes}, {"textGlyphs", stats.TextGlyphs}, {"lights", stats.Lights}, {"staticLightingGenerations", stats.StaticLightingGenerations}, {"requestedLocalShadows", stats.RequestedLocalShadows}, {"shadowedLocalLights", stats.ShadowedLocalLights}, {"localShadowLayers", stats.LocalShadowLayers}, {"localShadowCapacity", stats.LocalShadowCapacity}, {"localShadowDrawCalls", stats.LocalShadowDrawCalls}, {"localShadowAllocationAttempts", stats.LocalShadowAllocationAttempts}, {"shadowedLocalLightIDs", std::move(ids)}};
+			return {{"antiAliasing", {{"requested", AAName(stats.RequestedAA)}, {"effective", AAName(stats.EffectiveAA)}, {"historyValid", stats.AAHistoryValid}, {"completedFrames", stats.AACompletedFrames}, {"sampleIndex", stats.AASampleIndex}, {"resetReason", stats.AAResetReason}, {"fallbackReason", stats.AAFallbackReason}, {"passes", stats.AAPasses}}}, {"requestedRenderScale", stats.RequestedRenderScale}, {"effectiveRenderScale", stats.EffectiveRenderScale}, {"internalSize", {stats.InternalWidth, stats.InternalHeight}}, {"outputSize", {stats.OutputWidth, stats.OutputHeight}}, {"scaleFallbackReason", stats.ScaleFallbackReason}, {"nativeDepthPasses", stats.NativeDepthPasses}, {"upscaler", stats.InternalWidth > stats.OutputWidth || stats.InternalHeight > stats.OutputHeight ? "AreaHDR" : stats.InternalWidth != stats.OutputWidth || stats.InternalHeight != stats.OutputHeight ? "SpatialBilinearHDR"
+																																																																																																																																																																																																																													 : "None"},
+					{"profiling", std::move(profiling)},
+					{"requestedRenderPath", pathName(stats.RequestedPath)},
+					{"effectiveRenderPath", pathName(stats.EffectivePath)},
+					{"renderPathFallbackReason", stats.PathFallbackReason},
+					{"bloomActive", stats.BloomActive},
+					{"bloomFallbackReason", stats.BloomFallbackReason},
+					{"bloomPasses", stats.BloomPasses},
+					{"ssaoActive", stats.SSAOActive},
+					{"ssaoFallbackReason", stats.SSAOFallbackReason},
+					{"ssaoPasses", stats.SSAOPasses},
+					{"effectOwnedBytes", stats.EffectOwnedBytes},
+					{"effectPeakBytes", stats.EffectPeakBytes},
+					{"effectAllocationAttempts", stats.EffectAllocationAttempts},
+					{"surfaceOwnedBytes", stats.SurfaceOwnedBytes},
+					{"surfaceAllocationAttempts", stats.SurfaceAllocationAttempts},
+					{"surfaceResolveDrawCalls", stats.SurfaceResolveDrawCalls},
+					{"visibilityResolveDrawCalls", stats.VisibilityResolveDrawCalls},
+					{"visibilityOwnedBytes", stats.VisibilityOwnedBytes},
+					{"visibilityGeometryBytes", stats.VisibilityGeometryBytes},
+					{"visibilityAllocationAttempts", stats.VisibilityAllocationAttempts},
+					{"drawCalls", stats.DrawCalls},
+					{"shadowDrawCalls", stats.ShadowDrawCalls},
+					{"triangles", stats.Triangles},
+					{"culledSubmeshes", stats.CulledSubmeshes},
+					{"textGlyphs", stats.TextGlyphs},
+					{"lights", stats.Lights},
+					{"staticLightingGenerations", stats.StaticLightingGenerations},
+					{"requestedLocalShadows", stats.RequestedLocalShadows},
+					{"shadowedLocalLights", stats.ShadowedLocalLights},
+					{"localShadowLayers", stats.LocalShadowLayers},
+					{"localShadowCapacity", stats.LocalShadowCapacity},
+					{"localShadowDrawCalls", stats.LocalShadowDrawCalls},
+					{"localShadowAllocationAttempts", stats.LocalShadowAllocationAttempts},
+					{"shadowedLocalLightIDs", std::move(ids)}};
 		}
 
 		std::string IdString(UUID id)

@@ -35,6 +35,7 @@ namespace Paralax {
 	{
 		uint64_t MaxStorageBufferBytes = 128u * 1024 * 1024;
 		uint32_t MaxTextureArrayLayers = 256;
+		uint32_t MaxTextureDimension2D = 4096;
 		uint32_t MaxStorageBuffersPerStage = 4;
 		uint32_t MaxStorageBuffersPerSet = 24;
 		uint32_t SubPixelPrecisionBits = 4;

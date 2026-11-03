@@ -145,6 +145,12 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
         check(ambient["stats"]["effectiveRenderPath"] == render_path, "ambient effects changed render path")
         check(ambient["stats"]["internalSize"] == [73, 49] and ambient["stats"]["outputSize"] == [97, 65],
               "render scale did not reach capture raster dimensions")
+        editor.call("render.settings.set", settings={"InternalRenderScale": 2.0})
+        supersampled = editor.call("render.capture", path=str(output / f"Supersampled-{render_path}.png"), width=97, height=65)["stats"]
+        check(supersampled["internalSize"] == [194, 130] and supersampled["outputSize"] == [97, 65]
+              and supersampled["effectiveRenderScale"] == 2.0 and supersampled["upscaler"] == "AreaHDR"
+              and supersampled["effectiveRenderPath"] == render_path and not supersampled["scaleFallbackReason"],
+              f"supersampling did not reach {render_path} capture: {supersampled}")
     editor.call("render.settings.set", settings=ambient_saved)
     ambient_off = editor.call("render.capture", path=str(output / "Ambient-Off.png"), width=97, height=65)
     check(not ambient_off["stats"]["ssaoActive"] and ambient_off["stats"]["effectOwnedBytes"] == 0,

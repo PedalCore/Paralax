@@ -787,3 +787,43 @@ TEST_CASE("TemporalAA: pass counts include only executed opaque reactive and res
 	}
 	CHECK(graphics.GetValidationErrorCount() == errors);
 }
+
+TEST_CASE("TemporalAA: supersampling resize resets history and restores native rendering across paths")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		AssetManager assets;
+		Scene scene("TemporalSupersampling");
+		Cube(scene, assets);
+		SceneRenderer renderer(graphics, assets);
+		REQUIRE(renderer.Initialize());
+		Configure(renderer);
+		auto& settings = renderer.GetSettings();
+		settings.AntiAliasing = AntiAliasingMode::Temporal;
+		auto output = Output(graphics.GetDevice(), 33, 25);
+		auto camera = CameraView::LookAt({0, 0, 3}, {0, 0, 0}, glm::radians(60.0f), 33.0f / 25);
+		uint64_t completed = 0;
+		for (auto path : {RenderPath::Forward, RenderPath::Deferred, RenderPath::Visibility})
+		{
+			settings.Path = path;
+			for (float factor : {1.0f, 1.5f, 2.0f, 1.0f})
+			{
+				settings.InternalRenderScale = factor;
+				renderer.Render(scene, camera, output.Framebuffer);
+				REQUIRE(renderer.GetStats().EffectivePath == path);
+				REQUIRE(renderer.GetStats().EffectiveAA == AntiAliasingMode::Temporal);
+				CHECK(renderer.GetStats().EffectiveRenderScale == factor);
+				CHECK(renderer.GetStats().AACompletedFrames == ++completed);
+				CHECK(renderer.GetStats().AASampleIndex == 0);
+				renderer.Render(scene, camera, output.Framebuffer);
+				CHECK(renderer.GetStats().AACompletedFrames == ++completed);
+				CHECK(renderer.GetStats().AASampleIndex == 1);
+				CHECK(renderer.GetStats().AAFallbackReason.empty());
+			}
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
