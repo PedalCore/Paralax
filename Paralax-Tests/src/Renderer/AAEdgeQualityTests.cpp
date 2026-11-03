@@ -350,7 +350,7 @@ TEST_CASE("AAEdgeQuality: flat low contrast and resolved detail survive while is
 					fixture.ID[index] = value > 0.5f ? 1 : 2;
 				}
 			const size_t bright = 320 * EdgeFixture::Size + 576;
-			fixture.Color[bright] = glm::vec4(temporal ? 64 : 1);
+			fixture.Color[bright] = glm::vec4(temporal ? 64.0f : 1.0f);
 			fixture.Color[bright + 8] = glm::vec4(std::numeric_limits<float>::quiet_NaN());
 			fixture.Reactive[bright] = 1;
 			const auto result = fixture.Run(temporal);
@@ -408,7 +408,7 @@ TEST_CASE("AAEdgeQuality: aligned fractional edges corners and border footprints
 							{
 								const bool inside = (shape == 1 || x <= 8) && (shape == 0 || y <= 8);
 								const size_t index = static_cast<size_t>(y) * 17 + x;
-								fixture.Color[index] = glm::vec4(inside != inverted ? 1 : 0);
+								fixture.Color[index] = glm::vec4(inside != inverted ? 1.0f : 0.0f);
 								fixture.ID[index] = inside ? 1 : 2;
 							}
 						const auto result = fixture.Run(temporal);
@@ -441,7 +441,7 @@ TEST_CASE("AAEdgeQuality: fine checker coverage is phase symmetric and does not 
 			{
 				const size_t index = static_cast<size_t>(y) * 17 + x;
 				const bool white = ((x + y) & 1) != 0;
-				fixture.Color[index] = glm::vec4(white ? 1 : 0);
+				fixture.Color[index] = glm::vec4(white ? 1.0f : 0.0f);
 				fixture.ID[index] = white ? 1 : 2;
 			}
 		for (float phase : {-0.25f, 0.25f})
@@ -475,10 +475,10 @@ TEST_CASE("AAEdgeQuality: isolated bright and dark texels and short blocks retai
 				for (bool inverted : {false, true})
 					for (float phase : {-0.25f, 0.0f, 0.25f})
 					{
-						fixture.Color.assign(17 * 17, glm::vec4(inverted ? 1 : 0));
+						fixture.Color.assign(17 * 17, glm::vec4(inverted ? 1.0f : 0.0f));
 						for (int y = 8; y < 8 + extent.y; ++y)
 							for (int x = 8; x < 8 + extent.x; ++x)
-								fixture.Color[y * 17 + x] = glm::vec4(inverted ? 0 : 1);
+								fixture.Color[y * 17 + x] = glm::vec4(inverted ? 0.0f : 1.0f);
 						fixture.ID.assign(17 * 17, 1);
 						for (int y = 8; y < 8 + extent.y; ++y)
 							for (int x = 8; x < 8 + extent.x; ++x)
@@ -519,7 +519,7 @@ TEST_CASE("AAEdgeQuality: reconstruction beyond a homogeneous footprint rejects 
 			{
 				const size_t index = static_cast<size_t>(y) * 17 + x;
 				const bool inside = double(y) >= 0.25 * x + 6.25;
-				fixture.Color[index] = fixture.History[index] = glm::vec4(inside ? 1 : 0);
+				fixture.Color[index] = fixture.History[index] = glm::vec4(inside ? 1.0f : 0.0f);
 				fixture.ID[index] = fixture.HistoryID[index] = inside ? 1 : 2;
 				fixture.PreviousUV[index] = {(float(x) + 0.5f) / 17, (float(y) + 0.5f) / 17};
 			}
