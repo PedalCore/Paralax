@@ -479,6 +479,7 @@ namespace Paralax {
 		// vkCreateDebugUtilsMessengerEXT below, which requires its own pNext to be null, so it ends the chain.
 		validationFeatures.pNext = useMessenger ? &messengerInfo : nullptr;
 		m_Info.SynchronizationValidation = synchronizationValidation;
+		m_Info.ValidationEnabled = specification.EnableValidation;
 
 		VkInstanceCreateInfo createInfo = MakeVkStruct<VkInstanceCreateInfo>(VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO);
 		// The messenger in the chain also captures messages from instance creation itself.
@@ -614,10 +615,13 @@ namespace Paralax {
 				m_PhysicalDevice = device;
 				m_GraphicsQueueFamily = static_cast<uint32_t>(graphicsFamily);
 				m_Info.AdapterName = props.deviceName;
+				m_Info.GraphicsTimestampValidBits = families[m_GraphicsQueueFamily].timestampValidBits;
+				m_Info.TimestampPeriodNanoseconds = props.limits.timestampPeriod;
 				m_Info.Limits.MaxStorageBufferBytes = props.limits.maxStorageBufferRange;
 				m_Info.Limits.MaxTextureArrayLayers = props.limits.maxImageArrayLayers;
 				m_Info.Limits.MaxStorageBuffersPerStage = props.limits.maxPerStageDescriptorStorageBuffers;
 				m_Info.Limits.MaxStorageBuffersPerSet = props.limits.maxDescriptorSetStorageBuffers;
+				m_Info.Limits.SubPixelPrecisionBits = props.limits.subPixelPrecisionBits;
 				m_Info.VendorID = props.vendorID;
 				m_Info.ApiVersionMajor = VK_API_VERSION_MAJOR(props.apiVersion);
 				m_Info.ApiVersionMinor = VK_API_VERSION_MINOR(props.apiVersion);

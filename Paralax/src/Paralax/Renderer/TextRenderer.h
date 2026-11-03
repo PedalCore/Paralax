@@ -42,6 +42,9 @@ namespace Paralax {
 		// the number of glyphs drawn.
 		uint32_t Render(nvrhi::ICommandList* commandList, Scene& scene, const glm::mat4& viewProjection, nvrhi::IFramebuffer* output, nvrhi::ITexture* depth);
 
+		// Drops cached attachments retaining a depth target before its owner retires/replaces it.
+		void InvalidateDepthFramebuffers(nvrhi::ITexture* depth);
+
 		const FontAtlas* GetAtlas() const { return m_Atlas.get(); }
 
 	private:

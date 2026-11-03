@@ -37,6 +37,24 @@ namespace Paralax::Editor {
 
 	namespace {
 
+		const char* AAName(AntiAliasingMode mode)
+		{
+			switch (mode)
+			{
+				case AntiAliasingMode::Off: return "Off";
+				case AntiAliasingMode::Spatial: return "Spatial";
+				case AntiAliasingMode::Temporal: return "Temporal";
+			}
+			return "Invalid";
+		}
+
+		json ViewportAAJson(SceneRenderer& renderer)
+		{
+			const auto& history = renderer.GetDefaultTemporalHistory();
+			const auto& state = history.GetState();
+			return {{"requested", AAName(renderer.GetSettings().AntiAliasing)}, {"effective", AAName(history.GetEffectiveMode())}, {"historyValid", state.IsValid()}, {"completedFrames", state.GetCompletedFrames()}, {"sampleIndex", state.GetSampleIndex()}, {"resetReason", state.GetResetReason()}, {"fallbackReason", history.GetRenderFallbackReason()}, {"temporalOwnedBytes", history.GetOwnedBytes()}, {"passes", history.GetPassCount()}};
+		}
+
 		json RenderStatsJson(const SceneRenderStats& stats)
 		{
 			json ids = json::array();
@@ -51,30 +69,22 @@ namespace Paralax::Editor {
 				}
 				return "Invalid";
 			};
-			return {{"requestedRenderPath", pathName(stats.RequestedPath)},
-					{"effectiveRenderPath", pathName(stats.EffectivePath)},
-					{"renderPathFallbackReason", stats.PathFallbackReason},
-					{"surfaceOwnedBytes", stats.SurfaceOwnedBytes},
-					{"surfaceAllocationAttempts", stats.SurfaceAllocationAttempts},
-					{"surfaceResolveDrawCalls", stats.SurfaceResolveDrawCalls},
-					{"visibilityResolveDrawCalls", stats.VisibilityResolveDrawCalls},
-					{"visibilityOwnedBytes", stats.VisibilityOwnedBytes},
-					{"visibilityGeometryBytes", stats.VisibilityGeometryBytes},
-					{"visibilityAllocationAttempts", stats.VisibilityAllocationAttempts},
-					{"drawCalls", stats.DrawCalls},
-					{"shadowDrawCalls", stats.ShadowDrawCalls},
-					{"triangles", stats.Triangles},
-					{"culledSubmeshes", stats.CulledSubmeshes},
-					{"textGlyphs", stats.TextGlyphs},
-					{"lights", stats.Lights},
-					{"staticLightingGenerations", stats.StaticLightingGenerations},
-					{"requestedLocalShadows", stats.RequestedLocalShadows},
-					{"shadowedLocalLights", stats.ShadowedLocalLights},
-					{"localShadowLayers", stats.LocalShadowLayers},
-					{"localShadowCapacity", stats.LocalShadowCapacity},
-					{"localShadowDrawCalls", stats.LocalShadowDrawCalls},
-					{"localShadowAllocationAttempts", stats.LocalShadowAllocationAttempts},
-					{"shadowedLocalLightIDs", std::move(ids)}};
+			json profiling = {{"enabled", stats.ProfilingEnabled}, {"status", stats.GPUProfilingStatus}, {"pending", stats.GPUProfilingPending}, {"skipped", stats.GPUProfilingSkipped}, {"invalidSamples", stats.GPUProfilingInvalid}, {"lastResult", stats.GPUProfilingLastResult}, {"cpuRenderMs", stats.CPURenderMilliseconds ? json(*stats.CPURenderMilliseconds) : json(nullptr)}, {"gpu", nullptr}, {"device", nullptr}};
+			if (stats.GPUTiming)
+			{
+				const auto& sample = *stats.GPUTiming;
+				const auto& context = sample.Context;
+				json sections = json::object();
+				for (size_t i = 0; i < sample.Milliseconds.size(); ++i)
+					sections[RenderProfiler::GetSectionName(static_cast<RenderTimingSection>(i))] = sample.Milliseconds[i] ? json(*sample.Milliseconds[i]) : json(nullptr);
+				profiling["gpu"] = {{"frame", context.Frame}, {"internalSize", {context.InternalWidth, context.InternalHeight}}, {"outputSize", {context.OutputWidth, context.OutputHeight}}, {"requestedRenderPath", pathName(static_cast<RenderPath>(context.RequestedPath))}, {"effectiveRenderPath", pathName(static_cast<RenderPath>(context.EffectivePath))}, {"ssaoActive", context.AmbientOcclusionActive}, {"bloomActive", context.BloomActive}, {"effectiveAA", AAName(static_cast<AntiAliasingMode>(context.EffectiveAA))}, {"settings", json::parse(context.Settings, nullptr, false)}, {"milliseconds", std::move(sections)}, {"scope", "SceneRenderer commands; excludes presentation. Scene includes AO; do not sum nested sections."}};
+			}
+			if (stats.ProfilingDevice)
+			{
+				const auto& device = *stats.ProfilingDevice;
+				profiling["device"] = {{"adapter", device.AdapterName}, {"driver", device.DriverName}, {"backend", "Vulkan/NVRHI"}, {"build", PX_BUILD_CONFIGURATION_NAME}, {"software", device.IsSoftwareRasterizer}, {"validation", device.ValidationEnabled}, {"synchronizationValidation", device.SynchronizationValidation}};
+			}
+			return {{"antiAliasing", {{"requested", AAName(stats.RequestedAA)}, {"effective", AAName(stats.EffectiveAA)}, {"historyValid", stats.AAHistoryValid}, {"completedFrames", stats.AACompletedFrames}, {"sampleIndex", stats.AASampleIndex}, {"resetReason", stats.AAResetReason}, {"fallbackReason", stats.AAFallbackReason}, {"passes", stats.AAPasses}}}, {"requestedRenderScale", stats.RequestedRenderScale}, {"effectiveRenderScale", stats.EffectiveRenderScale}, {"internalSize", {stats.InternalWidth, stats.InternalHeight}}, {"outputSize", {stats.OutputWidth, stats.OutputHeight}}, {"scaleFallbackReason", stats.ScaleFallbackReason}, {"nativeDepthPasses", stats.NativeDepthPasses}, {"upscaler", stats.InternalWidth != stats.OutputWidth || stats.InternalHeight != stats.OutputHeight ? "SpatialBilinearHDR" : "None"}, {"profiling", std::move(profiling)}, {"requestedRenderPath", pathName(stats.RequestedPath)}, {"effectiveRenderPath", pathName(stats.EffectivePath)}, {"renderPathFallbackReason", stats.PathFallbackReason}, {"bloomActive", stats.BloomActive}, {"bloomFallbackReason", stats.BloomFallbackReason}, {"bloomPasses", stats.BloomPasses}, {"ssaoActive", stats.SSAOActive}, {"ssaoFallbackReason", stats.SSAOFallbackReason}, {"ssaoPasses", stats.SSAOPasses}, {"effectOwnedBytes", stats.EffectOwnedBytes}, {"effectPeakBytes", stats.EffectPeakBytes}, {"effectAllocationAttempts", stats.EffectAllocationAttempts}, {"surfaceOwnedBytes", stats.SurfaceOwnedBytes}, {"surfaceAllocationAttempts", stats.SurfaceAllocationAttempts}, {"surfaceResolveDrawCalls", stats.SurfaceResolveDrawCalls}, {"visibilityResolveDrawCalls", stats.VisibilityResolveDrawCalls}, {"visibilityOwnedBytes", stats.VisibilityOwnedBytes}, {"visibilityGeometryBytes", stats.VisibilityGeometryBytes}, {"visibilityAllocationAttempts", stats.VisibilityAllocationAttempts}, {"drawCalls", stats.DrawCalls}, {"shadowDrawCalls", stats.ShadowDrawCalls}, {"triangles", stats.Triangles}, {"culledSubmeshes", stats.CulledSubmeshes}, {"textGlyphs", stats.TextGlyphs}, {"lights", stats.Lights}, {"staticLightingGenerations", stats.StaticLightingGenerations}, {"requestedLocalShadows", stats.RequestedLocalShadows}, {"shadowedLocalLights", stats.ShadowedLocalLights}, {"localShadowLayers", stats.LocalShadowLayers}, {"localShadowCapacity", stats.LocalShadowCapacity}, {"localShadowDrawCalls", stats.LocalShadowDrawCalls}, {"localShadowAllocationAttempts", stats.LocalShadowAllocationAttempts}, {"shadowedLocalLightIDs", std::move(ids)}};
 		}
 
 		std::string IdString(UUID id)
@@ -200,6 +210,8 @@ namespace Paralax::Editor {
 							   if (glm::length(*target - *position) < 1e-3f)
 								   return CommandResult::Fail("position and target must differ");
 							   m_Camera.LookAt(*position, *target);
+							   if (m_Renderer)
+								   m_Renderer->GetDefaultTemporalHistory().GetState().Reset("camera cut");
 							   return CommandResult::Ok(describeCamera());
 						   }});
 
@@ -244,6 +256,16 @@ namespace Paralax::Editor {
 							   m_GizmoOperation = operation;
 							   m_GizmoWorldSpace = world;
 							   return CommandResult::Ok(describeGizmo());
+						   }});
+
+		commands.Register({"render.aa.state", "Temporal history state for the viewport, independent of captures.", {}, false, [this](EditorContext&, const json&) {
+							   return m_Renderer ? CommandResult::Ok(ViewportAAJson(*m_Renderer)) : CommandResult::Fail("The renderer is not available");
+						   }});
+		commands.Register({"render.aa.reset", "Invalidates viewport temporal history and restarts its deterministic sample sequence.", {}, false, [this](EditorContext&, const json&) {
+							   if (!m_Renderer)
+								   return CommandResult::Fail("The renderer is not available");
+							   m_Renderer->GetDefaultTemporalHistory().GetState().Reset("explicit reset");
+							   return CommandResult::Ok(ViewportAAJson(*m_Renderer));
 						   }});
 
 		commands.Register({"render.settings.get", "The renderer settings (exposure, tonemapper, shadows, sky intensity, experimental GI, debug view).", {}, false, [this](EditorContext&, const json&) {
@@ -424,6 +446,19 @@ namespace Paralax::Editor {
 		if (!m_Renderer)
 			return CommandResult::Fail("The renderer is not available");
 
+		if (params.contains("temporalFrames") && (params["temporalFrames"] < 1 || params["temporalFrames"] > 64))
+			return CommandResult::Fail("temporalFrames must be 1..64");
+		const auto temporalFrames = params.value("temporalFrames", int64_t(1));
+		if (temporalFrames > 1)
+		{
+			if (m_Renderer->GetSettings().AntiAliasing != AntiAliasingMode::Temporal)
+				return CommandResult::Fail("Multiple temporalFrames require Temporal AA");
+			if (m_Context.IsPlaying() && !m_Context.IsPaused())
+				return CommandResult::Fail("Pause play mode before temporal capture accumulation");
+			if (m_Renderer->GetSettings().GIEnabled && !m_Renderer->GetSettings().GIFreeze)
+				return CommandResult::Fail("Temporal capture accumulation requires frozen or disabled GI");
+		}
+
 		uint32_t warmup = 0;
 		if (params.contains("giWarmupFrames"))
 		{
@@ -467,23 +502,29 @@ namespace Paralax::Editor {
 			return CommandResult::Fail("camera must be \"scene\" or \"editor\"");
 		}
 
+		auto captureHistory = m_Renderer->CreateTemporalHistory();
 		if (warmup > 0)
 		{
+			auto warmupHistory = m_Renderer->CreateTemporalHistory();
 			const uint32_t before = m_Renderer->GetGIState().Updates;
 			if (!m_Renderer->QueueGIUpdates(warmup))
 				return CommandResult::Fail("Could not queue GI warmup updates");
+			const auto savedAA = m_Renderer->GetSettings().AntiAliasing;
+			m_Renderer->GetSettings().AntiAliasing = AntiAliasingMode::Off;
 			for (uint32_t frame = 0; frame < warmup; ++frame)
 			{
-				m_Renderer->Render(scene, view, framebuffer);
+				m_Renderer->Render(scene, view, framebuffer, nullptr, warmupHistory.get());
 				auto& graphics = Application::Get().GetGraphicsDevice();
 				graphics.WaitForIdle();
 				graphics.CollectGarbage();
 			}
+			m_Renderer->GetSettings().AntiAliasing = savedAA;
 			const GIState after = m_Renderer->GetGIState();
 			if (after.Queued != 0 || after.Updates != before + warmup)
 				return CommandResult::Fail("GI did not complete warmup; inspect render.gi.state");
 		}
-		m_Renderer->Render(scene, view, framebuffer);
+		for (int64_t frame = 0; frame < temporalFrames; ++frame)
+			m_Renderer->Render(scene, view, framebuffer, nullptr, captureHistory.get());
 		Image image = ReadbackTexture(device, texture);
 		std::error_code error;
 		std::filesystem::create_directories(path->parent_path(), error);
@@ -618,6 +659,8 @@ namespace Paralax::Editor {
 	{
 		const AABB bounds = ComputeFocusBounds(m_Context.GetActiveScene(), m_Context.GetAssets(), entity);
 		m_Camera.Focus(bounds.GetCenter(), glm::length(bounds.GetExtents()));
+		if (m_Renderer)
+			m_Renderer->GetDefaultTemporalHistory().GetState().Reset("camera cut");
 	}
 
 	void EditorLayer::PickEntity(float u, float v)
@@ -893,7 +936,14 @@ namespace Paralax::Editor {
 		if (m_Renderer)
 		{
 			const SceneRenderStats& stats = m_Renderer->GetStats();
-			ImGui::Text("Frame: %.2f ms", static_cast<double>(m_FrameTime));
+			ImGui::Text("Frame timestep: %.2f ms", static_cast<double>(m_FrameTime));
+			const auto& timingStats = m_Renderer->GetStats();
+			if (timingStats.CPURenderMilliseconds)
+				ImGui::Text("CPU Render: %.2f ms", *timingStats.CPURenderMilliseconds);
+			if (timingStats.ProfilingEnabled && timingStats.GPUTiming && timingStats.GPUTiming->Milliseconds[0])
+				ImGui::Text("GPU Render: %.2f ms (frame %llu)", *timingStats.GPUTiming->Milliseconds[0], static_cast<unsigned long long>(timingStats.GPUTiming->Context.Frame));
+			if (timingStats.ProfilingEnabled)
+				ImGui::Text("GPU timing: %s", timingStats.GPUProfilingStatus.c_str());
 			ImGui::Text("Draw calls: %u (+%u shadow)", stats.DrawCalls, stats.ShadowDrawCalls);
 			ImGui::Text("Triangles: %llu", static_cast<unsigned long long>(stats.Triangles));
 			ImGui::Text("Culled submeshes: %u", stats.CulledSubmeshes);

@@ -77,6 +77,7 @@ TEST_CASE("GraphicsDevice: creates a headless Vulkan 1.3 device and reports adap
 	CHECK_FALSE(info.AdapterName.empty());
 	CHECK(info.ApiVersionMajor == 1);
 	CHECK(info.ApiVersionMinor >= 3);
+	CHECK(info.Limits.SubPixelPrecisionBits >= 4);
 	CHECK(device->GetNativeDevice() != nullptr);
 	CHECK(device->GetVulkanProcAddress("vkQueueSubmit") != nullptr);
 	CHECK(device->GetValidationErrorCount() == 0);

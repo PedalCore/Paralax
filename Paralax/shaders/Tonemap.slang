@@ -6,11 +6,14 @@ struct TonemapConstants
 {
 	float Exposure;
 	uint Operator; // 0 AgX, 1 ACES (fitted), 2 none (clamp), 3 raw diagnostic (no dither)
-	float2 Padding;
+	float BloomIntensity;
+	float Upscale;
 };
 [[vk::push_constant]] ConstantBuffer<TonemapConstants> g_Tonemap;
 
 Texture2D<float4> g_HDR : register(t0);
+Texture2D<float4> g_Bloom : register(t1);
+SamplerState g_LinearClamp : register(s1);
 SamplerState g_PointClamp : register(s0);
 
 // AgX (Troy Sobotka) via the polynomial fit by Benjamin Wrensch.
@@ -24,9 +27,9 @@ float3 AgXContrast(float3 x)
 float3 AgX(float3 color)
 {
 	const float3x3 inset = float3x3(0.842479062253094, 0.0423282422610123, 0.0423756549057051, 0.0784335999999992, 0.878468636469772,
-		0.0784336, 0.0792237451477643, 0.0791661274605434, 0.879142973793104);
+									0.0784336, 0.0792237451477643, 0.0791661274605434, 0.879142973793104);
 	const float3x3 outset = float3x3(1.19687900512017, -0.0528968517574562, -0.0529716355144438, -0.0980208811401368, 1.15190312990417,
-		-0.0980434501171241, -0.0990297440797205, -0.0989611768448433, 1.15107367264116);
+									 -0.0980434501171241, -0.0990297440797205, -0.0989611768448433, 1.15107367264116);
 	const float minEv = -12.47393;
 	const float maxEv = 4.026069;
 
@@ -54,25 +57,28 @@ float3 ACESFitted(float3 color)
 	return saturate(mul(output, a / b));
 }
 
-[shader("vertex")]
-FullscreenVertex TonemapVS(uint vertexID: SV_VertexID)
-{
+[shader("vertex")] FullscreenVertex TonemapVS(uint vertexID : SV_VertexID) {
 	return MakeFullscreenVertex(vertexID);
 }
 
-[shader("fragment")]
-float4 TonemapPS(FullscreenVertex input) : SV_Target
+	[shader("fragment")] float4 TonemapPS(FullscreenVertex input)
+	: SV_Target
 {
-	float3 hdr = g_HDR.SampleLevel(g_PointClamp, input.UV, 0.0).rgb * g_Tonemap.Exposure;
-	if (g_Tonemap.Operator == 3)
+	float3 hdr = g_Tonemap.Upscale > 0.5 ? g_HDR.SampleLevel(g_LinearClamp, input.UV, 0.0).rgb * g_Tonemap.Exposure : g_HDR.SampleLevel(g_PointClamp, input.UV, 0.0).rgb * g_Tonemap.Exposure;
+	if (g_Tonemap.BloomIntensity > 0)
+		hdr += g_Bloom.SampleLevel(g_LinearClamp, input.UV, 0).rgb * g_Tonemap.BloomIntensity * g_Tonemap.Exposure;
+	if ((g_Tonemap.Operator & 0xffu) == 3)
 		return float4(hdr, 1.0);
 	float3 color;
-	if (g_Tonemap.Operator == 0)
+	if ((g_Tonemap.Operator & 0xffu) == 0)
 		color = AgX(hdr);
-	else if (g_Tonemap.Operator == 1)
+	else if ((g_Tonemap.Operator & 0xffu) == 1)
 		color = ACESFitted(hdr);
 	else
 		color = saturate(hdr);
+
+	if ((g_Tonemap.Operator & 0x100u) != 0)
+		return float4(color, 1);
 
 	// Dither of about one 8-bit step in the *encoded* (sRGB) domain, converted to linear: d(linear)/d(encoded) is
 	// roughly 2.2 * encoded^1.2, so darks (where banding is most visible) get proportionally less linear noise.

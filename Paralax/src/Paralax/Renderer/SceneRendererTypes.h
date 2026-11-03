@@ -32,9 +32,11 @@ namespace Paralax::GPU {
 		uint32_t DebugView;
 		float CascadeBlend;
 		float CascadeNear;
-		glm::vec4 Diagnostics; // x: include environment specular
+		glm::vec4 Diagnostics;   // x: include environment specular
+		glm::vec4 AmbientFill;   // rgb color, w intensity
+		glm::vec4 ScreenEffects; // x: screen AO enabled
 	};
-	static_assert(sizeof(ViewConstants) == 4 * 64 + 3 * 16 + MaxCascades * 64 + 4 * 16 + 48, "ViewConstants layout mismatch");
+	static_assert(sizeof(ViewConstants) == 4 * 64 + 3 * 16 + MaxCascades * 64 + 4 * 16 + 80, "ViewConstants layout mismatch");
 
 	struct Light
 	{
@@ -96,7 +98,8 @@ namespace Paralax::GPU {
 	{
 		float Exposure;
 		uint32_t Operator;
-		glm::vec2 Padding;
+		float BloomIntensity;
+		float Upscale;
 	};
 
 }

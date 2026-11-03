@@ -150,6 +150,11 @@ namespace Paralax {
 		return entry.Framebuffer;
 	}
 
+	void TextRenderer::InvalidateDepthFramebuffers(nvrhi::ITexture* depth)
+	{
+		std::erase_if(m_DepthFramebuffers, [&](const DepthFramebuffer& entry) { return entry.Depth == depth; });
+	}
+
 	uint32_t TextRenderer::Render(nvrhi::ICommandList* commandList, Scene& scene, const glm::mat4& viewProjection, nvrhi::IFramebuffer* output, nvrhi::ITexture* depth)
 	{
 		PX_CORE_VERIFY(m_Atlas && commandList && output, "TextRenderer::Render needs Initialize, an open command list and an output");

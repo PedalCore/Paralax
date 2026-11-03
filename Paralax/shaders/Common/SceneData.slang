@@ -48,6 +48,10 @@ public
 	float CascadeNear; // First cascade start in view space.
 public
 	float4 Diagnostics; // x: include environment specular
+public
+	float4 AmbientFill; // rgb color, w intensity
+public
+	float4 ScreenEffects; // x: screen AO enabled
 };
 
 // Point and spot lights. Type: 0 = point, 1 = spot.

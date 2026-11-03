@@ -37,6 +37,7 @@ namespace Paralax {
 		uint32_t MaxTextureArrayLayers = 256;
 		uint32_t MaxStorageBuffersPerStage = 4;
 		uint32_t MaxStorageBuffersPerSet = 24;
+		uint32_t SubPixelPrecisionBits = 4;
 	};
 
 	struct GraphicsDeviceInfo
@@ -48,6 +49,9 @@ namespace Paralax {
 		uint32_t ApiVersionMajor = 0;
 		uint32_t ApiVersionMinor = 0;
 		bool IsSoftwareRasterizer = false;
+		bool ValidationEnabled = false;
+		uint32_t GraphicsTimestampValidBits = 0;
+		float TimestampPeriodNanoseconds = 0;
 		// The Khronos layer's synchronization validation is active (see GraphicsDeviceSpecification).
 		bool SynchronizationValidation = false;
 		bool SupportsRayQuery = false;

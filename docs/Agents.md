@@ -94,6 +94,8 @@ windowed one.
      Each message keeps at most 17 KiB of its text, room for a script's line or error (which keeps 16 KiB, see
      [Scripting.md](Scripting.md)) with what the editor says around it; a longer one is cut there and ends in
      `... (N bytes)`, giving its full size.
+   - `render.aa.state`: reports the viewport's requested/effective AA mode, temporal validity, completed frames, next sample index, reset/fallback reasons, owned temporal bytes and last pass count. Captures have independent owners.
+   - `render.aa.reset`: invalidates viewport history and restarts its deterministic sample sequence; returns the same state.
    - `render.capture { path }` saves what the scene's primary camera sees as a PNG (a project-relative path; MCP
      returns the image), at 1280 x 720 unless `width` and `height` say otherwise (16 to 8192 each). With
      `camera: "editor"` it renders through the editor camera instead, so `editor.camera.set { position, target }`
@@ -266,6 +268,22 @@ Point and spot lights now cast raster shadows when their `CastShadows` is true a
 Imported lights retain their authored flags; enable `PointLight.CastShadows` or `SpotLight.CastShadows` through
 `component.set` for an existing import. Mesh `CastShadows: false` disables its casting; opaque and alpha-cutout
 materials cast from either side, while blended materials do not cast. POM affects shading, not shadow geometry.
+
+`ProfilingEnabled` (default false) records CPU `SceneRenderer::Render` duration separately from simulation timestep and nonblocking GPU timestamps. `render.stats.profiling` reports current CPU milliseconds, GPU status/pending/skipped/invalid counts, the latest completed sample's frame/settings/internal/output dimensions and per-section milliseconds (including `antiAliasing`), plus GPU/driver/backend/build/validation metadata. Missing measurements are null, never fabricated zeros. GPU total includes this renderer's recorded commands and excludes presentation/frame pacing; `sceneIncludingAO` contains `ambientOcclusion`, so do not sum nested sections. Timestamps use a bounded query ring with submission-completion checks; a full ring skips samples. Profiling adds pass-boundary overhead, particularly on tile GPUs. Software Vulkan validates instrumentation only. A 16 ms target needs Release measurements on identified hardware, with warmup and capture/readback excluded; no hardware 16 ms result has been established.
+
+Optional screen-space diffuse occlusion is controlled by `SSAOEnabled` (default false), `SSAORadius` (0.01–10 metres, default0.5), `SSAOBias` (0–0.25 of radius, default0.02), `SSAOStrength` (0–4, default 1), and `SSAOQuality` (`Low`/`Medium`/`High`,8/16/32 fixed samples). Strength0 bypasses allocation. All three render paths support it; Forward uses a material-aware guide prepass. Half-resolution sampling and depth/normal filtering preserve explicit coverage, including signed orthographic and exact far-plane depths. It modulates environment/probe diffuse and explicit fill, leaving direct lighting, authored material AO/specular occlusion and emission intact. Blended surfaces do not receive screen AO. Missing offscreen occluders and UV-only POM depth are limitations. `DebugView: "AmbientOcclusion"` isolates the factor.
+
+`AmbientFillColor` (linear RGB 0–1, default white) and `AmbientFillIntensity` (0–8, default 0) add explicit artistic diffuse fill, independent of GI and environment intensity. Fill respects albedo, metallic diffuse response, authored AO and optional screen AO. `DebugView: "AmbientFill"` isolates it. Zero preserves the prior lighting expression.
+
+`AntiAliasing` selects `Off` (default), `Spatial`, or `Temporal`. Temporal resolves unexposed internal HDR before bloom, using previous rigid transforms and per-surface depth/normal/identity checks. Same-surface YCoCg neighborhood bounds constrain history, and luminance disagreement reduces its weight. `AAHistoryWeight` is 0–0.95 (default 0.9). Rotations, deformation/version changes, mixed silhouettes and transparency conservatively reject history; silhouette reconstruction is spatial bilinear, so temporal edge stability is limited. Sky uses current color only. Spatial AA filters native linear LDR after HDR upscale and tonemapping, then dithers. Text/UI remain outside both modes; world text follows scene jitter for coherent depth testing and may show subpixel jitter. `render.stats.antiAliasing` reports that render's effective mode and history diagnostics. `render.aa.state` and `render.aa.reset` refer specifically to the viewport.
+
+`render.capture temporalFrames` (1–64, default 1) creates fresh temporal history and a deterministic sequence. Counts greater than one require Temporal AA, paused play if playing, and frozen or disabled GI. GI warmup runs first with AA off and a separate owner. Captures do not advance or replace viewport temporal history. Requested Temporal may fall back to Spatial or Off before jitter when capacity/resources are unavailable; inspect the capture's effective mode. An unchanged memory-budget failure retains its fallback; dimensions, draw count or available budget changes trigger a retry. All active and retired view histories share the 512 MiB effect budget.
+
+`InternalRenderScale` (0.5–1, default 1) reduces the scene raster dimensions, rounded to the nearest pixel with a minimum of one. The camera keeps the output aspect ratio. Bilinear linear-HDR upscaling occurs before native-resolution tonemapping and text/UI; this is spatial upscaling. Shadow maps and probe GI do not scale with it. World text uses budgeted native depth reconstructed with nearest sampling; if that allocation fails the scene falls back to native resolution. An unchanged failed request stays at native resolution until scale, output dimensions or the need for world-text depth changes. Stats expose requested/effective scale, internal/output dimensions, upscaler, fallback reason and native-depth pass count. A 0.75 scale shades 56.25% as many scene pixels; total frame-time savings depend on the bottleneck.
+
+`BloomEnabled` (default false), `BloomIntensity` (0–2, default 0), `BloomThreshold` (0–64 scene-linear units, default 1), `BloomSoftKnee` (0–1, default0.5), and `BloomLevels` (1–6, default5) control optional emissive glow. Zero intensity bypasses allocation. A half-resolution HDR pyramid and normalized level weights control spread; bloom is added before exposure/tonemapping, preserving the original HDR source. Diagnostic views and text/UI bypass it. `bloomActive`, `bloomFallbackReason`, and `bloomPasses` report effective behavior. More levels broaden a constant-gain filter; this is an artistic effect, not a physical lens simulation.
+
+`render.stats` reports `ssaoActive`, `ssaoFallbackReason`, `ssaoPasses`, `effectOwnedBytes`, `effectPeakBytes` and `effectAllocationAttempts`. Optional effects share a512MiB peak-live backing-memory budget, including staged and retained resources. Unsupported or failed AO resources produce neutral occlusion and a reason; the chosen render path remains unchanged. Software Vulkan tests establish correctness, not a hardware frame-time claim.
 
 `LocalShadowResolution` is Low (512), Medium (1024, default), or High (2048). `MaxShadowedLocalLights` is 0–16
 (default 4); zero disables local maps. `LocalShadowSoftness` is 0–0.5 metres (default 0.06). Filtering uses
@@ -460,7 +478,7 @@ editor's commands, names and parameters both, so an entry cannot go missing or s
 
 ### Rendering and the viewport
 
-- `render.capture { path: string, width?: integer, height?: integer, camera?: string, giWarmupFrames?: integer }`: renders the scene (the
+- `render.capture { path: string, width?: integer, height?: integer, camera?: string, giWarmupFrames?: integer, temporalFrames?: integer }`: renders the scene (the
   running copy while playing) to a PNG of `width` x `height` pixels (16 to 8192 each, default 1280 x 720). `path`
   must end in `.png`; with a project open it is relative to the project directory and must stay inside it.
   `camera` is `"scene"` (the default: the scene's primary camera, or the editor camera if it has none) or
@@ -477,6 +495,8 @@ editor's commands, names and parameters both, so an entry cannot go missing or s
   `EnvironmentSpecular` controls described in the experimental GI section above.
 - `render.settings.set { settings: object }`: changes some of them, returning them all; nothing changes if any value
   is refused. The settings are the editor's view, not part of the scene, so they are not undoable.
+- `render.aa.state`: reports viewport temporal history and effective AA independently of captures.
+- `render.aa.reset`: invalidates viewport history and restarts its sample sequence.
 - `render.gi.state`: the current GI status and update counters, without rendering: `{ enabled, supported, frozen,
   historyValid, updates, queued, origin, spacing, counts, frame }`.
 - `render.gi.reset`: discards history and returns GI state; the next render fills the entire volume, even when
