@@ -1,5 +1,6 @@
 import Common.Fullscreen;
 import Common.SurfacePacking;
+import Common.EdgeReconstruction;
 
 struct ResolveConstants
 {
@@ -149,6 +150,24 @@ struct ResolvedTargets
 		surface.Depth = depth;
 		surface.PreviousUV = previousUV;
 		surface.PreviousDepth = expectedDepth;
+	}
+	// Reconstruct residual silhouettes from this frame only. Interior material samples
+	// retain temporal accumulation and its detail; the wider color footprint never
+	// authorizes history from another object or a transparent/mixed edge.
+	int2 centerPixel = first + int2(representative & 1, representative >> 1);
+	bool boundary = mixed;
+	[unroll] for (int y = -1; y <= 1; ++y)
+		[unroll] for (int x = -1; x <= 1; ++x)
+			boundary = boundary || !SameSurface(surface, Current(centerPixel + int2(x, y)));
+	if (boundary)
+	{
+		bool reconstructed;
+		float3 currentEdge = ReconstructEdge(g_Current, raster, int2(g_Resolve.Size.xy), 0, reconstructed);
+		if (reconstructed)
+		{
+			color = currentEdge;
+			reactive = true;
+		}
 	}
 	reactive = reactive || mixed;
 	if (!reactive && g_Resolve.JitterHistory.w > 0.5)
