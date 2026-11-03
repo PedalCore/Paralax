@@ -162,8 +162,14 @@ TEST_CASE("TemporalAA: rigid translation records previous unjittered UV and sign
 		const auto previousUV = ReadFloat(graphics.GetDevice(), targets[2].texture, 2);
 		const auto previousDepth = ReadFloat(graphics.GetDevice(), targets[3].texture, 1);
 		const size_t center = 16 * 33 + 16;
-		CHECK(std::abs(previousUV[center * 2] - ((16.5f - jitter.x) / 33 - 0.05f)) < 1e-5f);
-		CHECK(std::abs(previousUV[center * 2 + 1] - (16.5f - jitter.y) / 33) < 1e-5f);
+		// Vulkan viewport coordinates retain SubPixelPrecisionBits fractional bits. Interpolated attributes
+		// may therefore differ from the unsnapped analytic projection by one raster subpixel, not float ULPs.
+		// https://docs.vulkan.org/spec/latest/chapters/vertexpostproc.html#vertexpostproc-viewport
+		const auto subpixelBits = graphics.GetInfo().Limits.SubPixelPrecisionBits;
+		const float pixelTolerance = std::ldexp(1.0f, -static_cast<int>(std::min(subpixelBits, 24u))) + 33e-6f;
+		INFO("raster subpixel bits=", subpixelBits, ", pixel tolerance=", pixelTolerance);
+		CHECK(std::abs(previousUV[center * 2] - ((16.5f - jitter.x) / 33 - 0.05f)) * 33 < pixelTolerance);
+		CHECK(std::abs(previousUV[center * 2 + 1] - (16.5f - jitter.y) / 33) * 33 < pixelTolerance);
 		CHECK(std::abs(previousDepth[center] - 2.5f) < 1e-5f);
 		cube.GetTransform().Rotation = glm::angleAxis(0.2f, glm::vec3(0, 1, 0));
 		renderer.Render(scene, camera, output.Framebuffer);
@@ -232,13 +238,17 @@ TEST_CASE("TemporalAA: combined bloom and scaled rendering retain backing and st
 		settings.BloomEnabled = true;
 		settings.BloomIntensity = 0.2f;
 		settings.BloomThreshold = 0;
-		settings.ProfilingEnabled = true;
 		auto output = Output(graphics.GetDevice(), 33, 25);
 		auto camera = CameraView::LookAt({0, 0, 3}, {0, 0, 0}, glm::radians(60.0f), 33.0f / 25);
 		renderer.Render(scene, camera, output.Framebuffer);
+		graphics.WaitForIdle();
+		settings.ProfilingEnabled = true;
+		INFO("timestamp bits=", graphics.GetInfo().GraphicsTimestampValidBits,
+			 ", period ns=", graphics.GetInfo().TimestampPeriodNanoseconds);
 		const auto owned = renderer.GetStats().EffectOwnedBytes;
 		for (uint32_t frame = 0; frame < 8; ++frame)
 		{
+			const auto previousInvalid = renderer.GetStats().GPUProfilingInvalid;
 			renderer.Render(scene, camera, output.Framebuffer);
 			CHECK(renderer.GetStats().EffectiveAA == AntiAliasingMode::Temporal);
 			CHECK(renderer.GetStats().BloomActive);
@@ -247,11 +257,37 @@ TEST_CASE("TemporalAA: combined bloom and scaled rendering retain backing and st
 			CHECK(renderer.GetStats().StaticLightingGenerations == 0);
 			if (frame > 0 && graphics.GetInfo().GraphicsTimestampValidBits >= 32 && graphics.GetInfo().TimestampPeriodNanoseconds > 0)
 			{
-				REQUIRE(renderer.GetStats().GPUTiming);
-				const auto& sample = *renderer.GetStats().GPUTiming;
-				CHECK(sample.Context.EffectiveAA == static_cast<uint32_t>(AntiAliasingMode::Temporal));
-				REQUIRE(sample.Milliseconds[static_cast<size_t>(RenderTimingSection::AntiAliasing)]);
-				CHECK(std::isfinite(*sample.Milliseconds[static_cast<size_t>(RenderTimingSection::AntiAliasing)]));
+				const auto& stats = renderer.GetStats();
+				INFO("status=", stats.GPUProfilingStatus, ", last=", stats.GPUProfilingLastResult,
+					 ", invalid=", stats.GPUProfilingInvalid, ", pending=", stats.GPUProfilingPending,
+					 ", skipped=", stats.GPUProfilingSkipped, ", completed submissions=", frame);
+				// One unprofiled warmup means the just-waited submission has renderer frame ID frame + 1.
+				const uint64_t retiredFrame = frame + 1;
+				const bool fresh = stats.GPUTiming && stats.GPUTiming->Context.Frame == retiredFrame;
+				CHECK(stats.GPUProfilingInvalid == previousInvalid + (fresh ? 0u : 1u));
+				CHECK(stats.GPUProfilingLastResult == (fresh ? "ready" : "invalid: timestamp interval"));
+				if (stats.GPUTiming)
+				{
+					CHECK(stats.GPUTiming->Context.Frame <= retiredFrame);
+					const auto& sample = *stats.GPUTiming;
+					CHECK(sample.Context.EffectiveAA == static_cast<uint32_t>(AntiAliasingMode::Temporal));
+					CHECK(sample.Context.InternalWidth == 25);
+					CHECK(sample.Context.OutputWidth == 33);
+					CHECK(sample.Context.BloomActive);
+					REQUIRE(sample.Milliseconds[static_cast<size_t>(RenderTimingSection::AntiAliasing)]);
+					CHECK(std::isfinite(*sample.Milliseconds[static_cast<size_t>(RenderTimingSection::AntiAliasing)]));
+					CHECK(*sample.Milliseconds[static_cast<size_t>(RenderTimingSection::AntiAliasing)] >= 0);
+				}
+				else
+				{
+					// Wall-clock scheduling can exceed the bounded timestamp interval even after WaitForIdle.
+					// Accept only the profiler's explicit rejection, never an unexplained absent measurement.
+					CHECK(stats.GPUProfilingInvalid == frame);
+					CHECK(stats.GPUProfilingLastResult == "invalid: timestamp interval");
+					CHECK(stats.GPUProfilingStatus == "pending");
+				}
+				CHECK(stats.GPUProfilingPending == 1);
+				CHECK(stats.GPUProfilingSkipped == 0);
 			}
 			graphics.WaitForIdle();
 		}

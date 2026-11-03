@@ -37,6 +37,7 @@ namespace Paralax {
 		uint32_t MaxTextureArrayLayers = 256;
 		uint32_t MaxStorageBuffersPerStage = 4;
 		uint32_t MaxStorageBuffersPerSet = 24;
+		uint32_t SubPixelPrecisionBits = 4;
 	};
 
 	struct GraphicsDeviceInfo

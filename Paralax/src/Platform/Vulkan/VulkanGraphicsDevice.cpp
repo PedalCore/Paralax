@@ -621,6 +621,7 @@ namespace Paralax {
 				m_Info.Limits.MaxTextureArrayLayers = props.limits.maxImageArrayLayers;
 				m_Info.Limits.MaxStorageBuffersPerStage = props.limits.maxPerStageDescriptorStorageBuffers;
 				m_Info.Limits.MaxStorageBuffersPerSet = props.limits.maxDescriptorSetStorageBuffers;
+				m_Info.Limits.SubPixelPrecisionBits = props.limits.subPixelPrecisionBits;
 				m_Info.VendorID = props.vendorID;
 				m_Info.ApiVersionMajor = VK_API_VERSION_MAJOR(props.apiVersion);
 				m_Info.ApiVersionMinor = VK_API_VERSION_MINOR(props.apiVersion);

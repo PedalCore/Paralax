@@ -2573,9 +2573,27 @@ TEST_CASE("SceneRenderer: optional profiling records completed GPU samples witho
 		CHECK_FALSE(renderer.GetStats().CPURenderMilliseconds);
 		CHECK_FALSE(renderer.GetStats().GPUTiming);
 		settings.ProfilingEnabled = true;
+		INFO("timestamp bits=", graphics.GetInfo().GraphicsTimestampValidBits,
+			 ", period ns=", graphics.GetInfo().TimestampPeriodNanoseconds);
 		for (int frame = 0; frame < 3; ++frame)
 		{
+			const auto previousInvalid = renderer.GetStats().GPUProfilingInvalid;
 			renderer.Render(scene, camera, target.Framebuffer);
+			if (frame > 0 && graphics.GetInfo().GraphicsTimestampValidBits >= 32 && graphics.GetInfo().TimestampPeriodNanoseconds > 0)
+			{
+				const auto& stats = renderer.GetStats();
+				INFO("status=", stats.GPUProfilingStatus, ", last=", stats.GPUProfilingLastResult,
+					 ", invalid=", stats.GPUProfilingInvalid, ", previous invalid=", previousInvalid,
+					 ", pending=", stats.GPUProfilingPending, ", skipped=", stats.GPUProfilingSkipped);
+				const uint64_t retiredFrame = static_cast<uint64_t>(frame + 1);
+				const bool fresh = stats.GPUTiming && stats.GPUTiming->Context.Frame == retiredFrame;
+				CHECK(stats.GPUProfilingInvalid == previousInvalid + (fresh ? 0u : 1u));
+				CHECK(stats.GPUProfilingLastResult == (fresh ? "ready" : "invalid: timestamp interval"));
+				if (stats.GPUTiming)
+					CHECK(stats.GPUTiming->Context.Frame <= retiredFrame);
+				CHECK(stats.GPUProfilingPending == 1);
+				CHECK(stats.GPUProfilingSkipped == 0);
+			}
 			// Tests may retire deterministically; production Render never waits for profiling queries.
 			graphics.WaitForIdle();
 			CHECK(ReadLinearHDR(graphics.GetDevice(), renderer.GetHDRTarget()) == baseline);
@@ -2586,12 +2604,25 @@ TEST_CASE("SceneRenderer: optional profiling records completed GPU samples witho
 		if (graphics.GetInfo().GraphicsTimestampValidBits >= 32 && graphics.GetInfo().TimestampPeriodNanoseconds > 0)
 		{
 			const auto& stats = renderer.GetStats();
-			REQUIRE(stats.GPUTiming);
-			CHECK(stats.GPUTiming->Context.InternalWidth == 33);
-			REQUIRE(stats.GPUTiming->Milliseconds[0]);
-			CHECK(std::isfinite(*stats.GPUTiming->Milliseconds[0]));
-			CHECK(*stats.GPUTiming->Milliseconds[0] >= 0);
-			CHECK_FALSE(stats.GPUTiming->Milliseconds[static_cast<size_t>(RenderTimingSection::AmbientOcclusion)]);
+			INFO("status=", stats.GPUProfilingStatus, ", last=", stats.GPUProfilingLastResult,
+				 ", invalid=", stats.GPUProfilingInvalid, ", pending=", stats.GPUProfilingPending,
+				 ", skipped=", stats.GPUProfilingSkipped);
+			if (stats.GPUTiming)
+			{
+				CHECK(stats.GPUTiming->Context.InternalWidth == 33);
+				REQUIRE(stats.GPUTiming->Milliseconds[0]);
+				CHECK(std::isfinite(*stats.GPUTiming->Milliseconds[0]));
+				CHECK(*stats.GPUTiming->Milliseconds[0] >= 0);
+				CHECK_FALSE(stats.GPUTiming->Milliseconds[static_cast<size_t>(RenderTimingSection::AmbientOcclusion)]);
+			}
+			else
+			{
+				CHECK(stats.GPUProfilingInvalid == 2);
+				CHECK(stats.GPUProfilingLastResult == "invalid: timestamp interval");
+				CHECK(stats.GPUProfilingStatus == "pending");
+			}
+			CHECK(stats.GPUProfilingPending == 1);
+			CHECK(stats.GPUProfilingSkipped == 0);
 			REQUIRE(stats.ProfilingDevice);
 			CHECK(stats.ProfilingDevice->AdapterName == graphics.GetInfo().AdapterName);
 		}
@@ -2659,7 +2690,10 @@ TEST_CASE("SceneRenderer: AO rejects sloped self occlusion and keeps separated f
 		{
 			settings.Path = path;
 			for (const auto& pixel : render())
+			{
+				INFO("path=", static_cast<int>(path), ", AO=", pixel.x, ",", pixel.y, ",", pixel.z);
 				CHECK(pixel == glm::vec3(1));
+			}
 		}
 		auto flat = makePlane(52002, -2, 2, -3, 0);
 		receiver.GetComponent<MeshComponent>().Mesh = flat->Handle;
@@ -2687,7 +2721,10 @@ TEST_CASE("SceneRenderer: AO rejects sloped self occlusion and keeps separated f
 			CHECK(dark > 5);
 			occluder.GetTransform().Translation.z = -6;
 			for (const auto& pixel : render())
+			{
+				INFO("path=", static_cast<int>(path), ", AO=", pixel.x, ",", pixel.y, ",", pixel.z);
 				CHECK(pixel == glm::vec3(1));
+			}
 			occluder.GetTransform().Translation.z = -2.8f;
 		}
 		std::array<uint8_t, 32 * 32 * 4> checks{};

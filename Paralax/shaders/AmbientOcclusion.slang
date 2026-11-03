@@ -155,7 +155,9 @@ float GuideWeight(float depth, float3 normal, float otherDepth, float3 otherNorm
 		return 1;
 	float depth = g_HalfDepth.Load(int3(pixel, 0));
 	float3 normal = DecodeSurfaceNormal(center.xy);
-	float sum = 0, total = 0;
+	// Accumulate the deficit so neutral AO remains exactly one across floating-point backends.
+	precise float obscurance = 0;
+	float total = 0;
 	for (int i = -2; i <= 2; ++i)
 	{
 		int2 tap = pixel + (g_AO.Pass.y < 0.5 ? int2(i, 0) : int2(0, i));
@@ -165,10 +167,10 @@ float GuideWeight(float depth, float3 normal, float otherDepth, float3 otherNorm
 		if (metadata.w < 0.5)
 			continue;
 		float weight = exp(-float(i * i) * 0.5) * GuideWeight(depth, normal, g_HalfDepth.Load(int3(tap, 0)), DecodeSurfaceNormal(metadata.xy));
-		sum += g_InputAO.Load(int3(tap, 0)) * weight;
+		obscurance += (1 - g_InputAO.Load(int3(tap, 0))) * weight;
 		total += weight;
 	}
-	return total > 1e-6 ? sum / total : g_InputAO.Load(int3(pixel, 0));
+	return total > 1e-6 ? saturate(1 - obscurance / total) : g_InputAO.Load(int3(pixel, 0));
 }
 
 [shader("fragment")] float UpsamplePS(float4 position : SV_Position)
@@ -182,7 +184,9 @@ float GuideWeight(float depth, float3 normal, float otherDepth, float3 otherNorm
 	float2 halfPosition = (float2(pixel) + 0.5) * 0.5 - 0.5;
 	int2 origin = int2(floor(halfPosition));
 	float2 fraction = frac(halfPosition);
-	float sum = 0, total = 0;
+	// Accumulate the deficit so neutral AO remains exactly one across floating-point backends.
+	precise float obscurance = 0;
+	float total = 0;
 	[unroll] for (int i = 0; i < 4; ++i)
 	{
 		int2 offset = int2(i & 1, i >> 1);
@@ -192,8 +196,8 @@ float GuideWeight(float depth, float3 normal, float otherDepth, float3 otherNorm
 			continue;
 		float2 bilinear = lerp(1 - fraction, fraction, float2(offset));
 		float weight = bilinear.x * bilinear.y * GuideWeight(depth, normal, g_HalfDepth.Load(int3(tap, 0)), DecodeSurfaceNormal(metadata.xy));
-		sum += g_InputAO.Load(int3(tap, 0)) * weight;
+		obscurance += (1 - g_InputAO.Load(int3(tap, 0))) * weight;
 		total += weight;
 	}
-	return total > 1e-6 ? saturate(sum / total) : 1;
+	return total > 1e-6 ? saturate(1 - obscurance / total) : 1;
 }

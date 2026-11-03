@@ -190,7 +190,9 @@ TEST_CASE("RenderProfiler: pending queries never expire into reuse and ambiguous
 	FakeQueries queries;
 	RenderProfiler profiler(nullptr, 32, 1, &queries);
 	REQUIRE(profiler.BeginFrame(true, nullptr, Context(1), 0));
-	profiler.EndFrame(nullptr, 0);
+	profiler.BeginSection(nullptr, RenderTimingSection::AntiAliasing);
+	profiler.EndSection(nullptr, RenderTimingSection::AntiAliasing);
+	profiler.EndFrame(nullptr, 0, false, false, 2);
 	profiler.Submitted(0);
 	profiler.Poll(100);
 	CHECK(profiler.GetPendingCount() == 1);
@@ -208,13 +210,32 @@ TEST_CASE("RenderProfiler: pending queries never expire into reuse and ambiguous
 	for (float invalid : {-1.0f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()})
 	{
 		REQUIRE(profiler.BeginFrame(true, nullptr, Context(2), 100));
-		profiler.EndFrame(nullptr, 0);
+		profiler.BeginSection(nullptr, RenderTimingSection::AntiAliasing);
+		profiler.EndSection(nullptr, RenderTimingSection::AntiAliasing);
+		profiler.EndFrame(nullptr, 0, false, false, 2);
 		profiler.Submitted(100);
 		queries.Seconds = invalid;
 		queries.CompleteAll();
 		profiler.Poll(100.1);
 		CHECK_FALSE(profiler.GetLatest());
 	}
+	CHECK(profiler.GetInvalidCount() == 4);
+	queries.Seconds = 0.002f;
+	REQUIRE(profiler.BeginFrame(true, nullptr, Context(3), 101));
+	profiler.BeginSection(nullptr, RenderTimingSection::AntiAliasing);
+	profiler.EndSection(nullptr, RenderTimingSection::AntiAliasing);
+	profiler.EndFrame(nullptr, 0, false, false, 2);
+	profiler.Submitted(101);
+	queries.CompleteAll();
+	profiler.Poll(101.1);
+	REQUIRE(profiler.GetLatest());
+	CHECK(profiler.GetLatest()->Context.Frame == 3);
+	CHECK(profiler.GetLatest()->Context.EffectiveAA == 2);
+	REQUIRE(profiler.GetLatest()->Milliseconds[static_cast<size_t>(RenderTimingSection::AntiAliasing)]);
+	CHECK(*profiler.GetLatest()->Milliseconds[static_cast<size_t>(RenderTimingSection::AntiAliasing)] == doctest::Approx(2.0));
+	CHECK(profiler.GetInvalidCount() == 4);
+	CHECK(std::string(profiler.GetLastResultStatus()) == "ready");
+	CHECK(profiler.GetPendingCount() == 0);
 }
 
 TEST_CASE("RenderProfiler: abandoned recordings retain query indices and invalid section order is verified")
@@ -250,14 +271,18 @@ TEST_CASE("RenderProfiler: nested sections wait for every used timer and retain 
 	profiler.BeginSection(nullptr, RenderTimingSection::AmbientOcclusion);
 	profiler.EndSection(nullptr, RenderTimingSection::AmbientOcclusion);
 	profiler.EndSection(nullptr, RenderTimingSection::Scene);
-	profiler.EndFrame(nullptr, 2, true, false);
+	profiler.BeginSection(nullptr, RenderTimingSection::AntiAliasing);
+	profiler.EndSection(nullptr, RenderTimingSection::AntiAliasing);
+	profiler.EndFrame(nullptr, 2, true, false, 2);
 	profiler.Submitted(0);
 	const auto total = static_cast<size_t>(RenderTimingSection::Total);
 	const auto scene = static_cast<size_t>(RenderTimingSection::Scene);
 	const auto ao = static_cast<size_t>(RenderTimingSection::AmbientOcclusion);
+	const auto aa = static_cast<size_t>(RenderTimingSection::AntiAliasing);
 	queries.Timers[total]->Seconds = 0.015f;
 	queries.Timers[scene]->Seconds = 0.010f;
 	queries.Timers[ao]->Seconds = 0.003f;
+	queries.Timers[aa]->Seconds = 0.002f;
 	queries.Timers[scene]->Ready = false;
 	queries.CompleteAll();
 	profiler.Poll(0.1);
@@ -269,11 +294,17 @@ TEST_CASE("RenderProfiler: nested sections wait for every used timer and retain 
 	REQUIRE(profiler.GetLatest());
 	CHECK(profiler.GetLatest()->Context.AmbientOcclusionActive);
 	CHECK_FALSE(profiler.GetLatest()->Context.BloomActive);
+	CHECK(profiler.GetLatest()->Context.EffectiveAA == 2);
+	REQUIRE(profiler.GetLatest()->Milliseconds[total]);
+	REQUIRE(profiler.GetLatest()->Milliseconds[scene]);
+	REQUIRE(profiler.GetLatest()->Milliseconds[ao]);
+	REQUIRE(profiler.GetLatest()->Milliseconds[aa]);
 	CHECK(*profiler.GetLatest()->Milliseconds[total] == doctest::Approx(15.0));
 	CHECK(*profiler.GetLatest()->Milliseconds[scene] == doctest::Approx(10.0));
 	CHECK(*profiler.GetLatest()->Milliseconds[ao] == doctest::Approx(3.0));
+	CHECK(*profiler.GetLatest()->Milliseconds[aa] == doctest::Approx(2.0));
 	CHECK_FALSE(profiler.GetLatest()->Milliseconds[static_cast<size_t>(RenderTimingSection::Shadows)]);
 	CHECK_FALSE(profiler.GetLatest()->Milliseconds[static_cast<size_t>(RenderTimingSection::Bloom)]);
-	CHECK(queries.Reads == 3);
-	CHECK(queries.Resets == 3);
+	CHECK(queries.Reads == 4);
+	CHECK(queries.Resets == 4);
 }
