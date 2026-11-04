@@ -11,6 +11,8 @@ source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/src" FILES ${PX_TEST_SOURCES})
 
 target_include_directories(Paralax-Tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(Paralax-Tests PRIVATE Paralax::Paralax doctest::doctest nvrhi)
+px_add_embedded_shaders(Paralax-Tests DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
+	NAMESPACE EmbeddedTestShaders IMPORT_DIRECTORIES "${PROJECT_SOURCE_DIR}/Paralax/shaders")
 if(TARGET Paralax-EditorUI)
 	target_link_libraries(Paralax-Tests PRIVATE Paralax-EditorUI)
 	# project.export copies the runtime from beside the running executable.

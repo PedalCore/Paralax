@@ -1,4 +1,4 @@
-# px_add_embedded_shaders(<target> DIRECTORY <dir>)
+# px_add_embedded_shaders(<target> DIRECTORY <dir> [NAMESPACE <ns>] [IMPORT_DIRECTORIES <dir>...])
 #
 # Compiles every <dir>/*.slang file (each holding one or more [shader("...")] entry points) to a single SPIR-V
 # module with the pinned slangc, then embeds all modules into <target> as a generated source file. Files in
@@ -7,16 +7,21 @@
 # Embedded shaders are looked up at runtime by file stem, e.g. "Triangle" for Triangle.slang (see
 # Paralax/Renderer/ShaderLibrary.h). Bindings use HLSL register syntax and are shifted to NVRHI's default
 # Vulkan binding offsets (t: 0, s: 128, b: 256, u: 384).
+# NAMESPACE defaults to EmbeddedShaders; a distinct namespace keeps test-only modules out of the production
+# shader table. IMPORT_DIRECTORIES adds module search paths and tracks their Slang files as rebuild dependencies.
 function(px_add_embedded_shaders target)
-	cmake_parse_arguments(PARSE_ARGV 1 ARG "" "DIRECTORY" "")
+	cmake_parse_arguments(PARSE_ARGV 1 ARG "" "DIRECTORY;NAMESPACE" "IMPORT_DIRECTORIES")
 	if(NOT ARG_DIRECTORY)
 		message(FATAL_ERROR "px_add_embedded_shaders: DIRECTORY is required")
+	endif()
+	if(NOT ARG_NAMESPACE)
+		set(ARG_NAMESPACE EmbeddedShaders)
 	endif()
 
 	file(GLOB shader_sources CONFIGURE_DEPENDS "${ARG_DIRECTORY}/*.slang")
 	file(GLOB_RECURSE shader_all_files CONFIGURE_DEPENDS "${ARG_DIRECTORY}/*.slang")
 
-	set(output_dir "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+	set(output_dir "${CMAKE_CURRENT_BINARY_DIR}/shaders/${ARG_NAMESPACE}")
 	set(slang_flags
 		-target spirv
 		-profile spirv_1_5
@@ -29,6 +34,12 @@ function(px_add_embedded_shaders target)
 		-warnings-as-errors all
 		-O2
 		-I "${ARG_DIRECTORY}")
+	set(shader_dependencies ${shader_all_files})
+	foreach(import_directory IN LISTS ARG_IMPORT_DIRECTORIES)
+		list(APPEND slang_flags -I "${import_directory}")
+		file(GLOB_RECURSE imported_files CONFIGURE_DEPENDS "${import_directory}/*.slang")
+		list(APPEND shader_dependencies ${imported_files})
+	endforeach()
 
 	set(spirv_files "")
 	foreach(source IN LISTS shader_sources)
@@ -39,13 +50,13 @@ function(px_add_embedded_shaders target)
 			COMMAND "${CMAKE_COMMAND}" -E make_directory "${output_dir}"
 			COMMAND "${PX_SLANGC}" "${source}" ${slang_flags} -o "${spirv}"
 			# Conservative but always correct: any change to any shader file recompiles every module.
-			DEPENDS "${source}" ${shader_all_files} "${PX_SLANGC}"
+			DEPENDS "${source}" ${shader_dependencies} "${PX_SLANGC}"
 			COMMENT "Compiling shader ${name}.slang"
 			VERBATIM)
 		list(APPEND spirv_files "${spirv}")
 	endforeach()
 
-	px_embed_files(${target} NAMESPACE EmbeddedShaders FILES ${spirv_files})
+	px_embed_files(${target} NAMESPACE ${ARG_NAMESPACE} FILES ${spirv_files})
 	source_group("Shaders" FILES ${shader_all_files})
 	target_sources(${target} PRIVATE ${shader_all_files})
 	set_source_files_properties(${shader_all_files} PROPERTIES HEADER_FILE_ONLY ON)

@@ -43,32 +43,39 @@ float SampleSunCascade(uint cascade, float3 worldPosition, float3 normal, float3
 	if (any(shadowUV < 0.0) || any(shadowUV > 1.0) || lightNDC.z < 0.0 || lightNDC.z > 1.0)
 		return 1.0;
 
-	// Shadow maps use standard Z (0 near the light) and NVRHI's comparison sampler tests ref < stored: lit when the
-	// biased fragment depth is in front of the occluder.
-	float depth = lightNDC.z - g_View.ShadowParams.y;
-	float radius = max(g_View.ShadowParams.w / texelWorld, 1.0) * g_View.ShadowParams.x;
-
-	// Compare each tap against the receiver plane at that UV, not the center depth. Otherwise a wide
-	// world-space filter shadows its own sloping receiver and creates cascade-dependent speckling.
-	float3 tangent = cross(receiverNormal, abs(receiverNormal.y) < 0.99 ? float3(0, 1, 0) : float3(1, 0, 0));
+	// A disk in light UV extrapolates a grazing receiver plane arbitrarily far along the light direction,
+	// potentially moving the comparison past a real blocker. Keep the entire disk on finite world-space support.
+	float radius = max(g_View.ShadowParams.w, texelWorld);
+	float3 tangent = normalize(cross(receiverNormal, abs(receiverNormal.y) < 0.99 ? float3(0, 1, 0) : float3(1, 0, 0)));
 	float3 bitangent = cross(receiverNormal, tangent);
-	float3 lightTangent = mul(g_View.CascadeViewProjection[cascade], float4(tangent, 0)).xyz;
-	float3 lightBitangent = mul(g_View.CascadeViewProjection[cascade], float4(bitangent, 0)).xyz;
-	float3 plane = cross(lightTangent, lightBitangent);
-	float2 depthGradient = abs(plane.z) > 1e-4 * length(plane) ? float2(-2.0 * plane.x, 2.0 * plane.y) / plane.z : float2(0, 0);
-
-	// Hardware PCF compares the four texel centers around each tap with a single reference depth.
-	depth -= dot(abs(depthGradient), float2(0.5, 0.5) * g_View.ShadowParams.x);
+	uint width, height, layers;
+	g_ShadowMap.GetDimensions(width, height, layers);
 
 	float lit = 0.0;
 	[unroll] for (int i = 0; i < 16; i++)
 	{
-		float2 offset = mul(rotation, PoissonDisk[i]) * radius;
-		lit += g_ShadowMap.SampleCmpLevelZero(g_ShadowSampler, float3(shadowUV + offset, float(cascade)), depth + dot(depthGradient, offset));
+		float2 disk = mul(rotation, PoissonDisk[i]);
+		disk *= rsqrt(max(dot(disk, disk), 1.0));
+		float3 samplePosition = offsetPosition + radius * (tangent * disk.x + bitangent * disk.y);
+		float4 sampleClip = mul(g_View.CascadeViewProjection[cascade], float4(samplePosition, 1));
+		float3 sampleNDC = sampleClip.xyz / sampleClip.w;
+		float2 uv = float2(sampleNDC.x * 0.5 + 0.5, 0.5 - sampleNDC.y * 0.5);
+		if (any(uv < 0.0) || any(uv > 1.0) || sampleNDC.z < 0.0 || sampleNDC.z > 1.0)
+		{
+			lit += 1.0;
+			continue;
+		}
+		// Nearest texels keep the remaining raster footprint within half a texel per axis, covered by the
+		// caster's slope bias. Bilinear comparisons would require another unbounded receiver-plane correction.
+		int2 texel = min(int2(uv * float2(width, height)), int2(width - 1, height - 1));
+		float stored = g_ShadowMap.Load(int4(texel, int(cascade), 0));
+		// Preserve the comparison sampler's strict standard-Z reference < stored convention.
+		lit += sampleNDC.z - g_View.ShadowParams.y < stored ? 1.0 : 0.0;
 	}
 	return lit / 16.0;
 }
 
+public
 float SunShadow(float3 worldPosition, float3 normal, float3 receiverNormal, float viewDepth, float2x2 rotation)
 {
 	if (g_View.SunColor.w < 0.5 || viewDepth >= g_View.CascadeSplits[MaxCascades - 1])
@@ -115,6 +122,8 @@ float LocalShadow(GPULight light, float3 position, float3 normal, float3 receive
 	float radius = clamp(slot.Bias.z, texelWorld, 8.0 * texelWorld);
 	float3 tangent = normalize(cross(receiverNormal, abs(receiverNormal.y) < 0.99 ? float3(0, 1, 0) : float3(1, 0, 0)));
 	float3 bitangent = cross(receiverNormal, tangent);
+	uint width, height, layers;
+	g_LocalShadowMap.GetDimensions(width, height, layers);
 	float lit = 0.0;
 	[unroll] for (int tap = 0; tap < 16; ++tap)
 	{
@@ -136,15 +145,12 @@ float LocalShadow(GPULight light, float3 position, float3 normal, float3 receive
 			lit += 1.0;
 			continue;
 		}
-		// Perspective division changes the receiver-plane derivatives. The quotient rule gives
-		// their exact local directions; each tap's UV and reference depth use the same world point.
-		float4 t = mul(matrix, float4(tangent, 0));
-		float4 b = mul(matrix, float4(bitangent, 0));
-		float3 plane = cross(t.xyz - ndc * t.w, b.xyz - ndc * b.w);
-		float2 gradient = abs(plane.z) > 1e-5 * length(plane) ? float2(-2.0 * plane.x, 2.0 * plane.y) / plane.z : float2(0);
-		float depth = ndc.z + dot(abs(gradient), float2(0.5) * slot.Atlas.z);
-		// NVRHI compares ref < stored. Reverse that result for reversed Z (clear depth zero).
-		lit += 1.0 - g_LocalShadowMap.SampleCmpLevelZero(g_LocalShadowSampler, float3(uv, slot.Atlas.x + float(face)), depth);
+		// Keep the reference at this finite world point. The bilinear half-texel correction could otherwise
+		// jump nearby blockers at grazing angles despite the bounded disk. Nearest sampling uses the caster bias.
+		int2 texel = min(int2(uv * float2(width, height)), int2(width - 1, height - 1));
+		float stored = g_LocalShadowMap.Load(int4(texel, int(slot.Atlas.x) + int(face), 0));
+		// Invert strict ref < stored for reversed Z, preserving equality and the clear depth of zero.
+		lit += ndc.z >= stored ? 1.0 : 0.0;
 	}
 	return lit / 16.0;
 }
