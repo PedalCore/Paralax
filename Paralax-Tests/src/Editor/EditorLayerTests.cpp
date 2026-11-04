@@ -91,7 +91,7 @@ TEST_CASE("EditorLayer: registers its commands while attached and unregisters ev
 			added.insert(name);
 	}
 	CHECK(added == std::set<std::string>{"editor.camera.focus", "editor.camera.get", "editor.camera.set", "editor.gizmo.get", "editor.gizmo.set", "render.settings.get",
-										 "render.settings.set", "render.stats", "render.gi.state", "render.gi.reset", "render.gi.step", "render.gi.inspect", "render.aa.state", "render.aa.reset"});
+										 "render.settings.set", "render.stats", "render.ssr.inspect", "render.gi.state", "render.gi.reset", "render.gi.step", "render.gi.inspect", "render.aa.state", "render.aa.reset"});
 	CHECK(editor.Context.GetCaptureHandler());
 
 	editor.App->PopLayer(editor.Layer);
@@ -134,7 +134,7 @@ TEST_CASE("EditorLayer: render.stats reports the statistics of the latest frame 
 	EditorContext& context = editor.Context;
 
 	// Nothing has been rendered yet.
-	const json empty = {{"antiAliasing", {{"requested", "Off"}, {"effective", "Off"}, {"historyValid", false}, {"completedFrames", 0}, {"sampleIndex", 0}, {"resetReason", ""}, {"fallbackReason", ""}, {"passes", 0}}}, {"requestedRenderScale", 1.0}, {"effectiveRenderScale", 1.0}, {"internalSize", {0, 0}}, {"outputSize", {0, 0}}, {"scaleFallbackReason", ""}, {"nativeDepthPasses", 0}, {"upscaler", "None"}, {"profiling", {{"enabled", false}, {"status", "disabled"}, {"pending", 0}, {"skipped", 0}, {"invalidSamples", 0}, {"lastResult", "none"}, {"cpuRenderMs", nullptr}, {"gpu", nullptr}, {"device", nullptr}}}, {"bloomActive", false}, {"bloomFallbackReason", ""}, {"bloomPasses", 0}, {"ssaoActive", false}, {"ssaoFallbackReason", ""}, {"ssaoPasses", 0}, {"effectOwnedBytes", 0}, {"effectPeakBytes", 0}, {"effectAllocationAttempts", 0}, {"visibilityResolveDrawCalls", 0}, {"visibilityOwnedBytes", 0}, {"visibilityGeometryBytes", 0}, {"visibilityAllocationAttempts", 0}, {"requestedRenderPath", "Forward"}, {"effectiveRenderPath", "Forward"}, {"renderPathFallbackReason", ""}, {"surfaceOwnedBytes", 0}, {"surfaceAllocationAttempts", 0}, {"surfaceResolveDrawCalls", 0}, {"drawCalls", 0}, {"shadowDrawCalls", 0}, {"triangles", 0}, {"culledSubmeshes", 0}, {"textGlyphs", 0}, {"lights", 0}, {"staticLightingGenerations", 0}, {"requestedLocalShadows", 0}, {"shadowedLocalLights", 0}, {"localShadowLayers", 0}, {"localShadowCapacity", 0}, {"localShadowDrawCalls", 0}, {"localShadowAllocationAttempts", 0}, {"shadowedLocalLightIDs", json::array()}};
+	const json empty = {{"renderFrame", 0}, {"ssrActive", false}, {"ssrFallbackReason", ""}, {"ssrPasses", 0}, {"ssrHierarchyLevels", 0}, {"ssrOwnedBytes", 0}, {"ssrHistoryActive", false}, {"ssrHistoryValid", false}, {"ssrHistoryEligible", false}, {"ssrHistoryReason", ""}, {"ssrHistoryCompletedFrames", 0}, {"antiAliasing", {{"requested", "Off"}, {"effective", "Off"}, {"historyValid", false}, {"completedFrames", 0}, {"sampleIndex", 0}, {"resetReason", ""}, {"fallbackReason", ""}, {"passes", 0}}}, {"requestedRenderScale", 1.0}, {"effectiveRenderScale", 1.0}, {"internalSize", {0, 0}}, {"outputSize", {0, 0}}, {"scaleFallbackReason", ""}, {"nativeDepthPasses", 0}, {"upscaler", "None"}, {"profiling", {{"enabled", false}, {"status", "disabled"}, {"pending", 0}, {"skipped", 0}, {"invalidSamples", 0}, {"lastResult", "none"}, {"cpuRenderMs", nullptr}, {"gpu", nullptr}, {"device", nullptr}}}, {"bloomActive", false}, {"bloomFallbackReason", ""}, {"bloomPasses", 0}, {"ssaoActive", false}, {"ssaoFallbackReason", ""}, {"ssaoPasses", 0}, {"effectOwnedBytes", 0}, {"effectPeakBytes", 0}, {"effectAllocationAttempts", 0}, {"visibilityResolveDrawCalls", 0}, {"visibilityOwnedBytes", 0}, {"visibilityGeometryBytes", 0}, {"visibilityAllocationAttempts", 0}, {"requestedRenderPath", "Forward"}, {"effectiveRenderPath", "Forward"}, {"renderPathFallbackReason", ""}, {"surfaceOwnedBytes", 0}, {"surfaceAllocationAttempts", 0}, {"surfaceResolveDrawCalls", 0}, {"drawCalls", 0}, {"shadowDrawCalls", 0}, {"triangles", 0}, {"culledSubmeshes", 0}, {"textGlyphs", 0}, {"lights", 0}, {"staticLightingGenerations", 0}, {"requestedLocalShadows", 0}, {"shadowedLocalLights", 0}, {"localShadowLayers", 0}, {"localShadowCapacity", 0}, {"localShadowDrawCalls", 0}, {"localShadowAllocationAttempts", 0}, {"shadowedLocalLightIDs", json::array()}};
 	CHECK(Run(context, "render.stats") == empty);
 
 	// A cube in view, one behind the camera (culled, but still drawn into the shadow map), a sun and a point light,
@@ -254,9 +254,14 @@ TEST_CASE("EditorLayer: ambient effect settings are reflected and invalid update
 	CHECK(defaults["InternalRenderScale"] == 1);
 	CHECK(defaults["AntiAliasing"] == "Off");
 	CHECK(defaults["AAHistoryWeight"] == doctest::Approx(0.9));
-	Run(context, "render.settings.set", {{"settings", {{"SSAOEnabled", true}, {"SSAORadius", 0.75}, {"SSAOBias", 0.03}, {"SSAOStrength", 2.0}, {"SSAOQuality", "High"}, {"AmbientFillColor", {0.2, 0.4, 0.8}}, {"AmbientFillIntensity", 0.5}, {"BloomEnabled", true}, {"BloomIntensity", 0.25}, {"BloomLevels", 4}, {"BloomThreshold", 2.0}, {"BloomSoftKnee", 0.25}, {"ProfilingEnabled", true}, {"InternalRenderScale", 0.75}, {"AntiAliasing", "Temporal"}, {"AAHistoryWeight", 0.8}}}});
+	CHECK(defaults["SSREnabled"] == false);
+	CHECK(defaults["SSRTemporalEnabled"] == true);
+	Run(context, "render.settings.set", {{"settings", {{"SSAOEnabled", true}, {"SSAORadius", 0.75}, {"SSAOBias", 0.03}, {"SSAOStrength", 2.0}, {"SSAOQuality", "High"}, {"AmbientFillColor", {0.2, 0.4, 0.8}}, {"AmbientFillIntensity", 0.5}, {"BloomEnabled", true}, {"BloomIntensity", 0.25}, {"BloomLevels", 4}, {"BloomThreshold", 2.0}, {"BloomSoftKnee", 0.25}, {"ProfilingEnabled", true}, {"InternalRenderScale", 0.75}, {"AntiAliasing", "Temporal"}, {"AAHistoryWeight", 0.8}, {"SSREnabled", true}, {"SSRTemporalEnabled", false}, {"SSRHistoryWeight", 0.7}, {"SSRMaxDistance", 40}, {"SSRThickness", 0.15}, {"SSRMaxSteps", 128}, {"SSRMaxRoughness", 0.7}}}});
 	const auto valid = Run(context, "render.settings.get");
 	CHECK(valid["SSAOEnabled"] == true);
+	CHECK(valid["SSREnabled"] == true);
+	CHECK(valid["SSRTemporalEnabled"] == false);
+	CHECK(valid["SSRMaxSteps"] == 128);
 	CHECK(valid["SSAOQuality"] == "High");
 	CHECK(valid["BloomLevels"] == 4);
 	CHECK(valid["ProfilingEnabled"] == true);
@@ -267,7 +272,7 @@ TEST_CASE("EditorLayer: ambient effect settings are reflected and invalid update
 		CHECK(Run(context, "render.settings.get")["InternalRenderScale"] == scale);
 	}
 	Run(context, "render.settings.set", {{"settings", {{"InternalRenderScale", 0.75}}}});
-	for (const auto& invalid : {json{{"AntiAliasing", "Unknown"}}, json{{"AAHistoryWeight", -0.1}}, json{{"AAHistoryWeight", 0.96}}, json{{"SSAORadius", -1}}, json{{"SSAOBias", 2}}, json{{"SSAOStrength", 10}}, json{{"SSAOQuality", "Ultra"}},
+	for (const auto& invalid : {json{{"SSREnabled", "yes"}}, json{{"SSRHistoryWeight", 0.96}}, json{{"SSRMaxSteps", 257}}, json{{"SSRMaxDistance", 201}}, json{{"SSRThickness", 0}}, json{{"SSRMaxRoughness", 0}}, json{{"AntiAliasing", "Unknown"}}, json{{"AAHistoryWeight", -0.1}}, json{{"AAHistoryWeight", 0.96}}, json{{"SSAORadius", -1}}, json{{"SSAOBias", 2}}, json{{"SSAOStrength", 10}}, json{{"SSAOQuality", "Ultra"}},
 								json{{"BloomIntensity", 3}}, json{{"BloomLevels", 7}}, json{{"BloomSoftKnee", -1}}, json{{"BloomThreshold", 65}}, json{{"ProfilingEnabled", "yes"}}, json{{"InternalRenderScale", 0.49}}, json{{"InternalRenderScale", 2.01}}, json{{"InternalRenderScale", "half"}},
 								json{{"AmbientFillIntensity", -1}}, json{{"AmbientFillColor", {1, 2}}}, json{{"SSAOEnabled", "yes"}}})
 	{
@@ -353,5 +358,41 @@ TEST_CASE("EditorLayer: GI warmup capture preserves active viewport temporal his
 	editor.Layer->OnRender();
 	CHECK(Run(context, "render.aa.state")["resetReason"] == "scene replaced");
 	CHECK(Run(context, "render.aa.state")["sampleIndex"] == 1);
+	CHECK(editor.App->GetGraphicsDevice().GetValidationErrorCount() == 0);
+}
+
+TEST_CASE("EditorLayer: SSR pixel inspection validates coordinates and returns exact capture provenance")
+{
+	if (!RequireOwnGraphicsDevice())
+		return;
+	AttachedEditorLayer editor;
+	auto& context = editor.Context;
+	CHECK_FALSE(context.Execute("render.ssr.inspect", {{"x", 0}, {"y", 0}}).Success);
+	Run(context, "render.settings.set", {{"settings", {{"SSREnabled", true}, {"GIEnabled", false}}}});
+	const auto image = Testing::GetTestOutputDirectory() / "SSRInspection.png";
+	const auto capture = Run(context, "render.capture", {{"path", ToUtf8(image)}, {"width", 32}, {"height", 32}, {"camera", "editor"}});
+	const auto frame = capture["stats"]["renderFrame"];
+	const auto probe = Run(context, "render.ssr.inspect", {{"x", 4}, {"y", 7}, {"frame", frame}});
+	CHECK(probe["frame"] == frame);
+	CHECK(probe["size"] == json::array({32, 32}));
+	CHECK(probe["pixel"] == json::array({4, 7}));
+	CHECK(probe["status"] == 0);
+	CHECK(probe["distance"].is_null());
+	CHECK(probe["termination"] == 0);
+	CHECK(probe["refinementCells"] == 0);
+	CHECK(probe["terminationCell"] == json::array({-1, -1}));
+	CHECK_FALSE(probe["plane"]["valid"].get<bool>());
+	CHECK(probe["plane"]["distance"].is_null());
+	CHECK(probe["candidateGeometry"]["normal"] == json::array({nullptr, nullptr, nullptr}));
+	CHECK(probe["candidateGeometry"]["terminationNormal"] == json::array({nullptr, nullptr, nullptr}));
+	CHECK(probe["candidateGeometry"]["normalDot"].is_null());
+	CHECK(probe["candidateGeometry"]["planeOffset"].is_null());
+	CHECK(Run(context, "render.stats") == capture["stats"]);
+	for (const json& value : {json(-1), json(32), json(0.5), json(true), json("2"), json(uint64_t(1) << 40)})
+	{
+		CHECK_FALSE(context.Execute("render.ssr.inspect", {{"x", value}, {"y", 0}}).Success);
+		CHECK_FALSE(context.Execute("render.ssr.inspect", {{"x", 0}, {"y", value}}).Success);
+	}
+	CHECK_FALSE(context.Execute("render.ssr.inspect", {{"x", 0}, {"y", 0}, {"frame", 0}}).Success);
 	CHECK(editor.App->GetGraphicsDevice().GetValidationErrorCount() == 0);
 }

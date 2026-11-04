@@ -270,10 +270,14 @@ TEST_CASE("RenderProfiler: nested sections wait for every used timer and retain 
 	profiler.BeginSection(nullptr, RenderTimingSection::Scene);
 	profiler.BeginSection(nullptr, RenderTimingSection::AmbientOcclusion);
 	profiler.EndSection(nullptr, RenderTimingSection::AmbientOcclusion);
+	profiler.BeginSection(nullptr, RenderTimingSection::Reflections);
+	profiler.BeginSection(nullptr, RenderTimingSection::DepthHierarchy);
+	profiler.EndSection(nullptr, RenderTimingSection::DepthHierarchy);
+	profiler.EndSection(nullptr, RenderTimingSection::Reflections);
 	profiler.EndSection(nullptr, RenderTimingSection::Scene);
 	profiler.BeginSection(nullptr, RenderTimingSection::AntiAliasing);
 	profiler.EndSection(nullptr, RenderTimingSection::AntiAliasing);
-	profiler.EndFrame(nullptr, 2, true, false, 2);
+	profiler.EndFrame(nullptr, 2, true, false, 2, true, true);
 	profiler.Submitted(0);
 	const auto total = static_cast<size_t>(RenderTimingSection::Total);
 	const auto scene = static_cast<size_t>(RenderTimingSection::Scene);
@@ -295,6 +299,10 @@ TEST_CASE("RenderProfiler: nested sections wait for every used timer and retain 
 	CHECK(profiler.GetLatest()->Context.AmbientOcclusionActive);
 	CHECK_FALSE(profiler.GetLatest()->Context.BloomActive);
 	CHECK(profiler.GetLatest()->Context.EffectiveAA == 2);
+	CHECK(profiler.GetLatest()->Context.ReflectionsActive);
+	CHECK(profiler.GetLatest()->Context.ReflectionHistoryActive);
+	CHECK(profiler.GetLatest()->Milliseconds[static_cast<size_t>(RenderTimingSection::Reflections)].has_value());
+	CHECK(profiler.GetLatest()->Milliseconds[static_cast<size_t>(RenderTimingSection::DepthHierarchy)].has_value());
 	REQUIRE(profiler.GetLatest()->Milliseconds[total]);
 	REQUIRE(profiler.GetLatest()->Milliseconds[scene]);
 	REQUIRE(profiler.GetLatest()->Milliseconds[ao]);
@@ -305,6 +313,6 @@ TEST_CASE("RenderProfiler: nested sections wait for every used timer and retain 
 	CHECK(*profiler.GetLatest()->Milliseconds[aa] == doctest::Approx(2.0));
 	CHECK_FALSE(profiler.GetLatest()->Milliseconds[static_cast<size_t>(RenderTimingSection::Shadows)]);
 	CHECK_FALSE(profiler.GetLatest()->Milliseconds[static_cast<size_t>(RenderTimingSection::Bloom)]);
-	CHECK(queries.Reads == 4);
-	CHECK(queries.Resets == 4);
+	CHECK(queries.Reads == 6);
+	CHECK(queries.Resets == 6);
 }

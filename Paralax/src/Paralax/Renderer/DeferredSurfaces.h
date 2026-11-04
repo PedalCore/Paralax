@@ -41,10 +41,13 @@ namespace Paralax {
 		nvrhi::IGraphicsPipeline* GetMaterialPipeline(bool doubleSided, bool mirrored) const { return m_MaterialPipelines[doubleSided ? 2 : mirrored ? 1
 																																					 : 0]; }
 		nvrhi::ITexture* GetReceiverGuide() const { return m_Ready ? m_Surfaces[2].Get() : nullptr; }
+		std::array<nvrhi::ITexture*, 3> GetMaterialGuides() const { return {m_Surfaces[0], m_Surfaces[1], m_Surfaces[2]}; }
+		nvrhi::IBindingLayout* GetSurfaceLayout() const { return m_SurfaceLayout; }
 		// Clears coverage before material rasterization; positive roughness distinguishes geometry even at depth zero.
 		void ClearCoverage(nvrhi::ICommandList* commands);
 		// Records into an open list after material rasterization; reads depth and adds lighting to HDR.
-		void Resolve(nvrhi::ICommandList* commands, nvrhi::IBindingSet* view, nvrhi::IBindingSet* probe);
+		void Resolve(nvrhi::ICommandList* commands, nvrhi::IBindingSet* view, nvrhi::IBindingSet* probe,
+					 nvrhi::IGraphicsPipeline* pipeline = nullptr, nvrhi::IFramebuffer* framebuffer = nullptr);
 
 	private:
 		void ReleaseTargets();

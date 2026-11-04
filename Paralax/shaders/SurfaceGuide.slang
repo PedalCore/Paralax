@@ -20,3 +20,20 @@ struct GuideTargets
 	result.Coverage = 1;
 	return result;
 }
+
+struct ReflectionGuideTargets
+{
+	float4 BaseMetal : SV_Target0;
+	float4 Normals : SV_Target1;
+	float4 ReceiverRoughAO : SV_Target2;
+};
+
+[shader("fragment")] ReflectionGuideTargets ReflectionGuidePS(VertexOutput input, bool isFrontFace : SV_IsFrontFace)
+{
+	SurfaceTargets surface = PackSurface(EvaluateMaterial(input, isFrontFace), 0);
+	ReflectionGuideTargets result;
+	result.BaseMetal = surface.BaseMetal;
+	result.Normals = surface.Normals;
+	result.ReceiverRoughAO = surface.ReceiverRoughAO;
+	return result;
+}

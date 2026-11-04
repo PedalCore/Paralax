@@ -16,8 +16,7 @@ Texture2D<float> g_Depth : register(t3, space1);
 	return float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
 }
 
-[shader("fragment")] float4 ResolvePS(float4 pixel : SV_Position)
-	: SV_Target
+MaterialSurface LoadMaterial(float4 pixel)
 {
 	int3 location = int3(int2(pixel.xy), 0);
 	float4 receiver = g_ReceiverRoughAO.Load(location);
@@ -41,5 +40,21 @@ Texture2D<float> g_Depth : register(t3, space1);
 	material.Surface.Alpha = 1.0;
 	material.ShadowNormal = DecodeSurfaceNormal(normals.zw);
 	material.ReceiverNormal = DecodeSurfaceNormal(receiver.xy);
-	return ShadeSurface(material, pixel.xy, -mul(g_View.View, float4(position, 1.0)).z);
+	return material;
+}
+
+[shader("fragment")] float4 ResolvePS(float4 pixel : SV_Position) : SV_Target
+{
+	MaterialSurface material = LoadMaterial(pixel);
+	return ShadeSurface(material, pixel.xy, -mul(g_View.View, float4(material.Surface.Position, 1.0)).z);
+}
+
+[shader("fragment")] ReflectionLightingTargets ReflectionPS(float4 pixel : SV_Position)
+{
+	MaterialSurface material = LoadMaterial(pixel);
+	ReflectionLightingTargets output;
+	float3 specular;
+	output.Color = ShadeSurfaceWithSpecular(material, pixel.xy, -mul(g_View.View, float4(material.Surface.Position, 1.0)).z, true, specular);
+	output.EnvironmentSpecular = float4(specular, 1);
+	return output;
 }

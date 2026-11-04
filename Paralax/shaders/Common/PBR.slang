@@ -84,3 +84,13 @@ public float DistanceAttenuation(float distanceSquared, float range)
 	float smoothFactor = saturate(1.0 - factor * factor);
 	return smoothFactor * smoothFactor / max(distanceSquared, 1e-4);
 }
+
+// Shared split-sum material weighting; incident scene radiance is independent of environment intensity.
+public float3 EvaluateIndirectSpecular(float3 radiance, float3 f0, float2 brdf, float nDotV, float roughness, float occlusion)
+{
+	float3 singleScatter = f0 * brdf.x + brdf.y;
+	float3 energyCompensation = 1.0 + f0 * (1.0 / max(brdf.x + brdf.y, 1e-4) - 1.0);
+	float3 specular = radiance * singleScatter * energyCompensation;
+	float specularOcclusion = saturate(pow(nDotV + occlusion, exp2(-16.0 * roughness - 1.0)) - 1.0 + occlusion);
+	return specular * specularOcclusion;
+}

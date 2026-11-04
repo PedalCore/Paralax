@@ -621,6 +621,8 @@ namespace Paralax {
 				m_Info.Limits.MaxTextureArrayLayers = props.limits.maxImageArrayLayers;
 				m_Info.Limits.MaxTextureDimension2D = props.limits.maxImageDimension2D;
 				m_Info.Limits.MaxStorageBuffersPerStage = props.limits.maxPerStageDescriptorStorageBuffers;
+				m_Info.Limits.MaxSampledTexturesPerStage = props.limits.maxPerStageDescriptorSampledImages;
+				m_Info.Limits.MaxSampledTexturesPerSet = props.limits.maxDescriptorSetSampledImages;
 				m_Info.Limits.MaxStorageBuffersPerSet = props.limits.maxDescriptorSetStorageBuffers;
 				m_Info.Limits.SubPixelPrecisionBits = props.limits.subPixelPrecisionBits;
 				m_Info.VendorID = props.vendorID;
@@ -663,6 +665,7 @@ namespace Paralax {
 		m_Functions.GetPhysicalDeviceFeatures2(m_PhysicalDevice, &supported.Features2);
 		FeatureChain enabled;
 		SelectFeatures(supported, enabled);
+		m_Info.SupportsIndependentBlend = enabled.Features2.features.independentBlend != VK_FALSE;
 		m_BufferDeviceAddress = enabled.Vulkan12.bufferDeviceAddress == VK_TRUE;
 		m_UniformBufferUpdateAfterBind = false;
 

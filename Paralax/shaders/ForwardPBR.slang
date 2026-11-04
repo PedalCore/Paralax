@@ -13,3 +13,12 @@ import Common.SurfaceLighting;
 {
 	return ShadeSurface(EvaluateMaterial(input, isFrontFace), input.Position.xy, input.ViewDepth, g_Material.AlphaMode != 2);
 }
+
+[shader("fragment")] ReflectionLightingTargets ReflectionPS(VertexOutput input, bool isFrontFace : SV_IsFrontFace)
+{
+	ReflectionLightingTargets output;
+	float3 specular;
+	output.Color = ShadeSurfaceWithSpecular(EvaluateMaterial(input, isFrontFace), input.Position.xy, input.ViewDepth, true, specular);
+	output.EnvironmentSpecular = float4(specular, 1);
+	return output;
+}

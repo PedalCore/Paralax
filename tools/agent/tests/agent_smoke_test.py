@@ -108,12 +108,14 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
     # statistics are the capture's, whose camera sees the ground and the ball (and no point or spot lights).
     captured, stats = editor.batch([("render.capture", {"path": str(image), "width": 320, "height": 180}), ("render.stats", {})])
     check(not isinstance(captured, AgentError) and not isinstance(stats, AgentError), f"batch failed: {captured}, {stats}")
-    check(set(stats) == {"antiAliasing", "requestedRenderScale", "effectiveRenderScale", "internalSize", "outputSize", "scaleFallbackReason", "nativeDepthPasses", "upscaler", "profiling", "drawCalls", "shadowDrawCalls", "triangles", "culledSubmeshes", "textGlyphs", "lights",
+    check(set(stats) == {"renderFrame", "antiAliasing", "requestedRenderScale", "effectiveRenderScale", "internalSize", "outputSize", "scaleFallbackReason", "nativeDepthPasses", "upscaler", "profiling", "drawCalls", "shadowDrawCalls", "triangles", "culledSubmeshes", "textGlyphs", "lights",
                          "staticLightingGenerations", "requestedLocalShadows", "shadowedLocalLights", "localShadowLayers",
                          "localShadowCapacity", "localShadowDrawCalls", "localShadowAllocationAttempts", "shadowedLocalLightIDs",
                          "requestedRenderPath", "effectiveRenderPath", "renderPathFallbackReason",
                          "surfaceOwnedBytes", "surfaceAllocationAttempts", "surfaceResolveDrawCalls",
                          "visibilityOwnedBytes", "visibilityAllocationAttempts", "visibilityGeometryBytes", "visibilityResolveDrawCalls",
+                         "ssrActive", "ssrFallbackReason", "ssrPasses", "ssrHierarchyLevels", "ssrOwnedBytes",
+                         "ssrHistoryActive", "ssrHistoryValid", "ssrHistoryEligible", "ssrHistoryReason", "ssrHistoryCompletedFrames",
                          "bloomActive", "bloomFallbackReason", "bloomPasses", "ssaoActive", "ssaoFallbackReason", "ssaoPasses", "effectOwnedBytes", "effectPeakBytes", "effectAllocationAttempts"},
           f"unexpected render statistics: {stats}")
     check(settings["RenderPath"] == "Forward" and stats["requestedRenderPath"] == "Forward"
@@ -137,25 +139,40 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
 
     ambient_saved = editor.call("render.settings.get")
     for render_path in ("Forward", "Deferred", "Visibility"):
-        editor.call("render.settings.set", settings={"RenderPath": render_path, "SSAOEnabled": True,
-                    "SSAOQuality": "Medium", "AmbientFillIntensity": 0.25, "BloomEnabled": True, "BloomIntensity": 0.2, "InternalRenderScale": 0.75})
-        ambient = editor.call("render.capture", path=str(output / f"Ambient-{render_path}.png"), width=97, height=65)
+        print(f"agent smoke: {render_path} effects batch begin", flush=True)
+        # Restore before the viewport resumes: these small capture tests must not allocate full-size SSR history.
+        results = editor.batch([
+            ("render.settings.set", {"settings": {"RenderPath": render_path, "SSAOEnabled": True,
+                "SSAOQuality": "Medium", "AmbientFillIntensity": 0.25, "BloomEnabled": True, "BloomIntensity": 0.2,
+                "InternalRenderScale": 0.75, "SSREnabled": True, "SSRTemporalEnabled": True, "GIEnabled": False}}),
+            ("render.capture", {"path": str(output / f"Ambient-{render_path}.png"), "width": 97, "height": 65, "temporalFrames": 2}),
+            ("render.settings.set", {"settings": {"InternalRenderScale": 2.0}}),
+            ("render.capture", {"path": str(output / f"Supersampled-{render_path}.png"), "width": 97, "height": 65}),
+            ("render.settings.set", {"settings": ambient_saved}),
+        ])
+        check(len(results) == 5 and all(not isinstance(result, AgentError) for result in results),
+              f"{render_path} effects batch failed: {results}")
+        check(results[4] == ambient_saved, f"{render_path} effects batch did not restore settings: {results[4]}")
+        ambient, supersampled = results[1], results[3]["stats"]
         check(ambient["stats"]["ssaoActive"] and ambient["stats"]["bloomActive"] and ambient["stats"]["effectOwnedBytes"] > 0,
               f"ambient settings did not reach {render_path} capture: {ambient['stats']}")
         check(ambient["stats"]["effectiveRenderPath"] == render_path, "ambient effects changed render path")
+        check(ambient["stats"]["ssrActive"] and ambient["stats"]["ssrHistoryActive"]
+              and ambient["stats"]["ssrHistoryEligible"] and ambient["stats"]["ssrHistoryCompletedFrames"] == 2,
+              f"reflection controls or independent history did not reach {render_path} capture: {ambient['stats']}")
         check(ambient["stats"]["internalSize"] == [73, 49] and ambient["stats"]["outputSize"] == [97, 65],
               "render scale did not reach capture raster dimensions")
-        editor.call("render.settings.set", settings={"InternalRenderScale": 2.0})
-        supersampled = editor.call("render.capture", path=str(output / f"Supersampled-{render_path}.png"), width=97, height=65)["stats"]
         check(supersampled["internalSize"] == [194, 130] and supersampled["outputSize"] == [97, 65]
               and supersampled["effectiveRenderScale"] == 2.0 and supersampled["upscaler"] == "AreaHDR"
               and supersampled["effectiveRenderPath"] == render_path and not supersampled["scaleFallbackReason"],
               f"supersampling did not reach {render_path} capture: {supersampled}")
+        print(f"agent smoke: {render_path} effects batch passed", flush=True)
     editor.call("render.settings.set", settings=ambient_saved)
     ambient_off = editor.call("render.capture", path=str(output / "Ambient-Off.png"), width=97, height=65)
     check(not ambient_off["stats"]["ssaoActive"] and ambient_off["stats"]["effectOwnedBytes"] == 0,
-          "disabling AO retained optional resources")
+          f"disabling AO retained optional resources: {ambient_off['stats']}")
 
+    print("agent smoke: temporal phase begin", flush=True)
     # A batch prevents viewport frames between reset/state and two fresh deterministic captures.
     editor.call("render.settings.set", settings={"AntiAliasing": "Temporal", "GIEnabled": False})
     temporal_path = output / "TemporalRepeat.png"
@@ -170,6 +187,7 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
     check(reset == state and not state["historyValid"] and state["sampleIndex"] == 0, "AA reset failed")
     editor.call("render.settings.set", settings=ambient_saved)
 
+    print("agent smoke: temporal phase passed; GI phase begin", flush=True)
     # GI diagnostic updates are counted independently of application frames.
     state_keys = {"enabled", "supported", "frozen", "historyValid", "updates", "queued", "origin", "spacing", "counts", "frame"}
     check(set(editor.call("render.gi.state")) == state_keys, "GI state schema changed")
@@ -195,6 +213,7 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
             except AgentError:
                 pass
         check((output / "GIInit.png").stat().st_size > 100, "forward fallback capture failed")
+        print("agent smoke: GI fallback phase passed", flush=True)
         return
     check(state["historyValid"], f"GI did not initialize: {state}")
     for frames in [0, -1, 1025, 18446744073709551615]:
@@ -379,10 +398,14 @@ def main() -> int:
     editor = None
     try:
         editor = EditorSession.launch(executable, ["--headless", "--validation"], cwd=sessions["RpcSession"])
+        print("agent smoke: RPC phase begin", flush=True)
         exercise_rpc(editor, output)
+        print("agent smoke: RPC and GI phases passed", flush=True)
         info = output / "AgentServer.json"
         info.write_text(json.dumps({"port": editor.port, "token": editor.token}), encoding="utf-8")
+        print("agent smoke: MCP phase begin", flush=True)
         exercise_mcp(info, output)
+        print("agent smoke: MCP phase passed", flush=True)
     except BaseException:
         if editor is not None:
             editor.process.kill()
@@ -400,7 +423,9 @@ def main() -> int:
     editor = None
     try:
         editor = EditorSession.launch(executable, ["--headless", "--validation", "--new-project", str(project)], cwd=sessions["ProjectSession"])
+        print("agent smoke: project phase begin", flush=True)
         exercise_project(editor, project)
+        print("agent smoke: project phase passed", flush=True)
     except BaseException:
         if editor is not None:
             editor.process.kill()

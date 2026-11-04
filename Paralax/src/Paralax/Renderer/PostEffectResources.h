@@ -74,6 +74,7 @@ namespace Paralax {
 	{
 	public:
 		virtual ~PostEffectResourceFactory() = default;
+		virtual bool SupportsIndependentBlend(const GraphicsDevice& graphics) { return graphics.GetInfo().SupportsIndependentBlend; }
 		virtual bool SupportsVirtualResources(nvrhi::IDevice* device) { return device->queryFeatureSupport(nvrhi::Feature::VirtualResources); }
 		virtual nvrhi::FormatSupport QueryFormatSupport(nvrhi::IDevice* device, nvrhi::Format format) { return device->queryFormatSupport(format); }
 		virtual nvrhi::TextureHandle CreateTexture(nvrhi::IDevice* device, const nvrhi::TextureDesc& desc) { return device->createTexture(desc); }

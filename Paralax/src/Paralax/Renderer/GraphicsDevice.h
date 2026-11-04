@@ -38,6 +38,8 @@ namespace Paralax {
 		uint32_t MaxTextureDimension2D = 4096;
 		uint32_t MaxStorageBuffersPerStage = 4;
 		uint32_t MaxStorageBuffersPerSet = 24;
+		uint32_t MaxSampledTexturesPerStage = 16;
+		uint32_t MaxSampledTexturesPerSet = 96;
 		uint32_t SubPixelPrecisionBits = 4;
 	};
 
@@ -58,6 +60,7 @@ namespace Paralax {
 		bool SupportsRayQuery = false;
 		bool SupportsRayTracingPipeline = false;
 		bool SupportsMeshShaders = false;
+		bool SupportsIndependentBlend = false;
 	};
 
 	// Owns the native graphics API objects (Vulkan instance, physical and logical device, queues) and the NVRHI

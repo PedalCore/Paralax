@@ -38,6 +38,13 @@ namespace Paralax {
 			MakeField<&SceneRendererSettings::SSAOQuality>("SSAOQuality", FieldOptions().Enum({"Low", "Medium", "High"})),
 			MakeField<&SceneRendererSettings::AmbientFillColor>("AmbientFillColor", FieldOptions().Range(0.0f, 1.0f)),
 			MakeField<&SceneRendererSettings::AmbientFillIntensity>("AmbientFillIntensity", FieldOptions().Range(0.0f, 8.0f).Describe("Explicit artistic diffuse fill, independent of GI and environment intensity.")),
+			MakeField<&SceneRendererSettings::SSREnabled>("SSREnabled", FieldOptions().Describe("Opaque screen-space reflections; misses retain environment specular. Geometric depth, no displaced POM intersections.")),
+			MakeField<&SceneRendererSettings::SSRTemporalEnabled>("SSRTemporalEnabled", FieldOptions().Describe("Independent reflection history; moving geometry and lighting reset accumulation.")),
+			MakeField<&SceneRendererSettings::SSRHistoryWeight>("SSRHistoryWeight", FieldOptions().Range(0.0f, 0.95f)),
+			MakeField<&SceneRendererSettings::SSRMaxDistance>("SSRMaxDistance", FieldOptions().Range(0.1f, 200.0f)),
+			MakeField<&SceneRendererSettings::SSRThickness>("SSRThickness", FieldOptions().Range(0.001f, 1.0f)),
+			MakeField<&SceneRendererSettings::SSRMaxRoughness>("SSRMaxRoughness", FieldOptions().Range(0.05f, 1.0f)),
+			MakeField<&SceneRendererSettings::SSRMaxSteps>("SSRMaxSteps", FieldOptions().Range(16, 256)),
 			MakeField<&SceneRendererSettings::BloomEnabled>("BloomEnabled", FieldOptions().Describe("Soft-threshold scene-linear HDR bloom, before tonemapping.")),
 			MakeField<&SceneRendererSettings::BloomThreshold>("BloomThreshold", FieldOptions().Range(0.0f, 64.0f)),
 			MakeField<&SceneRendererSettings::BloomSoftKnee>("BloomSoftKnee", FieldOptions().Range(0.0f, 1.0f)),
@@ -67,7 +74,7 @@ namespace Paralax {
 			MakeField<&SceneRendererSettings::GIHysteresis>("GIHysteresis", FieldOptions().Range(0.0f, 0.99f).Describe("Previous lighting retained on each probe update.")),
 			MakeField<&SceneRendererSettings::GINormalBias>("GINormalBias", FieldOptions().Range(0.0f, 0.05f).Describe("Receiver normal offset in metres.")),
 			MakeField<&SceneRendererSettings::GIViewBias>("GIViewBias", FieldOptions().Range(0.0f, 0.5f).Describe("Receiver view offset as a fraction of probe spacing, limited to half the available view-ray distance.")),
-			MakeField<&SceneRendererSettings::DebugView>("DebugView", FieldOptions().Enum({"Lit", "Normals", "BaseColor", "Indirect", "GICoverage", "DirectDiffuse", "DirectSpecular", "EnvironmentDiffuse", "EnvironmentSpecular", "Emissive", "IndirectDiffuse", "GIWeightSum", "GIValidNeighbours", "GIProbeWeight", "GIMeanDistance", "GISecondMoment", "GIVariance", "LocalShadow", "AmbientOcclusion", "AmbientFill"})),
+			MakeField<&SceneRendererSettings::DebugView>("DebugView", FieldOptions().Enum({"Lit", "Normals", "BaseColor", "Indirect", "GICoverage", "DirectDiffuse", "DirectSpecular", "EnvironmentDiffuse", "EnvironmentSpecular", "Emissive", "IndirectDiffuse", "GIWeightSum", "GIValidNeighbours", "GIProbeWeight", "GIMeanDistance", "GISecondMoment", "GIVariance", "LocalShadow", "AmbientOcclusion", "AmbientFill", "Reflections"})),
 		};
 		return s_Fields;
 	}
@@ -235,6 +242,8 @@ namespace Paralax {
 		, m_RenderScale(device, m_EffectBudget, effectFactory)
 		, m_TemporalAA(device, m_EffectBudget, effectFactory)
 		, m_SpatialAA(device, m_EffectBudget, effectFactory)
+		, m_Reflections(device, m_EffectBudget, effectFactory)
+		, m_ReflectionHistory(device, m_EffectBudget, effectFactory)
 		, m_EffectFactory(effectFactory)
 		, m_Deferred(device, deferredFactory)
 		, m_Visibility(device, deferredFactory)
@@ -248,6 +257,8 @@ namespace Paralax {
 		m_ViewBindings = nullptr;
 		m_TonemapBindings = nullptr;
 		m_CommandList = nullptr;
+		m_ReflectionHistory.Release();
+		m_Reflections.Release();
 		m_AmbientOcclusion.Release();
 		m_Bloom.Release();
 		m_Text.InvalidateDepthFramebuffers(m_RenderScale.GetDepth());
@@ -1201,13 +1212,13 @@ namespace Paralax {
 			}
 	}
 
-	void SceneRenderer::RenderForward(const GPU::ViewConstants& view)
+	void SceneRenderer::RenderForward(const GPU::ViewConstants& view, ReflectionHistory* reflectionHistory)
 	{
 		m_CommandList->clearTextureFloat(m_HDRTarget, nvrhi::AllSubresources, nvrhi::Color(0.0f, 0.0f, 0.0f, 1.0f));
 		m_CommandList->clearDepthStencilTexture(m_DepthTarget, nvrhi::AllSubresources, true, 0.0f, false, 0);
 
 		nvrhi::Viewport viewport(static_cast<float>(m_Width), static_cast<float>(m_Height));
-		auto drawItems = [&](bool blendPass, bool guidePass = false) {
+		auto drawItems = [&](bool blendPass, bool guidePass = false, bool reflectionGuide = false) {
 			for (const DrawItem& draw : m_Draws)
 			{
 				if (!draw.Visible || draw.Blend != blendPass)
@@ -1221,6 +1232,16 @@ namespace Paralax {
 				if (!blendPass && m_Stats.EffectivePath != RenderPath::Forward)
 					state.pipeline = m_Deferred.GetMaterialPipeline(draw.DoubleSided, draw.Mirrored);
 				state.framebuffer = !blendPass && m_Stats.EffectivePath != RenderPath::Forward ? m_Deferred.GetFramebuffer() : m_HDRFramebuffer.Get();
+				if (!blendPass && m_Reflections.IsReady() && m_Stats.EffectivePath == RenderPath::Forward)
+				{
+					state.pipeline = m_Reflections.GetOpaquePipeline(draw.DoubleSided, draw.Mirrored);
+					state.framebuffer = m_Reflections.GetOpaqueFramebuffer();
+				}
+				if (reflectionGuide)
+				{
+					state.pipeline = m_Reflections.GetGuidePipeline(draw.DoubleSided, draw.Mirrored);
+					state.framebuffer = m_Reflections.GetGuideFramebuffer();
+				}
 				if (guidePass)
 				{
 					state.pipeline = m_AmbientOcclusion.GetGuidePipeline(draw.DoubleSided, draw.Mirrored);
@@ -1251,6 +1272,8 @@ namespace Paralax {
 			m_Stats.SSAOPasses += 5;
 			m_Stats.DrawCalls += 5;
 		};
+		if (m_Reflections.IsReady())
+			m_Reflections.ClearGuides(m_CommandList);
 		if (m_AmbientOcclusion.NeedsPrepass())
 		{
 			m_AmbientOcclusion.ClearGuide(m_CommandList);
@@ -1269,7 +1292,9 @@ namespace Paralax {
 		if (m_Stats.EffectivePath != RenderPath::Forward)
 		{
 			renderAO();
-			m_Deferred.Resolve(m_CommandList, m_ViewBindings, m_ProbeGI.GetBindings());
+			m_Deferred.Resolve(m_CommandList, m_ViewBindings, m_ProbeGI.GetBindings(),
+							   m_Reflections.IsReady() ? m_Reflections.GetOpaquePipeline(false, false) : nullptr,
+							   m_Reflections.IsReady() ? m_Reflections.GetOpaqueFramebuffer() : nullptr);
 			++m_Stats.DrawCalls;
 			++m_Stats.SurfaceResolveDrawCalls;
 		}
@@ -1288,7 +1313,22 @@ namespace Paralax {
 			m_CommandList->draw(nvrhi::DrawArguments().setVertexCount(3));
 		}
 
-		drawItems(true);
+		if (m_Reflections.IsReady())
+		{
+			m_Profiler.BeginSection(m_CommandList, RenderTimingSection::Reflections);
+			if (m_Reflections.NeedsGuides())
+				drawItems(false, false, true);
+			const ReflectionSettings settings{m_Settings.SSRMaxDistance, m_Settings.SSRThickness, m_Settings.SSRMaxRoughness,
+											  static_cast<uint32_t>(std::clamp(m_Settings.SSRMaxSteps, 16, 256))};
+			m_Reflections.Render(m_CommandList, settings, m_Settings.DebugView == RenderDebugView::Reflections, reflectionHistory, view.ViewProjection, m_Settings.SSRHistoryWeight, &m_Profiler);
+			m_Profiler.EndSection(m_CommandList, RenderTimingSection::Reflections);
+			m_Stats.SSRPasses = m_Reflections.GetHierarchyLevels() + 2 + (reflectionHistory ? 1u : 0u);
+			m_Stats.DrawCalls += m_Stats.SSRPasses;
+		}
+		if (m_Settings.DebugView == RenderDebugView::Reflections && !m_Reflections.IsReady())
+			m_CommandList->clearTextureFloat(m_HDRTarget, nvrhi::AllSubresources, nvrhi::Color(0, 0, 0, 1));
+		if (m_Settings.DebugView != RenderDebugView::Reflections)
+			drawItems(true);
 		(void)view;
 	}
 
@@ -1356,7 +1396,18 @@ namespace Paralax {
 		return CreateScope<TemporalAA>(m_GraphicsDevice, m_EffectBudget, m_EffectFactory);
 	}
 
-	void SceneRenderer::Render(Scene& scene, const CameraView& camera, nvrhi::IFramebuffer* output, LocalShadowHistory* shadowHistory, TemporalAA* temporalHistory)
+	Scope<ReflectionHistory> SceneRenderer::CreateReflectionHistory()
+	{
+		return CreateScope<ReflectionHistory>(m_GraphicsDevice, m_EffectBudget, m_EffectFactory);
+	}
+
+	void SceneRenderer::ResetTemporalHistories(const char* reason)
+	{
+		m_TemporalAA.GetState().Reset(reason);
+		m_ReflectionHistory.GetState().Reset(reason);
+	}
+
+	void SceneRenderer::Render(Scene& scene, const CameraView& camera, nvrhi::IFramebuffer* output, LocalShadowHistory* shadowHistory, TemporalAA* temporalHistory, ReflectionHistory* reflectionHistory)
 	{
 		PX_CORE_VERIFY(m_Initialized, "SceneRenderer::Render called before a successful Initialize");
 		PX_CORE_VERIFY(output, "SceneRenderer::Render requires an output framebuffer");
@@ -1366,10 +1417,15 @@ namespace Paralax {
 			return;
 
 		TemporalAA& aa = temporalHistory ? *temporalHistory : m_TemporalAA;
+		ReflectionHistory* reflections = reflectionHistory ? reflectionHistory : temporalHistory ? nullptr
+																								 : &m_ReflectionHistory;
+		if (reflections != &m_ReflectionHistory)
+			m_ReflectionHistory.DetachInputs();
 		auto& failedScale = aa.m_FailedScale;
 		const double cpuStart = m_Settings.ProfilingEnabled ? ProfilingTimeSeconds() : 0;
 		m_Stats = SceneRenderStats();
 		m_FrameIndex++;
+		m_Stats.RenderFrame = m_FrameIndex;
 		const float requestedScale = std::isfinite(m_Settings.InternalRenderScale) ? std::clamp(m_Settings.InternalRenderScale, 0.5f, 2.0f) : 1.0f;
 		const glm::uvec2 outputSize(outputInfo.width, outputInfo.height);
 		const auto requestedSize = RenderScale::CalculateDimensions(outputInfo.width, outputInfo.height, requestedScale);
@@ -1384,9 +1440,33 @@ namespace Paralax {
 		const bool cachedFailure = bool(failedScale);
 		glm::uvec2 internalSize = cachedFailure ? outputSize : requestedSize;
 		const bool temporalRequested = m_Settings.AntiAliasing == AntiAliasingMode::Temporal && m_Settings.DebugView == RenderDebugView::None;
+		const bool reflectionRequested = m_Settings.SSREnabled &&
+										 (m_Settings.DebugView == RenderDebugView::None || m_Settings.DebugView == RenderDebugView::Reflections);
+		uint64_t reflectionPlan = HashCombine(HashCombine(requestedSize.x, requestedSize.y), HashCombine(outputSize.x, outputSize.y));
+		reflectionPlan = HashCombine(reflectionPlan, HashCombine(static_cast<uint64_t>(m_Settings.Path), static_cast<uint64_t>(m_Settings.AntiAliasing)));
+		reflectionPlan = HashCombine(reflectionPlan, HashCombine(worldText ? 1u : 0u, m_Settings.SSAOEnabled ? 1u : 0u));
+		const bool reflectionTransition = reflectionPlan != m_ReflectionPlanKey;
+		const bool newReflectionRequest = reflectionRequested && !m_ReflectionWasRequested;
+		m_ReflectionWasRequested = reflectionRequested;
+		const bool reflectionHistoryRequested = reflectionRequested && m_Settings.SSRTemporalEnabled && reflections;
+		if (reflections && (!reflectionHistoryRequested || reflections->m_ResourcePlan != reflectionPlan || (reflections->IsReady() && !reflections->MatchesSize(internalSize))))
+			reflections->Release();
+		if (reflections)
+			reflections->m_ResourcePlan = reflectionPlan;
+		const bool changedAAOwner = m_ReflectionAAOwner != aa.m_OwnerToken;
+		m_ReflectionAAOwner = aa.m_OwnerToken;
+		if (!reflectionRequested || reflectionTransition || (temporalRequested && changedAAOwner))
+		{
+			// Old reflection scratch and failed-input references must not starve a new scale/AA request.
+			if (reflections)
+				reflections->DetachInputs();
+			m_Reflections.Release();
+			m_EffectBudget.CollectRetired();
+		}
+		m_ReflectionPlanKey = reflectionPlan;
 		const bool bloomRequested = m_Settings.BloomEnabled && std::isfinite(m_Settings.BloomIntensity) && m_Settings.BloomIntensity > 0 && m_Settings.DebugView == RenderDebugView::None;
 		const auto bloomLevels = static_cast<uint32_t>(std::clamp(m_Settings.BloomLevels, 1, 6));
-		if (m_Bloom.IsReady() && (!bloomRequested || !m_Bloom.MatchesShape(internalSize.x, internalSize.y, bloomLevels)))
+		if (m_Bloom.IsReady() && (!bloomRequested || !m_Bloom.MatchesShape(internalSize.x, internalSize.y, bloomLevels) || (reflectionRequested && (newReflectionRequest || reflectionTransition || changedAAOwner))))
 		{
 			// Disabled or incompatible pyramids must not consume a new AA request's budget.
 			m_TonemapBindings = nullptr;
@@ -1635,6 +1715,25 @@ namespace Paralax {
 		const auto rasterProjection = temporalActive ? TemporalState::JitterProjection(camera.Projection, {m_Width, m_Height}, aa.GetState().GetJitter()) : camera.Projection;
 		nvrhi::ITexture* sceneColor = temporalActive ? aa.GetOutput() : m_HDRTarget.Get();
 
+		const auto reflectionBacking = m_Reflections.GetBackingAttempts();
+		m_Stats.SSRActive = m_Reflections.Prepare(reflectionRequested, m_HDRTarget, m_DepthTarget,
+												  m_Stats.EffectivePath == RenderPath::Forward ? std::array<nvrhi::ITexture*, 3>{} : m_Deferred.GetMaterialGuides(),
+												  m_ViewConstants, m_Environment.GetBRDFLut(), m_InputLayout, m_ViewLayout, m_MaterialLayout, m_ProbeGI.GetLayout(),
+												  m_Stats.EffectivePath == RenderPath::Forward ? nullptr : m_Deferred.GetSurfaceLayout());
+		m_StaticLightingDirty |= reflectionBacking != m_Reflections.GetBackingAttempts();
+		m_Stats.SSRFallbackReason = m_Reflections.GetFallbackReason();
+		m_Stats.SSROwnedBytes = m_Reflections.GetOwnedBytes();
+		m_Stats.SSRHierarchyLevels = m_Reflections.GetHierarchyLevels();
+		if (reflections && !m_Stats.SSRActive)
+			reflections->Release();
+		const auto reflectionHistoryBacking = reflections ? reflections->GetBackingAttempts() : 0;
+		bool reflectionHistoryActive = reflectionHistoryRequested && m_Stats.SSRActive && reflections->Prepare(m_Reflections.GetHistoryInputs());
+		if (reflections && !reflectionHistoryActive)
+			reflections->GetState().Reset("reflection history unavailable or disabled");
+		m_StaticLightingDirty |= reflections && reflectionHistoryBacking != reflections->GetBackingAttempts();
+		if (reflections)
+			m_Stats.SSROwnedBytes += reflections->GetOwnedBytes();
+
 		auto* previousBloom = m_Bloom.GetTexture();
 		const uint64_t bloomBackingAttempts = m_Bloom.GetBackingAttempts();
 		if (m_Bloom.IsReady() && (!bloomRequested || !m_Bloom.MatchesInputs(sceneColor, bloomLevels)))
@@ -1646,7 +1745,7 @@ namespace Paralax {
 		m_Stats.BloomFallbackReason = m_Bloom.GetFallbackReason();
 		m_Stats.EffectOwnedBytes = m_EffectBudget.GetUsedBytes();
 		m_Stats.EffectPeakBytes = m_EffectBudget.GetPeakBytes();
-		m_Stats.EffectAllocationAttempts = m_AmbientOcclusion.GetAllocationAttempts() + m_Bloom.GetAllocationAttempts() + m_RenderScale.GetAllocationAttempts() + aa.GetAllocationAttempts() + m_SpatialAA.GetAllocationAttempts() + m_SupersampleAllocationAttempts;
+		m_Stats.EffectAllocationAttempts = m_AmbientOcclusion.GetAllocationAttempts() + m_Bloom.GetAllocationAttempts() + m_RenderScale.GetAllocationAttempts() + aa.GetAllocationAttempts() + m_SpatialAA.GetAllocationAttempts() + m_SupersampleAllocationAttempts + m_Reflections.GetAllocationAttempts() + (reflections ? reflections->GetAllocationAttempts() : 0);
 
 		if (m_StaticLightingDirty)
 		{
@@ -1704,7 +1803,7 @@ namespace Paralax {
 		view.ViewportSize = glm::vec2(static_cast<float>(m_Width), static_cast<float>(m_Height));
 		view.Exposure = m_Settings.Exposure;
 		view.LightCount = static_cast<uint32_t>(m_Lights.size());
-		view.DebugView = static_cast<uint32_t>(m_Settings.DebugView);
+		view.DebugView = m_Settings.DebugView == RenderDebugView::Reflections ? 0u : static_cast<uint32_t>(m_Settings.DebugView);
 		view.Diagnostics = {m_Settings.EnvironmentSpecular ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
 		if (sunShadows)
 			ComputeCascades(camera, sunDirection, view);
@@ -1800,8 +1899,34 @@ namespace Paralax {
 			RenderShadows(view);
 		RenderLocalShadows();
 		m_Profiler.EndSection(m_CommandList, RenderTimingSection::Shadows);
+		if (reflectionHistoryActive)
+		{
+			TemporalFrameSnapshot snapshot;
+			snapshot.Scene = SceneToken(scene);
+			snapshot.CameraIdentity = camera.Identity;
+			snapshot.View = camera.View;
+			snapshot.Projection = camera.Projection;
+			snapshot.InternalSize = {m_Width, m_Height};
+			snapshot.OutputSize = outputSize;
+			uint64_t signature = HashCombine(TemporalLightingKey(scene, m_Assets, m_Settings), HashCombine(static_cast<uint64_t>(m_Stats.EffectivePath), m_TemporalResetGeneration));
+			signature = HashCombine(signature, HashCombine(m_ProbeGI.GetUpdateCount(), static_cast<uint64_t>(m_Stats.EffectiveAA)));
+			for (const auto& draw : m_Draws)
+			{
+				signature = HashCombine(signature, HashCombine(draw.EntityID, HashCombine(draw.MeshID, draw.SubmeshOrdinal)));
+				signature = HashCombine(signature, HashCombine(draw.TemporalVersion, (draw.Blend ? 1u : 0u) | (draw.CastShadows ? 2u : 0u)));
+				for (int column = 0; column < 4; ++column)
+					for (int row = 0; row < 4; ++row)
+						signature = HashCombine(signature, std::bit_cast<uint32_t>(draw.World[column][row]));
+			}
+			snapshot.Settings = signature;
+			reflectionHistoryActive = reflections->GetState().Stage(snapshot, {});
+		}
+		m_Stats.SSRHistoryActive = reflectionHistoryActive;
+		m_Stats.SSRHistoryEligible = reflectionHistoryActive && reflections->GetState().CanUseHistory();
+		m_Stats.SSRHistoryReason = !reflections ? "private AA view without reflection history" : !reflections->GetFallbackReason().empty() ? reflections->GetFallbackReason()
+																																		   : reflections->GetState().GetResetReason();
 		m_Profiler.BeginSection(m_CommandList, RenderTimingSection::Scene);
-		RenderForward(view);
+		RenderForward(view, reflectionHistoryActive ? reflections : nullptr);
 		m_Profiler.EndSection(m_CommandList, RenderTimingSection::Scene);
 
 		if (temporalActive)
@@ -1878,13 +2003,21 @@ namespace Paralax {
 		m_Stats.TextGlyphs = m_Text.Render(m_CommandList, scene, rasterProjection * camera.View, output,
 										   m_RenderScale.IsReady() ? m_RenderScale.GetDepth() : m_DepthTarget.Get());
 		m_Profiler.EndSection(m_CommandList, RenderTimingSection::Overlays);
-		m_Profiler.EndFrame(m_CommandList, static_cast<uint32_t>(m_Stats.EffectivePath), m_Stats.SSAOActive, m_Stats.BloomActive, static_cast<uint32_t>(m_Stats.EffectiveAA));
+		m_Profiler.EndFrame(m_CommandList, static_cast<uint32_t>(m_Stats.EffectivePath), m_Stats.SSAOActive, m_Stats.BloomActive, static_cast<uint32_t>(m_Stats.EffectiveAA), m_Stats.SSRActive, m_Stats.SSRHistoryActive);
 		m_CommandList->close();
 		const double submittedAt = ProfilingTimeSeconds();
 		m_Device->executeCommandList(m_CommandList);
 		m_Profiler.Submitted(submittedAt);
+		if (m_Stats.SSRActive)
+			m_Reflections.CommitInspectionFrame(view, m_FrameIndex, static_cast<uint32_t>(m_Stats.EffectivePath));
 		if (temporalActive)
 			aa.Commit();
+		if (reflectionHistoryActive)
+			reflections->Commit();
+		m_Stats.SSRHistoryValid = reflections && reflections->GetState().IsValid();
+		m_Stats.SSRHistoryCompletedFrames = reflections ? reflections->GetState().GetCompletedFrames() : 0;
+		if (reflections && reflections != &m_ReflectionHistory)
+			reflections->DetachInputs();
 		aa.m_LastPasses = m_Stats.AAPasses;
 		m_Stats.AAHistoryValid = aa.GetState().IsValid();
 		m_Stats.AACompletedFrames = aa.GetState().GetCompletedFrames();
