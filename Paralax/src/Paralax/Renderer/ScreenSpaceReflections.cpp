@@ -268,10 +268,17 @@ namespace Paralax {
 		desc.initialState = nvrhi::ResourceStates::ShaderResource;
 		desc.keepInitialState = true;
 		desc.debugName = "ReflectionPixelInspection";
-		auto* color = textures.Create(desc);
+		const auto createTarget = [&] {
+			const auto before = textures.GetBackingAttempts();
+			auto* target = textures.Create(desc);
+			// Include failed committed attempts; a partial diagnostic still changes allocation order.
+			m_InspectionBackingAttempts += textures.GetBackingAttempts() - before;
+			return target;
+		};
+		auto* color = createTarget();
 		if (!color)
 			return std::nullopt;
-		auto* details = textures.Create(desc);
+		auto* details = createTarget();
 		if (!details)
 			return std::nullopt;
 		auto framebuffer = m_Factory.CreateFramebuffer(device, nvrhi::FramebufferDesc().addColorAttachment(color).addColorAttachment(details));

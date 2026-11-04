@@ -38,6 +38,7 @@ namespace {
 		std::string FailTexture;
 		bool IndependentBlend = true;
 		bool FailInspectionFramebuffer = false;
+		uint32_t InspectionTargetAttempts = 0, FailInspectionTargetAttempt = 0;
 		nvrhi::InputLayoutHandle Input;
 		nvrhi::BindingLayoutVector MaterialLayouts;
 		nvrhi::TextureHandle Depth, BRDF;
@@ -45,6 +46,12 @@ namespace {
 		bool SupportsIndependentBlend(const GraphicsDevice& graphics) override { return IndependentBlend && PostEffectResourceFactory::SupportsIndependentBlend(graphics); }
 		nvrhi::TextureHandle CreateTexture(nvrhi::IDevice* device, const nvrhi::TextureDesc& desc) override
 		{
+			if (!desc.isVirtual && desc.debugName == "ReflectionPixelInspection")
+			{
+				++InspectionTargetAttempts;
+				if (InspectionTargetAttempts == FailInspectionTargetAttempt)
+					return nullptr;
+			}
 			return !desc.isVirtual && desc.debugName == FailTexture ? nullptr : PostEffectResourceFactory::CreateTexture(device, desc);
 		}
 		nvrhi::GraphicsPipelineHandle CreatePipeline(nvrhi::IDevice* device, const nvrhi::GraphicsPipelineDesc& desc, const nvrhi::FramebufferInfo& info) override
@@ -426,6 +433,95 @@ TEST_CASE("ScreenSpaceReflections: pixel inspection preserves output and history
 		renderer.GetSettings().SSREnabled = false;
 		renderer.Render(scene, camera, output.Framebuffer);
 		CHECK_FALSE(renderer.InspectReflectionPixel({0, 0}, renderer.GetStats().RenderFrame));
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ScreenSpaceReflections: inspection allocations invalidate static lighting while rejected probes do not")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	auto* device = graphics.GetDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	uint64_t baselineBytes = 0;
+	for (int control = 0; control < 8; ++control)
+	{
+		CAPTURE(control);
+		AssetManager assets;
+		Scene scene("InspectionLighting");
+		ReflectionOutput output(device);
+		ReflectionFactory factory;
+		SceneRenderer renderer(graphics, assets, nullptr, nullptr, &factory, control == 7 ? baselineBytes : PostEffectBudget::DefaultCapacity);
+		REQUIRE(renderer.Initialize());
+		renderer.GetSettings().GIEnabled = false;
+		renderer.GetSettings().SSREnabled = true;
+		renderer.GetSettings().SSRTemporalEnabled = false;
+		const auto camera = CameraView::LookAt({0, 0, 4}, {0, 0, 0}, glm::radians(60.0f), 1);
+		renderer.Render(scene, camera, output.Framebuffer);
+		renderer.Render(scene, camera, output.Framebuffer);
+		REQUIRE(renderer.GetStats().StaticLightingGenerations == 0);
+		REQUIRE(renderer.GetStats().SSRActive);
+		if (control == 0)
+			baselineBytes = renderer.GetStats().EffectOwnedBytes;
+		REQUIRE(baselineBytes > 0);
+		const auto before = ReadbackTexture(device, output.Texture);
+		REQUIRE(before.GetPixel(16, 16).g > 40);
+		const auto frame = renderer.GetStats().RenderFrame;
+		// Model the allocation-order loss deterministically; a later render must regenerate only after backing attempts.
+		const auto& maps = renderer.GetEnvironmentMaps();
+		auto commands = device->createCommandList();
+		REQUIRE(commands);
+		commands->open();
+		for (auto* texture : {renderer.GetBRDFLut(), maps.Radiance.Get(), maps.Specular.Get(), maps.Diffuse.Get()})
+			commands->clearTextureFloat(texture, nvrhi::AllSubresources, nvrhi::Color(0));
+		commands->close();
+		device->executeCommandList(commands);
+		REQUIRE(device->waitForIdle());
+		if (control == 1)
+			CHECK_FALSE(renderer.InspectReflectionPixel({32, 0}, frame));
+		else if (control == 2)
+			CHECK_FALSE(renderer.InspectReflectionPixel({0, 0}, frame + 1));
+		else if (control == 3)
+		{
+			factory.FailTexture = "ReflectionPixelInspection";
+			CHECK_FALSE(renderer.InspectReflectionPixel({0, 0}, frame));
+			factory.FailTexture.clear();
+		}
+		else if (control == 4)
+		{
+			factory.FailInspectionFramebuffer = true;
+			CHECK_FALSE(renderer.InspectReflectionPixel({0, 0}, frame));
+			factory.FailInspectionFramebuffer = false;
+		}
+		else if (control == 5)
+		{
+			REQUIRE(renderer.InspectReflectionPixel({0, 0}, frame));
+			REQUIRE(renderer.InspectReflectionPixel({0, 0}, frame));
+		}
+		else if (control == 6)
+		{
+			factory.FailInspectionTargetAttempt = 2;
+			CHECK_FALSE(renderer.InspectReflectionPixel({0, 0}, frame));
+		}
+		else if (control == 7)
+			CHECK_FALSE(renderer.InspectReflectionPixel({0, 0}, frame));
+		CHECK(factory.InspectionTargetAttempts == (control < 3 || control == 7 ? 0u : control == 3 ? 1u
+																				  : control == 5   ? 4u
+																								   : 2u));
+		CHECK(renderer.GetStats().RenderFrame == frame);
+		CHECK(renderer.GetStats().StaticLightingGenerations == 0);
+		CHECK(ReadbackTexture(device, output.Texture).GetPixels() == before.GetPixels());
+		renderer.Render(scene, camera, output.Framebuffer);
+		const bool allocated = control >= 3 && control <= 6;
+		CHECK(renderer.GetStats().StaticLightingGenerations == (allocated ? 1 : 0));
+		const auto restored = ReadbackTexture(device, output.Texture);
+		if (allocated)
+			CHECK(restored.GetPixels() == before.GetPixels());
+		else
+			CHECK(restored.GetPixel(16, 16).g < 2);
+		renderer.Render(scene, camera, output.Framebuffer);
+		CHECK(renderer.GetStats().StaticLightingGenerations == 0);
 	}
 	CHECK(graphics.GetValidationErrorCount() == errors);
 }

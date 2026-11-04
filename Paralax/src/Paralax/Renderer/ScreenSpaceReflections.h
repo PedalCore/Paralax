@@ -68,6 +68,7 @@ namespace Paralax {
 		uint64_t GetOwnedBytes() const { return m_Textures.GetOwnedBytes() + m_Hierarchy.GetOwnedBytes(); }
 		uint64_t GetAllocationAttempts() const { return m_Textures.GetAllocationAttempts() + m_Hierarchy.GetAllocationAttempts() + m_ObjectAttempts; }
 		uint64_t GetBackingAttempts() const { return m_Textures.GetBackingAttempts() + m_Hierarchy.GetBackingAttempts(); }
+		uint64_t GetInspectionBackingAttempts() const { return m_InspectionBackingAttempts; }
 		uint32_t GetHierarchyLevels() const { return m_Hierarchy.GetLevelCount(); }
 		const std::string& GetFallbackReason() const { return m_Reason; }
 
@@ -119,7 +120,7 @@ namespace Paralax {
 		Ref<const void> m_HistoryInputToken;
 		std::optional<InputKey> m_Inputs;
 		std::optional<FailedRequest> m_Failed;
-		uint64_t m_ObjectAttempts = 0;
+		uint64_t m_ObjectAttempts = 0, m_InspectionBackingAttempts = 0;
 		bool m_Ready = false, m_Forward = false;
 		std::string m_Reason;
 	};

@@ -215,6 +215,32 @@ TEST_CASE("ReflectionHistory: private captures warmup and stateless external AA 
 		CHECK_FALSE(owner.GetState().IsValid());
 		renderer.Render(viewport, a, output);
 		CHECK_FALSE(renderer.GetStats().SSRHistoryEligible);
+
+		// Disabling a private view must not destroy the viewport's completed data or hide its budget charge.
+		warmup->Release();
+		const auto viewportBytes = owner.GetOwnedBytes();
+		const auto viewportFrames = owner.GetState().GetCompletedFrames();
+		const auto viewportBacking = owner.GetBackingAttempts();
+		REQUIRE(viewportBytes > 0);
+		REQUIRE(privateHistory->GetOwnedBytes() > 0);
+		renderer.GetSettings().SSREnabled = false;
+		renderer.Render(capture, b, output, nullptr, aa.get(), privateHistory.get());
+		CHECK_FALSE(renderer.GetStats().SSRActive);
+		CHECK_FALSE(renderer.GetStats().SSRHistoryActive);
+		CHECK(privateHistory->GetOwnedBytes() == 0);
+		CHECK(owner.GetOwnedBytes() == viewportBytes);
+		CHECK(owner.GetBackingAttempts() == viewportBacking);
+		CHECK(owner.GetState().GetCompletedFrames() == viewportFrames);
+		CHECK(owner.GetState().GetPreviousFrame().Scene == token);
+		CHECK(owner.GetState().IsValid());
+		CHECK(renderer.GetStats().EffectOwnedBytes == viewportBytes);
+		aa.reset();
+		privateHistory.reset();
+		warmup.reset();
+		renderer.Render(viewport, a, output);
+		CHECK(owner.GetOwnedBytes() == 0);
+		CHECK_FALSE(owner.GetState().IsValid());
+		CHECK(renderer.GetStats().EffectOwnedBytes == 0);
 	}
 	CHECK(graphics.GetValidationErrorCount() == errors);
 }

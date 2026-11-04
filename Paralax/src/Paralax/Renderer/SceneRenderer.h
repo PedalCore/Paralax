@@ -282,9 +282,16 @@ namespace Paralax {
 		bool ResetGIHistory();
 		// Queue 1..1024 deterministic updates while frozen. False if unavailable or the bounded queue would overflow.
 		bool QueueGIUpdates(uint32_t frames);
+		// Main-thread synchronous diagnostic of the latest SSR frame; returns owned data or nullopt on failure.
+		// Allocations schedule static-lighting recovery on the next render without changing this frame or history.
+		std::optional<ReflectionPixelInspection> InspectReflectionPixel(glm::uvec2 pixel, uint64_t frame)
+		{
+			const auto before = m_Reflections.GetInspectionBackingAttempts();
+			auto result = m_Reflections.InspectPixel(pixel, frame);
+			m_StaticLightingDirty |= before != m_Reflections.GetInspectionBackingAttempts();
+			return result;
+		}
 		// Synchronous, main-thread-only GPU inspection between renders; returns owned data or nullopt.
-		// Main-thread synchronous diagnostic of the latest submitted SSR frame; null if stale or unavailable.
-		std::optional<ReflectionPixelInspection> InspectReflectionPixel(glm::uvec2 pixel, uint64_t frame) { return m_Reflections.InspectPixel(pixel, frame); }
 		std::optional<GPU::ProbeInspection> InspectGI(glm::vec3 position, glm::vec3 normal, glm::vec3 view, float viewDistance = 1000000.0f)
 		{
 			return m_Settings.GIEnabled ? m_ProbeGI.Inspect(position, normal, view, viewDistance) : std::nullopt;

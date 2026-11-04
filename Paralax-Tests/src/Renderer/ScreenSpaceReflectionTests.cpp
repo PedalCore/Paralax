@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <span>
 
 using namespace Paralax;
 
@@ -41,85 +42,91 @@ namespace {
 
 }
 
-TEST_CASE("ScreenSpaceReflections: opaque emissive hits work without environment intensity on all paths")
-{
-	if (!Testing::RequireTestGraphicsDevice())
-		return;
-	auto& graphics = *Testing::GetTestGraphicsDevice();
-	auto* device = graphics.GetDevice();
-	const auto errors = graphics.GetValidationErrorCount();
+namespace {
+
+	struct ReflectionCase
 	{
-		AssetManager assets;
-		auto mirror = CreateRef<MaterialAsset>();
-		mirror->Handle = AssetHandle(61001);
-		mirror->MetallicFactor = 1;
-		mirror->RoughnessFactor = 0.08f;
-		mirror->BaseColorFactor = glm::vec4(1);
-		assets.AddMemoryAsset(mirror);
-		auto emitter = CreateRef<MaterialAsset>();
-		emitter->Handle = AssetHandle(61002);
-		emitter->EmissiveFactor = {0.5f, 0, 0};
-		emitter->BaseColorFactor = glm::vec4(0, 0, 0, 1);
-		assets.AddMemoryAsset(emitter);
-		assets.AddMemoryAsset(ReflectionQuad(AssetHandle(61003), {{{-3, 0, 3}, {3, 0, 3}, {3, 0, -3}, {-3, 0, -3}}}, {0, 1, 0}));
-		assets.AddMemoryAsset(ReflectionQuad(AssetHandle(61004), {{{-2, 0, -2}, {2, 0, -2}, {2, 3, -2}, {-2, 3, -2}}}, {0, 0, 1}));
-		Scene scene("ReflectionAnalyticMirror");
-		auto floor = scene.CreateEntity("Mirror");
-		auto& floorMesh = floor.AddComponent<MeshComponent>();
-		floorMesh.Mesh = AssetHandle(61003);
-		floorMesh.Materials = {mirror->Handle};
-		auto source = scene.CreateEntity("Emissive panel");
-		auto& panelMesh = source.AddComponent<MeshComponent>();
-		panelMesh.Mesh = AssetHandle(61004);
-		panelMesh.Materials = {emitter->Handle};
-		nvrhi::TextureDesc desc;
-		desc.width = desc.height = 96;
-		desc.format = nvrhi::Format::SRGBA8_UNORM;
-		desc.isRenderTarget = true;
-		desc.initialState = nvrhi::ResourceStates::RenderTarget;
-		desc.keepInitialState = true;
-		auto texture = device->createTexture(desc);
-		auto framebuffer = device->createFramebuffer(nvrhi::FramebufferDesc().addColorAttachment(texture));
-		SceneRenderer renderer(graphics, assets);
-		REQUIRE(renderer.Initialize());
-		auto& settings = renderer.GetSettings();
-		settings.DefaultEnvironmentIntensity = 0;
-		settings.GIEnabled = false;
-		settings.Shadows = false;
-		settings.Tonemapper = TonemapOperator::None;
-		settings.SSRMaxDistance = 20;
-		settings.SSRMaxSteps = 256;
-		for (bool orthographic : {false, true})
+		bool Orthographic;
+		RenderPath Path;
+	};
+
+	void CheckEmissiveReflections(std::span<const ReflectionCase> cases, bool detailed = true)
+	{
+		if (!Testing::RequireTestGraphicsDevice())
+			return;
+		auto& graphics = *Testing::GetTestGraphicsDevice();
+		auto* device = graphics.GetDevice();
+		const auto errors = graphics.GetValidationErrorCount();
 		{
-			CAPTURE(orthographic);
-			auto camera = CameraView::LookAt({0, 2, 4}, {0, 0, -1}, glm::radians(60.0f), 1);
-			if (orthographic)
-				camera.Projection = glm::orthoRH_ZO(-3.0f, 3.0f, -3.0f, 3.0f, camera.Far, camera.Near);
-			const glm::mat4 inverse = glm::inverse(camera.Projection * camera.View);
-			std::vector<glm::uvec2> expectedHits;
-			for (uint32_t y = 0; y < 96; ++y)
-				for (uint32_t x = 0; x < 96; ++x)
-				{
-					const glm::vec2 ndc = (glm::vec2(x, y) + 0.5f) / 96.0f * glm::vec2(2, -2) + glm::vec2(-1, 1);
-					const glm::vec4 near = inverse * glm::vec4(ndc, 1, 1);
-					const glm::vec3 origin = orthographic ? glm::vec3(near) / near.w : glm::vec3(0, 2, 4);
-					const glm::vec3 direction = orthographic ? glm::normalize(glm::vec3(glm::inverse(camera.View)[2])) * -1.0f : glm::normalize(glm::vec3(near) / near.w - origin);
-					if (direction.y >= -0.01f)
-						continue;
-					const float distance = -origin.y / direction.y;
-					const glm::vec3 point = origin + direction * distance;
-					if (std::abs(point.x) >= 2 || point.z <= -1.5f || point.z >= 2)
-						continue;
-					const glm::vec3 ray = glm::reflect(direction, glm::vec3(0, 1, 0));
-					const float hitDistance = (-2 - point.z) / ray.z;
-					const glm::vec3 hit = point + ray * hitDistance;
-					if (hitDistance <= 0 || std::abs(hit.x) >= 1.5f || hit.y < 0.3f || hit.y > 2.5f)
-						continue;
-					expectedHits.emplace_back(x, y);
-				}
-			REQUIRE(expectedHits.size() > 40);
-			for (auto path : {RenderPath::Forward, RenderPath::Deferred, RenderPath::Visibility})
+			AssetManager assets;
+			auto mirror = CreateRef<MaterialAsset>();
+			mirror->Handle = AssetHandle(61001);
+			mirror->MetallicFactor = 1;
+			mirror->RoughnessFactor = 0.08f;
+			mirror->BaseColorFactor = glm::vec4(1);
+			assets.AddMemoryAsset(mirror);
+			auto emitter = CreateRef<MaterialAsset>();
+			emitter->Handle = AssetHandle(61002);
+			emitter->EmissiveFactor = {0.5f, 0, 0};
+			emitter->BaseColorFactor = glm::vec4(0, 0, 0, 1);
+			assets.AddMemoryAsset(emitter);
+			assets.AddMemoryAsset(ReflectionQuad(AssetHandle(61003), {{{-3, 0, 3}, {3, 0, 3}, {3, 0, -3}, {-3, 0, -3}}}, {0, 1, 0}));
+			assets.AddMemoryAsset(ReflectionQuad(AssetHandle(61004), {{{-2, 0, -2}, {2, 0, -2}, {2, 3, -2}, {-2, 3, -2}}}, {0, 0, 1}));
+			Scene scene("ReflectionAnalyticMirror");
+			auto floor = scene.CreateEntity("Mirror");
+			auto& floorMesh = floor.AddComponent<MeshComponent>();
+			floorMesh.Mesh = AssetHandle(61003);
+			floorMesh.Materials = {mirror->Handle};
+			auto source = scene.CreateEntity("Emissive panel");
+			auto& panelMesh = source.AddComponent<MeshComponent>();
+			panelMesh.Mesh = AssetHandle(61004);
+			panelMesh.Materials = {emitter->Handle};
+			nvrhi::TextureDesc desc;
+			desc.width = desc.height = 96;
+			desc.format = nvrhi::Format::SRGBA8_UNORM;
+			desc.isRenderTarget = true;
+			desc.initialState = nvrhi::ResourceStates::RenderTarget;
+			desc.keepInitialState = true;
+			auto texture = device->createTexture(desc);
+			auto framebuffer = device->createFramebuffer(nvrhi::FramebufferDesc().addColorAttachment(texture));
+			SceneRenderer renderer(graphics, assets);
+			REQUIRE(renderer.Initialize());
+			auto& settings = renderer.GetSettings();
+			settings.DefaultEnvironmentIntensity = 0;
+			settings.GIEnabled = false;
+			settings.Shadows = false;
+			settings.Tonemapper = TonemapOperator::None;
+			settings.SSRMaxDistance = 20;
+			settings.SSRMaxSteps = 256;
+			for (const auto [orthographic, path] : cases)
 			{
+				CAPTURE(orthographic);
+				auto camera = CameraView::LookAt({0, 2, 4}, {0, 0, -1}, glm::radians(60.0f), 1);
+				if (orthographic)
+					camera.Projection = glm::orthoRH_ZO(-3.0f, 3.0f, -3.0f, 3.0f, camera.Far, camera.Near);
+				const glm::mat4 inverse = glm::inverse(camera.Projection * camera.View);
+				std::vector<glm::uvec2> expectedHits;
+				for (uint32_t y = 0; y < 96; ++y)
+					for (uint32_t x = 0; x < 96; ++x)
+					{
+						const glm::vec2 ndc = (glm::vec2(x, y) + 0.5f) / 96.0f * glm::vec2(2, -2) + glm::vec2(-1, 1);
+						const glm::vec4 near = inverse * glm::vec4(ndc, 1, 1);
+						const glm::vec3 origin = orthographic ? glm::vec3(near) / near.w : glm::vec3(0, 2, 4);
+						const glm::vec3 direction = orthographic ? glm::normalize(glm::vec3(glm::inverse(camera.View)[2])) * -1.0f : glm::normalize(glm::vec3(near) / near.w - origin);
+						if (direction.y >= -0.01f)
+							continue;
+						const float distance = -origin.y / direction.y;
+						const glm::vec3 point = origin + direction * distance;
+						if (std::abs(point.x) >= 2 || point.z <= -1.5f || point.z >= 2)
+							continue;
+						const glm::vec3 ray = glm::reflect(direction, glm::vec3(0, 1, 0));
+						const float hitDistance = (-2 - point.z) / ray.z;
+						const glm::vec3 hit = point + ray * hitDistance;
+						if (hitDistance <= 0 || std::abs(hit.x) >= 1.5f || hit.y < 0.3f || hit.y > 2.5f)
+							continue;
+						expectedHits.emplace_back(x, y);
+					}
+				REQUIRE(expectedHits.size() > 40);
 				CAPTURE(int(path));
 				settings.Path = path;
 				auto render = [&] {
@@ -135,6 +142,13 @@ TEST_CASE("ScreenSpaceReflections: opaque emissive hits work without environment
 				INFO(renderer.GetStats().SSRFallbackReason);
 				REQUIRE(renderer.GetStats().SSRActive);
 				const auto after = ReadbackTexture(device, texture);
+				if (!detailed)
+				{
+					REQUIRE(std::find(expectedHits.begin(), expectedHits.end(), glm::uvec2(46, 56)) != expectedHits.end());
+					CHECK(before.GetPixel(46, 56).r < 2);
+					CHECK(after.GetPixel(46, 56).r > 100);
+					continue;
+				}
 				if (!orthographic && path == RenderPath::Forward)
 					for (size_t sample = 1; sample <= 4; ++sample)
 					{
@@ -253,6 +267,55 @@ TEST_CASE("ScreenSpaceReflections: opaque emissive hits work without environment
 				}
 			}
 		}
+		CHECK(graphics.GetValidationErrorCount() == errors);
 	}
-	CHECK(graphics.GetValidationErrorCount() == errors);
+
+}
+
+TEST_CASE("ScreenSpaceReflections: opaque emissive hits preserve replacement energy in Forward perspective views")
+{
+	const std::array cases{ReflectionCase{false, RenderPath::Forward}};
+	CheckEmissiveReflections(cases);
+}
+
+TEST_CASE("ScreenSpaceReflections: opaque emissive hits preserve replacement energy in Deferred perspective views")
+{
+	const std::array cases{ReflectionCase{false, RenderPath::Deferred}};
+	CheckEmissiveReflections(cases);
+}
+
+TEST_CASE("ScreenSpaceReflections: opaque emissive hits preserve replacement energy in Visibility perspective views")
+{
+	const std::array cases{ReflectionCase{false, RenderPath::Visibility}};
+	CheckEmissiveReflections(cases);
+}
+
+TEST_CASE("ScreenSpaceReflections: opaque emissive hits preserve replacement energy in Forward orthographic views")
+{
+	const std::array cases{ReflectionCase{true, RenderPath::Forward}};
+	CheckEmissiveReflections(cases);
+}
+
+TEST_CASE("ScreenSpaceReflections: opaque emissive hits preserve replacement energy in Deferred orthographic views")
+{
+	const std::array cases{ReflectionCase{true, RenderPath::Deferred}};
+	CheckEmissiveReflections(cases);
+}
+
+TEST_CASE("ScreenSpaceReflections: opaque emissive hits preserve replacement energy in Visibility orthographic views")
+{
+	const std::array cases{ReflectionCase{true, RenderPath::Visibility}};
+	CheckEmissiveReflections(cases);
+}
+
+TEST_CASE("ScreenSpaceReflections: emissive hits survive shared renderer path and projection transitions")
+{
+	const std::array cases{
+		ReflectionCase{false, RenderPath::Forward},
+		ReflectionCase{false, RenderPath::Deferred},
+		ReflectionCase{false, RenderPath::Visibility},
+		ReflectionCase{true, RenderPath::Forward},
+		ReflectionCase{true, RenderPath::Deferred},
+		ReflectionCase{true, RenderPath::Visibility}};
+	CheckEmissiveReflections(cases, false);
 }

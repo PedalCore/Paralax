@@ -341,6 +341,13 @@ TEST_CASE("ScreenSpaceReflections: approximate depth hits fade continuously whil
 			// Reversing the ray's depth direction exercises both residual signs without changing coverage.
 			fixture.Surface(fixture.Target, fixture.ProjectDepth(boundary + glm::vec3(0, 0, sign * offsets[i])), {0, 0, -sign}, {1, 0, 0}, 0.5f);
 			const auto result = fixture.Run(graphics);
+			CAPTURE(result.x);
+			CAPTURE(result.y);
+			CAPTURE(result.z);
+			CAPTURE(result.w);
+			CHECK(std::isfinite(result.w));
+			CHECK(result.w >= 0);
+			CHECK(result.w <= 1);
 			CHECK(result.w == doctest::Approx(confidence[i]).epsilon(0.001));
 			if (i < 3)
 			{
@@ -351,6 +358,21 @@ TEST_CASE("ScreenSpaceReflections: approximate depth hits fade continuously whil
 				CHECK(details.x == doctest::Approx(double(sign * offsets[i])).epsilon(0.0001));
 				CHECK(details.z == 5);
 				CHECK(inspected.w == result.w);
+			}
+			else if (i == 3)
+			{
+				glm::vec4 details;
+				fixture.Run(graphics, &details);
+				CAPTURE(details.x);
+				CAPTURE(details.z);
+				// The inverse projection can place the nominal boundary just inside the slab.
+				// RGB is unpremultiplied; bound the displayed contribution to far below one 8-bit step.
+				CHECK(result.w <= 1e-5f);
+				for (uint32_t channel = 0; channel < 3; ++channel)
+				{
+					CHECK(std::isfinite(result[channel]));
+					CHECK(std::abs(result[channel] * result.w) <= 1e-5f);
+				}
 			}
 			else
 				CHECK(result == glm::vec4(0));
@@ -604,203 +626,244 @@ TEST_CASE("ScreenSpaceReflections: hypothetical candidate planes reject parallel
 	CHECK(graphics.GetValidationErrorCount() == errors);
 }
 
-TEST_CASE("ScreenSpaceReflections: connected facets preserve finite triangle nearest hits across both projections and directions")
-{
-	if (!Testing::RequireTestGraphicsDevice())
-		return;
-	auto& graphics = *Testing::GetTestGraphicsDevice();
-	const auto errors = graphics.GetValidationErrorCount();
-	for (bool perspective : {false, true})
-		for (float horizontal : {-1.0f, 1.0f})
-			for (float depthSign : {-1.0f, 1.0f})
-				for (uint32_t kind = 0; kind < 14; ++kind)
+namespace {
+
+	void CheckConnectedFacets(bool perspective, float horizontal, float depthSign)
+	{
+		if (!Testing::RequireTestGraphicsDevice())
+			return;
+		auto& graphics = *Testing::GetTestGraphicsDevice();
+		const auto errors = graphics.GetValidationErrorCount();
+		for (uint32_t kind = 0; kind < 14; ++kind)
+		{
+			// Connected bend, true nearer occluder, disconnected bend, depth step, gap, backface, parallel view plane.
+			CAPTURE(perspective);
+			CAPTURE(horizontal);
+			CAPTURE(depthSign);
+			CAPTURE(kind);
+			TraceFixture fixture(8);
+			fixture.Receiver = {horizontal > 0 ? 0u : 7u, 4};
+			fixture.Target = {horizontal > 0 ? 3u : 4u, 4};
+			const glm::uvec2 next{horizontal > 0 ? 4u : 3u, 4};
+			fixture.Projection = perspective ? glm::perspectiveRH_ZO(2 * std::atan(0.04f), 1.0f, 100.0f, 0.1f)
+											 : glm::orthoRH_ZO(-0.08f, 0.08f, -0.08f, 0.08f, 100.0f, 0.1f);
+			fixture.Position = {-horizontal * 0.07f, -0.01f, -2};
+			fixture.Direction = glm::normalize(glm::vec3(horizontal, 0, depthSign));
+			const auto view = perspective ? glm::normalize(-fixture.Position) : glm::vec3(0, 0, 1);
+			fixture.Normal = glm::normalize(view + fixture.Direction);
+			const auto origin = fixture.Position + fixture.Normal * 0.01f;
+			const auto edge = origin + fixture.Direction * (-origin.x / fixture.Direction.x);
+			const glm::vec3 firstNormal{0, 0, -depthSign};
+			const auto sharedPoint = edge + glm::vec3(0, 0, depthSign * (kind == 13 ? 0.055f : kind == 7 || kind >= 9 ? 0.03f
+																													  : 0.005f));
+			const auto firstPoint = kind == 1 ? edge - glm::vec3(0, 0, depthSign * 0.005f) : sharedPoint;
+			const auto inverse = glm::inverse(glm::dmat4(fixture.Projection));
+			auto cameraRay = [&](glm::dvec2 pixel) {
+				auto unproject = [&](double depth) {
+					const auto point = inverse * glm::dvec4(pixel.x / 4 - 1, 1 - pixel.y / 4, depth, 1);
+					return glm::dvec3(point) / point.w;
+				};
+				const auto near = unproject(1);
+				return std::array<glm::dvec3, 2>{near, glm::normalize(unproject(0.5) - near)};
+			};
+			auto planePoint = [&](glm::dvec2 pixel, glm::vec3 point, glm::vec3 normal) {
+				const auto ray = cameraRay(pixel);
+				const auto n = glm::dvec3(normal);
+				return ray[0] + ray[1] * (glm::dot(glm::dvec3(point) - ray[0], n) / glm::dot(ray[1], n));
+			};
+			const float slope = -depthSign * horizontal * std::tan(glm::radians(kind == 2 ? 45.0f : kind == 13 ? 11.0f
+																											   : 9.0f));
+			auto nextNormal = glm::normalize(glm::vec3(slope * depthSign, 0, -depthSign));
+			auto nextPoint = sharedPoint;
+			if (kind == 2 || kind == 6)
+				nextPoint = glm::vec3(planePoint(glm::dvec2(next) + 0.5, sharedPoint, firstNormal));
+			if (kind == 3)
+				nextPoint.z += depthSign * 0.03f;
+			if (kind == 5)
+				nextNormal = -nextNormal;
+			if (kind == 6)
+				nextNormal = glm::normalize(glm::vec3(-horizontal, 0, -depthSign * 1e-7f));
+			const auto firstCenter = glm::vec3(planePoint(glm::dvec2(fixture.Target) + 0.5, firstPoint, firstNormal));
+			const auto nextCenter = glm::vec3(planePoint(glm::dvec2(next) + 0.5, nextPoint, nextNormal));
+			fixture.Surface(fixture.Receiver, fixture.ProjectDepth(fixture.Position), fixture.Normal, {0, 0, 0}, 0.001f);
+			fixture.Surface(fixture.Target, fixture.ProjectDepth(firstCenter), firstNormal, {1, 0, 0}, 0.5f);
+			if (kind != 4)
+				fixture.Surface(next, fixture.ProjectDepth(nextCenter), nextNormal, {0, 1, 0}, 0.5f);
+			if (kind == 8)
+				fixture.Guides[next.y * fixture.Size + next.x].x = std::numeric_limits<float>::quiet_NaN();
+			const glm::uvec2 later{horizontal > 0 ? 5u : 2u, 4};
+			const glm::uvec2 beyond{horizontal > 0 ? 6u : 1u, 4};
+			if (kind == 7 || kind >= 9)
+			{
+				const auto center = glm::vec3(planePoint(glm::dvec2(later) + 0.5, nextPoint, nextNormal));
+				const auto laterNormal = kind == 9 ? glm::normalize(glm::vec3(-horizontal * std::tan(glm::radians(18.0f)), 0, -depthSign)) : nextNormal;
+				fixture.Surface(later, fixture.ProjectDepth(center + glm::vec3(0, 0, kind == 10 ? depthSign * 0.01f : 0)), laterNormal, {0, 0, 1}, 0.5f);
+				if (kind == 11)
+					fixture.Guides[later.y * fixture.Size + later.x].z = 0;
+				if (kind == 13)
 				{
-					// Connected bend, true nearer occluder, disconnected bend, depth step, gap, backface, parallel view plane.
-					CAPTURE(perspective);
-					CAPTURE(horizontal);
-					CAPTURE(depthSign);
-					CAPTURE(kind);
-					TraceFixture fixture(8);
-					fixture.Receiver = {horizontal > 0 ? 0u : 7u, 4};
-					fixture.Target = {horizontal > 0 ? 3u : 4u, 4};
-					const glm::uvec2 next{horizontal > 0 ? 4u : 3u, 4};
-					fixture.Projection = perspective ? glm::perspectiveRH_ZO(2 * std::atan(0.04f), 1.0f, 100.0f, 0.1f)
-													 : glm::orthoRH_ZO(-0.08f, 0.08f, -0.08f, 0.08f, 100.0f, 0.1f);
-					fixture.Position = {-horizontal * 0.07f, -0.01f, -2};
-					fixture.Direction = glm::normalize(glm::vec3(horizontal, 0, depthSign));
-					const auto view = perspective ? glm::normalize(-fixture.Position) : glm::vec3(0, 0, 1);
-					fixture.Normal = glm::normalize(view + fixture.Direction);
-					const auto origin = fixture.Position + fixture.Normal * 0.01f;
-					const auto edge = origin + fixture.Direction * (-origin.x / fixture.Direction.x);
-					const glm::vec3 firstNormal{0, 0, -depthSign};
-					const auto sharedPoint = edge + glm::vec3(0, 0, depthSign * (kind == 13 ? 0.055f : kind == 7 || kind >= 9 ? 0.03f
-																															  : 0.005f));
-					const auto firstPoint = kind == 1 ? edge - glm::vec3(0, 0, depthSign * 0.005f) : sharedPoint;
-					const auto inverse = glm::inverse(glm::dmat4(fixture.Projection));
-					auto cameraRay = [&](glm::dvec2 pixel) {
-						auto unproject = [&](double depth) {
-							const auto point = inverse * glm::dvec4(pixel.x / 4 - 1, 1 - pixel.y / 4, depth, 1);
-							return glm::dvec3(point) / point.w;
-						};
-						const auto near = unproject(1);
-						return std::array<glm::dvec3, 2>{near, glm::normalize(unproject(0.5) - near)};
-					};
-					auto planePoint = [&](glm::dvec2 pixel, glm::vec3 point, glm::vec3 normal) {
-						const auto ray = cameraRay(pixel);
-						const auto n = glm::dvec3(normal);
-						return ray[0] + ray[1] * (glm::dot(glm::dvec3(point) - ray[0], n) / glm::dot(ray[1], n));
-					};
-					const float slope = -depthSign * horizontal * std::tan(glm::radians(kind == 2 ? 45.0f : kind == 13 ? 11.0f
-																													   : 9.0f));
-					auto nextNormal = glm::normalize(glm::vec3(slope * depthSign, 0, -depthSign));
-					auto nextPoint = sharedPoint;
-					if (kind == 2 || kind == 6)
-						nextPoint = glm::vec3(planePoint(glm::dvec2(next) + 0.5, sharedPoint, firstNormal));
-					if (kind == 3)
-						nextPoint.z += depthSign * 0.03f;
-					if (kind == 5)
-						nextNormal = -nextNormal;
-					if (kind == 6)
-						nextNormal = glm::normalize(glm::vec3(-horizontal, 0, -depthSign * 1e-7f));
-					const auto firstCenter = glm::vec3(planePoint(glm::dvec2(fixture.Target) + 0.5, firstPoint, firstNormal));
-					const auto nextCenter = glm::vec3(planePoint(glm::dvec2(next) + 0.5, nextPoint, nextNormal));
-					fixture.Surface(fixture.Receiver, fixture.ProjectDepth(fixture.Position), fixture.Normal, {0, 0, 0}, 0.001f);
-					fixture.Surface(fixture.Target, fixture.ProjectDepth(firstCenter), firstNormal, {1, 0, 0}, 0.5f);
-					if (kind != 4)
-						fixture.Surface(next, fixture.ProjectDepth(nextCenter), nextNormal, {0, 1, 0}, 0.5f);
-					if (kind == 8)
-						fixture.Guides[next.y * fixture.Size + next.x].x = std::numeric_limits<float>::quiet_NaN();
-					const glm::uvec2 later{horizontal > 0 ? 5u : 2u, 4};
-					const glm::uvec2 beyond{horizontal > 0 ? 6u : 1u, 4};
-					if (kind == 7 || kind >= 9)
-					{
-						const auto center = glm::vec3(planePoint(glm::dvec2(later) + 0.5, nextPoint, nextNormal));
-						const auto laterNormal = kind == 9 ? glm::normalize(glm::vec3(-horizontal * std::tan(glm::radians(18.0f)), 0, -depthSign)) : nextNormal;
-						fixture.Surface(later, fixture.ProjectDepth(center + glm::vec3(0, 0, kind == 10 ? depthSign * 0.01f : 0)), laterNormal, {0, 0, 1}, 0.5f);
-						if (kind == 11)
-							fixture.Guides[later.y * fixture.Size + later.x].z = 0;
-						if (kind == 13)
-						{
-							const auto beyondCenter = glm::vec3(planePoint(glm::dvec2(beyond) + 0.5, nextPoint, nextNormal));
-							fixture.Surface(beyond, fixture.ProjectDepth(beyondCenter), nextNormal, {0, 0, 1}, 0.5f);
-						}
-						if (kind == 12)
-							fixture.Distance = -origin.x / fixture.Direction.x + 0.02f;
-					}
+					const auto beyondCenter = glm::vec3(planePoint(glm::dvec2(beyond) + 0.5, nextPoint, nextNormal));
+					fixture.Surface(beyond, fixture.ProjectDepth(beyondCenter), nextNormal, {0, 0, 1}, 0.5f);
+				}
+				if (kind == 12)
+					fixture.Distance = -origin.x / fixture.Direction.x + 0.02f;
+			}
 
-					uint32_t primaryBoundVisit = 0;
-					glm::uvec2 primaryBoundCell{0};
-					if (kind == 13)
+			uint32_t primaryBoundVisit = 0;
+			glm::uvec2 primaryBoundCell{0};
+			if (kind == 13)
+			{
+				// Perspective world-space cell widths vary with depth; derive the first failed bound geometrically.
+				const std::array<glm::uvec2, 3> cells{next, later, beyond};
+				for (uint32_t i = 0; i < cells.size(); ++i)
+				{
+					const auto center = planePoint(glm::dvec2(cells[i]) + 0.5, nextPoint, nextNormal);
+					const double deviation = std::abs(glm::dot(center - glm::dvec3(firstCenter), glm::dvec3(firstNormal)));
+					if (deviation > 0.005)
 					{
-						// Perspective world-space cell widths vary with depth; derive the first failed bound geometrically.
-						const std::array<glm::uvec2, 3> cells{next, later, beyond};
-						for (uint32_t i = 0; i < cells.size(); ++i)
-						{
-							const auto center = planePoint(glm::dvec2(cells[i]) + 0.5, nextPoint, nextNormal);
-							const double deviation = std::abs(glm::dot(center - glm::dvec3(firstCenter), glm::dvec3(firstNormal)));
-							if (deviation > 0.005)
-							{
-								REQUIRE(deviation > 0.0052);
-								primaryBoundVisit = i + 1;
-								primaryBoundCell = cells[i];
-								break;
-							}
-						}
-						REQUIRE(primaryBoundVisit >= 2);
-						REQUIRE(primaryBoundVisit <= 3);
+						REQUIRE(deviation > 0.0052);
+						primaryBoundVisit = i + 1;
+						primaryBoundCell = cells[i];
+						break;
 					}
-					if (kind == 0)
-						REQUIRE(glm::dot(firstNormal, nextNormal) < 0.99f);
+				}
+				REQUIRE(primaryBoundVisit >= 2);
+				REQUIRE(primaryBoundVisit <= 3);
+			}
+			if (kind == 0)
+				REQUIRE(glm::dot(firstNormal, nextNormal) < 0.99f);
 
-					if (kind <= 1 || kind == 7)
+			if (kind <= 1 || kind == 7)
+			{
+				// Intersect finite triangles independently of the tracer's depth slab and continuity rules.
+				double nearest = std::numeric_limits<double>::infinity();
+				uint32_t owner = 3;
+				for (uint32_t face = 0; face < (kind == 7 ? 3u : 2u); ++face)
+				{
+					const auto pixel = glm::dvec2(face == 0 ? fixture.Target : face == 1 ? next
+																						 : later);
+					const auto point = face == 0 ? firstPoint : nextPoint;
+					const auto normal = face == 0 ? firstNormal : nextNormal;
+					const std::array<glm::dvec3, 4> quad{planePoint(pixel, point, normal), planePoint(pixel + glm::dvec2(1, 0), point, normal),
+														 planePoint(pixel + glm::dvec2(1, 1), point, normal), planePoint(pixel + glm::dvec2(0, 1), point, normal)};
+					for (uint32_t triangle = 1; triangle <= 2; ++triangle)
 					{
-						// Intersect finite triangles independently of the tracer's depth slab and continuity rules.
-						double nearest = std::numeric_limits<double>::infinity();
-						uint32_t owner = 3;
-						for (uint32_t face = 0; face < (kind == 7 ? 3u : 2u); ++face)
+						const auto e1 = quad[triangle] - quad[0], e2 = quad[triangle + 1] - quad[0];
+						const auto h = glm::cross(glm::dvec3(fixture.Direction), e2);
+						const double determinant = glm::dot(e1, h);
+						if (std::abs(determinant) <= 1e-12)
+							continue;
+						const auto relative = glm::dvec3(origin) - quad[0], q = glm::cross(relative, e1);
+						const double u = glm::dot(relative, h) / determinant, v = glm::dot(glm::dvec3(fixture.Direction), q) / determinant;
+						const double distance = glm::dot(e2, q) / determinant;
+						if (u >= 0 && v >= 0 && u + v <= 1 && distance > 0 && distance < nearest)
 						{
-							const auto pixel = glm::dvec2(face == 0 ? fixture.Target : face == 1 ? next
-																								 : later);
-							const auto point = face == 0 ? firstPoint : nextPoint;
-							const auto normal = face == 0 ? firstNormal : nextNormal;
-							const std::array<glm::dvec3, 4> quad{planePoint(pixel, point, normal), planePoint(pixel + glm::dvec2(1, 0), point, normal),
-																 planePoint(pixel + glm::dvec2(1, 1), point, normal), planePoint(pixel + glm::dvec2(0, 1), point, normal)};
-							for (uint32_t triangle = 1; triangle <= 2; ++triangle)
-							{
-								const auto e1 = quad[triangle] - quad[0], e2 = quad[triangle + 1] - quad[0];
-								const auto h = glm::cross(glm::dvec3(fixture.Direction), e2);
-								const double determinant = glm::dot(e1, h);
-								if (std::abs(determinant) <= 1e-12)
-									continue;
-								const auto relative = glm::dvec3(origin) - quad[0], q = glm::cross(relative, e1);
-								const double u = glm::dot(relative, h) / determinant, v = glm::dot(glm::dvec3(fixture.Direction), q) / determinant;
-								const double distance = glm::dot(e2, q) / determinant;
-								if (u >= 0 && v >= 0 && u + v <= 1 && distance > 0 && distance < nearest)
-								{
-									nearest = distance;
-									owner = face;
-								}
-							}
-						}
-						REQUIRE(owner == (kind == 0 ? 1u : kind == 7 ? 2u
-																	 : 0u));
-						REQUIRE(std::isfinite(nearest));
-						glm::vec4 details;
-						const auto inspected = fixture.Run(graphics, &details);
-						CHECK(inspected.x == float(owner == 0 ? fixture.Target.x : owner == 1 ? next.x
-																							  : later.x));
-						CHECK(inspected.z == doctest::Approx(nearest).epsilon(0.002));
-						CHECK(inspected.w > 0.99f);
-						CHECK(details.z == 5);
-						const auto color = fixture.Run(graphics);
-						CHECK(color.x == doctest::Approx(owner == 0 ? 1.0 : 0.0).epsilon(0.0001));
-						CHECK(color.y == doctest::Approx(owner == 1 ? 1.0 : 0.0).epsilon(0.0001));
-						CHECK(color.z == doctest::Approx(owner == 2 ? 1.0 : 0.0).epsilon(0.0001));
-						const auto plane = fixture.Run(graphics, &details, 1);
-						CHECK((static_cast<uint32_t>(plane.w) & 32u) != 0);
-						CHECK(details.x == 1);
-					}
-					else
-					{
-						glm::vec4 details;
-						const auto retained = fixture.Run(graphics, &details);
-						CHECK(retained.x == float(fixture.Target.x));
-						CHECK(retained.w == doctest::Approx(kind == 13 ? 0.42525 : kind >= 9 ? 0.784
-																							 : 0.99275)
-												.epsilon(0.002));
-						CHECK(retained.z == doctest::Approx(double(-origin.x / fixture.Direction.x)).epsilon(0.002));
-						CHECK(details.z == 5);
-						const auto plane = fixture.Run(graphics, &details, 1);
-						CHECK((static_cast<uint32_t>(plane.w) & 32u) == 0);
-						CHECK(details.x == (kind == 4 || kind == 11 ? 2 : kind == 10 || kind == 13 ? 4
-																	  : kind == 12                 ? 6
-																								   : 3));
-						CHECK(details.y == (kind == 13 ? primaryBoundVisit : kind >= 9 && kind <= 11 ? 2u
-																									 : 1));
-						CHECK(glm::vec2(details.z, details.w) == glm::vec2(kind == 13 ? primaryBoundCell : kind >= 9 && kind <= 11 ? later
-																																   : next));
-						const auto color = fixture.Run(graphics);
-						CHECK(color.x == 1);
-						CHECK(color.y == 0);
-						CHECK(color.z == 0);
-						if (kind == 6)
-						{
-							glm::vec4 geometry;
-							fixture.Run(graphics, &geometry, 2);
-							const auto storedNormal = glm::vec3(geometry);
-							// The stored normal must reach the near-parallel denominator guard, not fail hemisphere agreement first.
-							CHECK(glm::dot(storedNormal, firstNormal) > 0);
-							CHECK(std::abs(glm::dot(glm::dvec3(storedNormal), cameraRay({4, 4.5})[1])) <= 1e-6);
-						}
-						if (kind == 13)
-						{
-							fixture.Guides[fixture.Target.y * fixture.Size + fixture.Target.x].z = 0;
-							CHECK(fixture.Run(graphics, &details).x == float(beyond.x));
-							CHECK(fixture.Run(graphics).z == 1);
+							nearest = distance;
+							owner = face;
 						}
 					}
 				}
-	CHECK(graphics.GetValidationErrorCount() == errors);
+				REQUIRE(owner == (kind == 0 ? 1u : kind == 7 ? 2u
+															 : 0u));
+				REQUIRE(std::isfinite(nearest));
+				glm::vec4 details;
+				const auto inspected = fixture.Run(graphics, &details);
+				CHECK(inspected.x == float(owner == 0 ? fixture.Target.x : owner == 1 ? next.x
+																					  : later.x));
+				CHECK(inspected.z == doctest::Approx(nearest).epsilon(0.002));
+				CHECK(inspected.w > 0.99f);
+				CHECK(details.z == 5);
+				const auto color = fixture.Run(graphics);
+				CHECK(color.x == doctest::Approx(owner == 0 ? 1.0 : 0.0).epsilon(0.0001));
+				CHECK(color.y == doctest::Approx(owner == 1 ? 1.0 : 0.0).epsilon(0.0001));
+				CHECK(color.z == doctest::Approx(owner == 2 ? 1.0 : 0.0).epsilon(0.0001));
+				const auto plane = fixture.Run(graphics, &details, 1);
+				CHECK((static_cast<uint32_t>(plane.w) & 32u) != 0);
+				CHECK(details.x == 1);
+			}
+			else
+			{
+				glm::vec4 details;
+				const auto retained = fixture.Run(graphics, &details);
+				CHECK(retained.x == float(fixture.Target.x));
+				CHECK(retained.w == doctest::Approx(kind == 13 ? 0.42525 : kind >= 9 ? 0.784
+																					 : 0.99275)
+										.epsilon(0.002));
+				CHECK(retained.z == doctest::Approx(double(-origin.x / fixture.Direction.x)).epsilon(0.002));
+				CHECK(details.z == 5);
+				const auto plane = fixture.Run(graphics, &details, 1);
+				CHECK((static_cast<uint32_t>(plane.w) & 32u) == 0);
+				CHECK(details.x == (kind == 4 || kind == 11 ? 2 : kind == 10 || kind == 13 ? 4
+															  : kind == 12                 ? 6
+																						   : 3));
+				CHECK(details.y == (kind == 13 ? primaryBoundVisit : kind >= 9 && kind <= 11 ? 2u
+																							 : 1));
+				CHECK(glm::vec2(details.z, details.w) == glm::vec2(kind == 13 ? primaryBoundCell : kind >= 9 && kind <= 11 ? later
+																														   : next));
+				const auto color = fixture.Run(graphics);
+				CHECK(color.x == 1);
+				CHECK(color.y == 0);
+				CHECK(color.z == 0);
+				if (kind == 6)
+				{
+					glm::vec4 geometry;
+					fixture.Run(graphics, &geometry, 2);
+					const auto storedNormal = glm::vec3(geometry);
+					// The stored normal must reach the near-parallel denominator guard, not fail hemisphere agreement first.
+					CHECK(glm::dot(storedNormal, firstNormal) > 0);
+					CHECK(std::abs(glm::dot(glm::dvec3(storedNormal), cameraRay({4, 4.5})[1])) <= 1e-6);
+				}
+				if (kind == 13)
+				{
+					fixture.Guides[fixture.Target.y * fixture.Size + fixture.Target.x].z = 0;
+					CHECK(fixture.Run(graphics, &details).x == float(beyond.x));
+					CHECK(fixture.Run(graphics).z == 1);
+				}
+			}
+		}
+		CHECK(graphics.GetValidationErrorCount() == errors);
+	}
+
+}
+
+TEST_CASE("ScreenSpaceReflections: connected facets preserve finite triangle nearest hits in orthographic rays moving left with negative view Z direction")
+{
+	CheckConnectedFacets(false, -1.0f, -1.0f);
+}
+
+TEST_CASE("ScreenSpaceReflections: connected facets preserve finite triangle nearest hits in orthographic rays moving left with positive view Z direction")
+{
+	CheckConnectedFacets(false, -1.0f, 1.0f);
+}
+
+TEST_CASE("ScreenSpaceReflections: connected facets preserve finite triangle nearest hits in orthographic rays moving right with negative view Z direction")
+{
+	CheckConnectedFacets(false, 1.0f, -1.0f);
+}
+
+TEST_CASE("ScreenSpaceReflections: connected facets preserve finite triangle nearest hits in orthographic rays moving right with positive view Z direction")
+{
+	CheckConnectedFacets(false, 1.0f, 1.0f);
+}
+
+TEST_CASE("ScreenSpaceReflections: connected facets preserve finite triangle nearest hits in perspective rays moving left with negative view Z direction")
+{
+	CheckConnectedFacets(true, -1.0f, -1.0f);
+}
+
+TEST_CASE("ScreenSpaceReflections: connected facets preserve finite triangle nearest hits in perspective rays moving left with positive view Z direction")
+{
+	CheckConnectedFacets(true, -1.0f, 1.0f);
+}
+
+TEST_CASE("ScreenSpaceReflections: connected facets preserve finite triangle nearest hits in perspective rays moving right with negative view Z direction")
+{
+	CheckConnectedFacets(true, 1.0f, -1.0f);
+}
+
+TEST_CASE("ScreenSpaceReflections: connected facets preserve finite triangle nearest hits in perspective rays moving right with positive view Z direction")
+{
+	CheckConnectedFacets(true, 1.0f, 1.0f);
 }
 
 TEST_CASE("ScreenSpaceReflections: a certified facet cannot reset the cell or global iteration budget")
