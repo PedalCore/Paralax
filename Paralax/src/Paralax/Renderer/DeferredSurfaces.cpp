@@ -169,12 +169,13 @@ namespace Paralax {
 		commands->clearTextureFloat(m_Surfaces[2], nvrhi::AllSubresources, nvrhi::Color(0.0f));
 	}
 
-	void DeferredSurfaces::Resolve(nvrhi::ICommandList* commands, nvrhi::IBindingSet* view, nvrhi::IBindingSet* probe)
+	void DeferredSurfaces::Resolve(nvrhi::ICommandList* commands, nvrhi::IBindingSet* view, nvrhi::IBindingSet* probe,
+								   nvrhi::IGraphicsPipeline* pipeline, nvrhi::IFramebuffer* framebuffer)
 	{
 		PX_CORE_VERIFY(m_Ready && commands, "Deferred resolve requires prepared targets and an open command list");
 		nvrhi::GraphicsState state;
-		state.pipeline = m_ResolvePipeline;
-		state.framebuffer = m_ResolveFramebuffer;
+		state.pipeline = pipeline ? pipeline : m_ResolvePipeline.Get();
+		state.framebuffer = framebuffer ? framebuffer : m_ResolveFramebuffer.Get();
 		state.bindings = {view, m_SurfaceBindings, probe};
 		state.viewport.addViewportAndScissorRect(nvrhi::Viewport(float(m_HDR->getDesc().width), float(m_HDR->getDesc().height)));
 		commands->setGraphicsState(state);

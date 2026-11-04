@@ -58,6 +58,8 @@ namespace Paralax {
 
 	private:
 		friend class SceneRenderer;
+		// Retained identity tokens distinguish new capture owners even when their object addresses are reused.
+		const Ref<const void> m_OwnerToken = CreateRef<uint8_t>(0);
 		AntiAliasingMode m_EffectiveMode = AntiAliasingMode::Off;
 		std::string m_RenderFallback;
 		uint32_t m_LastPasses = 0;

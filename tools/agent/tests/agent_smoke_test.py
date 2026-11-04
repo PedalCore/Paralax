@@ -108,12 +108,14 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
     # statistics are the capture's, whose camera sees the ground and the ball (and no point or spot lights).
     captured, stats = editor.batch([("render.capture", {"path": str(image), "width": 320, "height": 180}), ("render.stats", {})])
     check(not isinstance(captured, AgentError) and not isinstance(stats, AgentError), f"batch failed: {captured}, {stats}")
-    check(set(stats) == {"antiAliasing", "requestedRenderScale", "effectiveRenderScale", "internalSize", "outputSize", "scaleFallbackReason", "nativeDepthPasses", "upscaler", "profiling", "drawCalls", "shadowDrawCalls", "triangles", "culledSubmeshes", "textGlyphs", "lights",
+    check(set(stats) == {"renderFrame", "antiAliasing", "requestedRenderScale", "effectiveRenderScale", "internalSize", "outputSize", "scaleFallbackReason", "nativeDepthPasses", "upscaler", "profiling", "drawCalls", "shadowDrawCalls", "triangles", "culledSubmeshes", "textGlyphs", "lights",
                          "staticLightingGenerations", "requestedLocalShadows", "shadowedLocalLights", "localShadowLayers",
                          "localShadowCapacity", "localShadowDrawCalls", "localShadowAllocationAttempts", "shadowedLocalLightIDs",
                          "requestedRenderPath", "effectiveRenderPath", "renderPathFallbackReason",
                          "surfaceOwnedBytes", "surfaceAllocationAttempts", "surfaceResolveDrawCalls",
                          "visibilityOwnedBytes", "visibilityAllocationAttempts", "visibilityGeometryBytes", "visibilityResolveDrawCalls",
+                         "ssrActive", "ssrFallbackReason", "ssrPasses", "ssrHierarchyLevels", "ssrOwnedBytes",
+                         "ssrHistoryActive", "ssrHistoryValid", "ssrHistoryEligible", "ssrHistoryReason", "ssrHistoryCompletedFrames",
                          "bloomActive", "bloomFallbackReason", "bloomPasses", "ssaoActive", "ssaoFallbackReason", "ssaoPasses", "effectOwnedBytes", "effectPeakBytes", "effectAllocationAttempts"},
           f"unexpected render statistics: {stats}")
     check(settings["RenderPath"] == "Forward" and stats["requestedRenderPath"] == "Forward"
@@ -138,11 +140,15 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
     ambient_saved = editor.call("render.settings.get")
     for render_path in ("Forward", "Deferred", "Visibility"):
         editor.call("render.settings.set", settings={"RenderPath": render_path, "SSAOEnabled": True,
-                    "SSAOQuality": "Medium", "AmbientFillIntensity": 0.25, "BloomEnabled": True, "BloomIntensity": 0.2, "InternalRenderScale": 0.75})
-        ambient = editor.call("render.capture", path=str(output / f"Ambient-{render_path}.png"), width=97, height=65)
+                    "SSAOQuality": "Medium", "AmbientFillIntensity": 0.25, "BloomEnabled": True, "BloomIntensity": 0.2, "InternalRenderScale": 0.75,
+                    "SSREnabled": True, "SSRTemporalEnabled": True, "GIEnabled": False})
+        ambient = editor.call("render.capture", path=str(output / f"Ambient-{render_path}.png"), width=97, height=65, temporalFrames=2)
         check(ambient["stats"]["ssaoActive"] and ambient["stats"]["bloomActive"] and ambient["stats"]["effectOwnedBytes"] > 0,
               f"ambient settings did not reach {render_path} capture: {ambient['stats']}")
         check(ambient["stats"]["effectiveRenderPath"] == render_path, "ambient effects changed render path")
+        check(ambient["stats"]["ssrActive"] and ambient["stats"]["ssrHistoryActive"]
+              and ambient["stats"]["ssrHistoryEligible"] and ambient["stats"]["ssrHistoryCompletedFrames"] == 2,
+              f"reflection controls or independent history did not reach {render_path} capture: {ambient['stats']}")
         check(ambient["stats"]["internalSize"] == [73, 49] and ambient["stats"]["outputSize"] == [97, 65],
               "render scale did not reach capture raster dimensions")
         editor.call("render.settings.set", settings={"InternalRenderScale": 2.0})

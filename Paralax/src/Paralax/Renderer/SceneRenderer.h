@@ -18,6 +18,7 @@
 #include "Paralax/Renderer/TextRenderer.h"
 #include "Paralax/Renderer/TemporalAA.h"
 #include "Paralax/Renderer/SpatialAA.h"
+#include "Paralax/Renderer/ScreenSpaceReflections.h"
 #include "Paralax/Renderer/VisibilitySurfaces.h"
 
 #include <glm/glm.hpp>
@@ -80,7 +81,8 @@ namespace Paralax {
 		GIVariance = 16,
 		LocalShadow = 17,
 		AmbientOcclusion = 18,
-		AmbientFill = 19
+		AmbientFill = 19,
+		Reflections = 20
 	};
 
 	enum class ShadowQuality
@@ -105,6 +107,10 @@ namespace Paralax {
 		float InternalRenderScale = 1.0f;
 		AntiAliasingMode AntiAliasing = AntiAliasingMode::Off;
 		float AAHistoryWeight = 0.9f;
+		bool SSREnabled = false, SSRTemporalEnabled = true;
+		float SSRHistoryWeight = 0.85f;
+		float SSRMaxDistance = 30, SSRThickness = 0.1f, SSRMaxRoughness = 0.8f;
+		int SSRMaxSteps = 96;
 		bool SSAOEnabled = false;
 		float SSAORadius = 0.5f;
 		float SSAOBias = 0.02f;
@@ -185,6 +191,7 @@ namespace Paralax {
 
 	struct SceneRenderStats
 	{
+		uint64_t RenderFrame = 0;
 		AntiAliasingMode RequestedAA = AntiAliasingMode::Off, EffectiveAA = AntiAliasingMode::Off;
 		std::string AAFallbackReason, AAResetReason;
 		bool AAHistoryValid = false;
@@ -204,6 +211,12 @@ namespace Paralax {
 		uint64_t GPUProfilingSkipped = 0, GPUProfilingInvalid = 0;
 		std::string GPUProfilingLastResult = "none";
 		bool BloomActive = false;
+		bool SSRActive = false;
+		std::string SSRFallbackReason;
+		uint32_t SSRPasses = 0, SSRHierarchyLevels = 0;
+		uint64_t SSROwnedBytes = 0, SSRHistoryCompletedFrames = 0;
+		bool SSRHistoryActive = false, SSRHistoryValid = false, SSRHistoryEligible = false;
+		std::string SSRHistoryReason;
 		std::string BloomFallbackReason;
 		uint32_t BloomPasses = 0;
 		bool SSAOActive = false;
@@ -246,9 +259,13 @@ namespace Paralax {
 		// Renders the scene into output (a framebuffer with one 8-bit color attachment, e.g. a swapchain image).
 		// Internal targets are resized to the output's size as needed.
 		// Shadow history is optional. Temporal history defaults to the renderer-owned view; captures pass a fresh owner.
-		void Render(Scene& scene, const CameraView& camera, nvrhi::IFramebuffer* output, LocalShadowHistory* shadowHistory = nullptr, TemporalAA* temporalHistory = nullptr);
+		void Render(Scene& scene, const CameraView& camera, nvrhi::IFramebuffer* output, LocalShadowHistory* shadowHistory = nullptr, TemporalAA* temporalHistory = nullptr, ReflectionHistory* reflectionHistory = nullptr);
 		// The returned independent view/capture history must be destroyed before this renderer.
 		Scope<TemporalAA> CreateTemporalHistory();
+		// Private view histories retain no scene objects. The returned owner must die before this renderer.
+		Scope<ReflectionHistory> CreateReflectionHistory();
+		ReflectionHistory& GetDefaultReflectionHistory() { return m_ReflectionHistory; }
+		void ResetTemporalHistories(const char* reason);
 		TemporalAA& GetDefaultTemporalHistory() { return m_TemporalAA; }
 
 		SceneRendererSettings& GetSettings() { return m_Settings; }
@@ -266,6 +283,8 @@ namespace Paralax {
 		// Queue 1..1024 deterministic updates while frozen. False if unavailable or the bounded queue would overflow.
 		bool QueueGIUpdates(uint32_t frames);
 		// Synchronous, main-thread-only GPU inspection between renders; returns owned data or nullopt.
+		// Main-thread synchronous diagnostic of the latest submitted SSR frame; null if stale or unavailable.
+		std::optional<ReflectionPixelInspection> InspectReflectionPixel(glm::uvec2 pixel, uint64_t frame) { return m_Reflections.InspectPixel(pixel, frame); }
 		std::optional<GPU::ProbeInspection> InspectGI(glm::vec3 position, glm::vec3 normal, glm::vec3 view, float viewDistance = 1000000.0f)
 		{
 			return m_Settings.GIEnabled ? m_ProbeGI.Inspect(position, normal, view, viewDistance) : std::nullopt;
@@ -319,7 +338,7 @@ namespace Paralax {
 		void RenderShadows(const GPU::ViewConstants& view);
 		void CollectLights(Scene& scene, const CameraView& camera, LocalShadowHistory* history);
 		void RenderLocalShadows();
-		void RenderForward(const GPU::ViewConstants& view);
+		void RenderForward(const GPU::ViewConstants& view, ReflectionHistory* reflectionHistory);
 		bool PrepareVisibilityDraws();
 		void RenderVisibilityOpaque();
 		void RenderTemporalGuides(TemporalAA& history);
@@ -345,8 +364,13 @@ namespace Paralax {
 		RenderScale m_RenderScale;
 		TemporalAA m_TemporalAA;
 		SpatialAA m_SpatialAA;
+		ScreenSpaceReflections m_Reflections;
+		ReflectionHistory m_ReflectionHistory;
 		PostEffectResourceFactory* m_EffectFactory;
 		uint64_t m_TemporalResetGeneration = 0;
+		uint64_t m_ReflectionPlanKey = 0;
+		bool m_ReflectionWasRequested = false;
+		Ref<const void> m_ReflectionAAOwner;
 		DeferredSurfaces m_Deferred;
 		VisibilitySurfaces m_Visibility;
 		LocalShadowResourceFactory* m_ShadowFactory;

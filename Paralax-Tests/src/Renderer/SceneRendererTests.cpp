@@ -3812,3 +3812,29 @@ TEST_CASE("SceneRenderer: device dimension limits reject supersampling before op
 	}
 	CHECK(graphics.GetValidationErrorCount() == errors);
 }
+
+TEST_CASE("SceneRenderer: reflection settings round trip and reject invalid ranges")
+{
+	SceneRendererSettings settings;
+	CHECK_FALSE(settings.SSREnabled);
+	CHECK(settings.SSRTemporalEnabled);
+	const auto fields = SceneRendererSettings::GetFields();
+	std::string error;
+	for (const auto& [name, value] : std::array<std::pair<const char*, nlohmann::json>, 7>{{{"SSREnabled", true}, {"SSRTemporalEnabled", false}, {"SSRHistoryWeight", 0.75}, {"SSRMaxDistance", 100.0}, {"SSRThickness", 0.2}, {"SSRMaxRoughness", 0.6}, {"SSRMaxSteps", 128}}})
+	{
+		CAPTURE(name);
+		const auto* field = FindField(fields, name);
+		REQUIRE(field);
+		REQUIRE(Reflection::SetField(*field, &settings, value, error));
+	}
+	SceneRendererSettings restored;
+	const auto json = Reflection::ToJson(fields, &settings);
+	REQUIRE(Reflection::FromJson(fields, "Settings", &restored, json, error));
+	CHECK(Reflection::ToJson(fields, &restored) == json);
+	for (const auto& [name, value] : std::array<std::pair<const char*, nlohmann::json>, 10>{{{"SSREnabled", "yes"}, {"SSRTemporalEnabled", nullptr}, {"SSRHistoryWeight", -0.1}, {"SSRHistoryWeight", 1.0}, {"SSRMaxDistance", 0}, {"SSRMaxDistance", 201}, {"SSRThickness", -1}, {"SSRMaxRoughness", 1.1}, {"SSRMaxSteps", 15}, {"SSRMaxSteps", 257}}})
+	{
+		CAPTURE(name);
+		CHECK_FALSE(Reflection::SetField(*FindField(fields, name), &settings, value, error));
+		CHECK(Reflection::ToJson(fields, &settings) == json);
+	}
+}

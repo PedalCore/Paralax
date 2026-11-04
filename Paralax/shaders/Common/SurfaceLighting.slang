@@ -201,18 +201,12 @@ EnvironmentContribution EvaluateEnvironment(SurfaceData surface)
 	float3 prefiltered = g_SpecularEnvironment.SampleLevel(g_LinearClamp, RotateY(R, rotation), mip).rgb;
 	float3 irradiance = g_DiffuseEnvironment.SampleLevel(g_LinearClamp, RotateY(N, rotation), 0.0).rgb;
 
-	// Multiple-scattering energy compensation (Fdez-Aguera 2019): rough metals keep their brightness.
-	float3 singleScatter = F0 * brdf.x + brdf.y;
-	float3 energyCompensation = 1.0 + F0 * (1.0 / max(brdf.x + brdf.y, 1e-4) - 1.0);
-	float3 specular = prefiltered * singleScatter * energyCompensation;
-	// Specular occlusion (Lagarde & de Rousiers 2014) from ambient occlusion.
-	float specularOcclusion = saturate(pow(NdotV + surface.Occlusion, exp2(-16.0 * surface.Roughness - 1.0)) - 1.0 + surface.Occlusion);
 	float3 kd = (1.0 - F) * (1.0 - surface.Metallic);
 	float3 diffuse = kd * irradiance * surface.BaseColor;
 	float4 probeView = ProbeCameraRay(surface.Position);
 	float4 indirect = SampleProbeGI(surface.Position, N, probeView.xyz, g_Probe, g_ProbeIrradiance, g_ProbeDistance, probeView.w);
 	result.Coverage = indirect.a;
-	result.Specular = specular * specularOcclusion * intensity * g_View.Diagnostics.x;
+	result.Specular = EvaluateIndirectSpecular(prefiltered, F0, brdf, NdotV, surface.Roughness, surface.Occlusion) * intensity * g_View.Diagnostics.x;
 	if (indirect.a > 0.5)
 		result.Indirect = kd * indirect.rgb * surface.BaseColor * surface.Occlusion;
 	else
@@ -221,7 +215,7 @@ EnvironmentContribution EvaluateEnvironment(SurfaceData surface)
 }
 
 public
-float4 ShadeSurface(MaterialSurface material, float2 pixel, float viewDepth, bool screenAOEligible = true)
+float4 ShadeSurfaceWithSpecular(MaterialSurface material, float2 pixel, float viewDepth, bool screenAOEligible, out float3 environmentSpecular)
 {
 	SurfaceData surface = material.Surface;
 	float3 N = surface.Normal;
@@ -264,6 +258,7 @@ float4 ShadeSurface(MaterialSurface material, float2 pixel, float viewDepth, boo
 	}
 
 	EnvironmentContribution environment = EvaluateEnvironment(surface);
+	environmentSpecular = environment.Specular;
 	float screenAO = 1;
 	if (g_View.ScreenEffects.x > 0.5 && screenAOEligible)
 	{
@@ -344,3 +339,17 @@ float4 ShadeSurface(MaterialSurface material, float2 pixel, float viewDepth, boo
 
 	return float4(color, surface.Alpha);
 }
+
+// The ordinary path preserves the same arithmetic; optional MRT callers retain the already evaluated term.
+public
+float4 ShadeSurface(MaterialSurface material, float2 pixel, float viewDepth, bool screenAOEligible = true)
+{
+	float3 unused;
+	return ShadeSurfaceWithSpecular(material, pixel, viewDepth, screenAOEligible, unused);
+}
+
+public struct ReflectionLightingTargets
+{
+	public float4 Color : SV_Target0;
+	public float4 EnvironmentSpecular : SV_Target1;
+};

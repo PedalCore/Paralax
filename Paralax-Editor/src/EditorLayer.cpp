@@ -77,20 +77,30 @@ namespace Paralax::Editor {
 				json sections = json::object();
 				for (size_t i = 0; i < sample.Milliseconds.size(); ++i)
 					sections[RenderProfiler::GetSectionName(static_cast<RenderTimingSection>(i))] = sample.Milliseconds[i] ? json(*sample.Milliseconds[i]) : json(nullptr);
-				profiling["gpu"] = {{"frame", context.Frame}, {"internalSize", {context.InternalWidth, context.InternalHeight}}, {"outputSize", {context.OutputWidth, context.OutputHeight}}, {"requestedRenderPath", pathName(static_cast<RenderPath>(context.RequestedPath))}, {"effectiveRenderPath", pathName(static_cast<RenderPath>(context.EffectivePath))}, {"ssaoActive", context.AmbientOcclusionActive}, {"bloomActive", context.BloomActive}, {"effectiveAA", AAName(static_cast<AntiAliasingMode>(context.EffectiveAA))}, {"settings", json::parse(context.Settings, nullptr, false)}, {"milliseconds", std::move(sections)}, {"scope", "SceneRenderer commands; excludes presentation. Scene includes AO; do not sum nested sections."}};
+				profiling["gpu"] = {{"frame", context.Frame}, {"internalSize", {context.InternalWidth, context.InternalHeight}}, {"outputSize", {context.OutputWidth, context.OutputHeight}}, {"requestedRenderPath", pathName(static_cast<RenderPath>(context.RequestedPath))}, {"effectiveRenderPath", pathName(static_cast<RenderPath>(context.EffectivePath))}, {"ssaoActive", context.AmbientOcclusionActive}, {"bloomActive", context.BloomActive}, {"ssrActive", context.ReflectionsActive}, {"ssrHistoryActive", context.ReflectionHistoryActive}, {"effectiveAA", AAName(static_cast<AntiAliasingMode>(context.EffectiveAA))}, {"settings", json::parse(context.Settings, nullptr, false)}, {"milliseconds", std::move(sections)}, {"scope", "SceneRenderer commands; excludes presentation. Scene includes AO and reflections; reflections includes depth hierarchy. Do not sum nested sections."}};
 			}
 			if (stats.ProfilingDevice)
 			{
 				const auto& device = *stats.ProfilingDevice;
 				profiling["device"] = {{"adapter", device.AdapterName}, {"driver", device.DriverName}, {"backend", "Vulkan/NVRHI"}, {"build", PX_BUILD_CONFIGURATION_NAME}, {"software", device.IsSoftwareRasterizer}, {"validation", device.ValidationEnabled}, {"synchronizationValidation", device.SynchronizationValidation}};
 			}
-			return {{"antiAliasing", {{"requested", AAName(stats.RequestedAA)}, {"effective", AAName(stats.EffectiveAA)}, {"historyValid", stats.AAHistoryValid}, {"completedFrames", stats.AACompletedFrames}, {"sampleIndex", stats.AASampleIndex}, {"resetReason", stats.AAResetReason}, {"fallbackReason", stats.AAFallbackReason}, {"passes", stats.AAPasses}}}, {"requestedRenderScale", stats.RequestedRenderScale}, {"effectiveRenderScale", stats.EffectiveRenderScale}, {"internalSize", {stats.InternalWidth, stats.InternalHeight}}, {"outputSize", {stats.OutputWidth, stats.OutputHeight}}, {"scaleFallbackReason", stats.ScaleFallbackReason}, {"nativeDepthPasses", stats.NativeDepthPasses}, {"upscaler", stats.InternalWidth > stats.OutputWidth || stats.InternalHeight > stats.OutputHeight ? "AreaHDR" : stats.InternalWidth != stats.OutputWidth || stats.InternalHeight != stats.OutputHeight ? "SpatialBilinearHDR"
-																																																																																																																																																																																																																													 : "None"},
+			return {{"renderFrame", stats.RenderFrame}, {"antiAliasing", {{"requested", AAName(stats.RequestedAA)}, {"effective", AAName(stats.EffectiveAA)}, {"historyValid", stats.AAHistoryValid}, {"completedFrames", stats.AACompletedFrames}, {"sampleIndex", stats.AASampleIndex}, {"resetReason", stats.AAResetReason}, {"fallbackReason", stats.AAFallbackReason}, {"passes", stats.AAPasses}}}, {"requestedRenderScale", stats.RequestedRenderScale}, {"effectiveRenderScale", stats.EffectiveRenderScale}, {"internalSize", {stats.InternalWidth, stats.InternalHeight}}, {"outputSize", {stats.OutputWidth, stats.OutputHeight}}, {"scaleFallbackReason", stats.ScaleFallbackReason}, {"nativeDepthPasses", stats.NativeDepthPasses}, {"upscaler", stats.InternalWidth > stats.OutputWidth || stats.InternalHeight > stats.OutputHeight ? "AreaHDR" : stats.InternalWidth != stats.OutputWidth || stats.InternalHeight != stats.OutputHeight ? "SpatialBilinearHDR"
+																																																																																																																																																																																																																																						 : "None"},
 					{"profiling", std::move(profiling)},
 					{"requestedRenderPath", pathName(stats.RequestedPath)},
 					{"effectiveRenderPath", pathName(stats.EffectivePath)},
 					{"renderPathFallbackReason", stats.PathFallbackReason},
 					{"bloomActive", stats.BloomActive},
+					{"ssrActive", stats.SSRActive},
+					{"ssrFallbackReason", stats.SSRFallbackReason},
+					{"ssrPasses", stats.SSRPasses},
+					{"ssrHierarchyLevels", stats.SSRHierarchyLevels},
+					{"ssrOwnedBytes", stats.SSROwnedBytes},
+					{"ssrHistoryActive", stats.SSRHistoryActive},
+					{"ssrHistoryValid", stats.SSRHistoryValid},
+					{"ssrHistoryEligible", stats.SSRHistoryEligible},
+					{"ssrHistoryReason", stats.SSRHistoryReason},
+					{"ssrHistoryCompletedFrames", stats.SSRHistoryCompletedFrames},
 					{"bloomFallbackReason", stats.BloomFallbackReason},
 					{"bloomPasses", stats.BloomPasses},
 					{"ssaoActive", stats.SSAOActive},
@@ -246,7 +256,7 @@ namespace Paralax::Editor {
 								   return CommandResult::Fail("position and target must differ");
 							   m_Camera.LookAt(*position, *target);
 							   if (m_Renderer)
-								   m_Renderer->GetDefaultTemporalHistory().GetState().Reset("camera cut");
+								   m_Renderer->ResetTemporalHistories("camera cut");
 							   return CommandResult::Ok(describeCamera());
 						   }});
 
@@ -296,10 +306,10 @@ namespace Paralax::Editor {
 		commands.Register({"render.aa.state", "Temporal history state for the viewport, independent of captures.", {}, false, [this](EditorContext&, const json&) {
 							   return m_Renderer ? CommandResult::Ok(ViewportAAJson(*m_Renderer)) : CommandResult::Fail("The renderer is not available");
 						   }});
-		commands.Register({"render.aa.reset", "Invalidates viewport temporal history and restarts its deterministic sample sequence.", {}, false, [this](EditorContext&, const json&) {
+		commands.Register({"render.aa.reset", "Invalidates viewport AA and reflection histories and restarts the AA deterministic sample sequence.", {}, false, [this](EditorContext&, const json&) {
 							   if (!m_Renderer)
 								   return CommandResult::Fail("The renderer is not available");
-							   m_Renderer->GetDefaultTemporalHistory().GetState().Reset("explicit reset");
+							   m_Renderer->ResetTemporalHistories("explicit reset");
 							   return CommandResult::Ok(ViewportAAJson(*m_Renderer));
 						   }});
 
@@ -327,6 +337,22 @@ namespace Paralax::Editor {
 								   return CommandResult::Fail("The renderer is not available");
 							   const SceneRenderStats& stats = m_Renderer->GetStats();
 							   return CommandResult::Ok(RenderStatsJson(stats));
+						   }});
+
+		commands.Register({"render.ssr.inspect", "Inspects one internal pixel of the latest submitted SSR frame without rendering or advancing history. Batch after capture; verify returned frame and size.", {{"x", "integer", "Internal pixel x.", true}, {"y", "integer", "Internal pixel y.", true}, {"frame", "integer", "Optional expected renderFrame; stale frames fail.", false}}, false, [this](EditorContext&, const json& params) {
+							   if (!m_Renderer)
+								   return CommandResult::Fail("The renderer is not available");
+							   for (const char* coordinate : {"x", "y"})
+								   if (params[coordinate] < 0 || params[coordinate] > std::numeric_limits<uint32_t>::max())
+									   return CommandResult::Fail("Pixel coordinates must be nonnegative 32-bit integers");
+							   if (params.contains("frame") && params["frame"] < 0)
+								   return CommandResult::Fail("frame must be nonnegative");
+							   const auto result = m_Renderer->InspectReflectionPixel({params["x"].get<uint32_t>(), params["y"].get<uint32_t>()},
+																					  params.contains("frame") ? params["frame"].get<uint64_t>() : m_Renderer->GetStats().RenderFrame);
+							   if (!result)
+								   return CommandResult::Fail("SSR inspection unavailable: stale frame, invalid pixel, missing completed SSR frame, or resource failure");
+							   auto finite = [](float value) { return std::isfinite(value) ? json(value) : json(nullptr); };
+							   return CommandResult::Ok({{"frame", result->Frame}, {"generation", result->Generation}, {"path", result->Path}, {"size", {result->Size.x, result->Size.y}}, {"pixel", {result->Pixel.x, result->Pixel.y}}, {"status", result->Status}, {"candidateTexel", {finite(result->CandidateTexel.x), finite(result->CandidateTexel.y)}}, {"distance", finite(result->Distance)}, {"confidence", finite(result->Confidence)}, {"residual", finite(result->Residual)}, {"facing", finite(result->Facing)}, {"filterWeight", finite(result->FilterWeight)}, {"candidateGeometry", {{"normal", {finite(result->CandidateNormal.x), finite(result->CandidateNormal.y), finite(result->CandidateNormal.z)}}, {"terminationNormal", {finite(result->TerminationNormal.x), finite(result->TerminationNormal.y), finite(result->TerminationNormal.z)}}, {"normalDot", finite(result->CandidateNormalDot)}, {"planeOffset", finite(result->CandidatePlaneOffset)}}}, {"termination", result->Termination}, {"refinementCells", result->RefinementCells}, {"terminationCell", {result->TerminationCell.x, result->TerminationCell.y}}, {"plane", {{"pixel", {finite(result->PlanePixel.x), finite(result->PlanePixel.y)}}, {"distance", finite(result->PlaneDistance)}, {"valid", bool(result->PlaneFlags & 1)}, {"inClip", bool(result->PlaneFlags & 2)}, {"inRange", bool(result->PlaneFlags & 4)}, {"inCandidateCell", bool(result->PlaneFlags & 8)}, {"candidateAccepted", bool(result->PlaneFlags & 16)}, {"verified", bool(result->PlaneFlags & 32)}}}});
 						   }});
 
 		auto giState = [this] {
@@ -486,8 +512,8 @@ namespace Paralax::Editor {
 		const auto temporalFrames = params.value("temporalFrames", int64_t(1));
 		if (temporalFrames > 1)
 		{
-			if (m_Renderer->GetSettings().AntiAliasing != AntiAliasingMode::Temporal)
-				return CommandResult::Fail("Multiple temporalFrames require Temporal AA");
+			if (m_Renderer->GetSettings().AntiAliasing != AntiAliasingMode::Temporal && !(m_Renderer->GetSettings().SSREnabled && m_Renderer->GetSettings().SSRTemporalEnabled))
+				return CommandResult::Fail("Multiple temporalFrames require Temporal AA or reflection history");
 			if (m_Context.IsPlaying() && !m_Context.IsPaused())
 				return CommandResult::Fail("Pause play mode before temporal capture accumulation");
 			if (m_Renderer->GetSettings().GIEnabled && !m_Renderer->GetSettings().GIFreeze)
@@ -538,9 +564,11 @@ namespace Paralax::Editor {
 		}
 
 		auto captureHistory = m_Renderer->CreateTemporalHistory();
+		auto captureReflections = m_Renderer->CreateReflectionHistory();
 		if (warmup > 0)
 		{
 			auto warmupHistory = m_Renderer->CreateTemporalHistory();
+			auto warmupReflections = m_Renderer->CreateReflectionHistory();
 			const uint32_t before = m_Renderer->GetGIState().Updates;
 			if (!m_Renderer->QueueGIUpdates(warmup))
 				return CommandResult::Fail("Could not queue GI warmup updates");
@@ -548,7 +576,7 @@ namespace Paralax::Editor {
 			m_Renderer->GetSettings().AntiAliasing = AntiAliasingMode::Off;
 			for (uint32_t frame = 0; frame < warmup; ++frame)
 			{
-				m_Renderer->Render(scene, view, framebuffer, nullptr, warmupHistory.get());
+				m_Renderer->Render(scene, view, framebuffer, nullptr, warmupHistory.get(), warmupReflections.get());
 				auto& graphics = Application::Get().GetGraphicsDevice();
 				graphics.WaitForIdle();
 				graphics.CollectGarbage();
@@ -559,7 +587,7 @@ namespace Paralax::Editor {
 				return CommandResult::Fail("GI did not complete warmup; inspect render.gi.state");
 		}
 		for (int64_t frame = 0; frame < temporalFrames; ++frame)
-			m_Renderer->Render(scene, view, framebuffer, nullptr, captureHistory.get());
+			m_Renderer->Render(scene, view, framebuffer, nullptr, captureHistory.get(), captureReflections.get());
 		Image image = ReadbackTexture(device, texture);
 		std::error_code error;
 		std::filesystem::create_directories(path->parent_path(), error);
@@ -695,7 +723,7 @@ namespace Paralax::Editor {
 		const AABB bounds = ComputeFocusBounds(m_Context.GetActiveScene(), m_Context.GetAssets(), entity);
 		m_Camera.Focus(bounds.GetCenter(), glm::length(bounds.GetExtents()));
 		if (m_Renderer)
-			m_Renderer->GetDefaultTemporalHistory().GetState().Reset("camera cut");
+			m_Renderer->ResetTemporalHistories("camera cut");
 	}
 
 	void EditorLayer::PickEntity(float u, float v)
