@@ -1,0 +1,92 @@
+name: ASan driver diagnosis
+
+on:
+  push:
+    branches: [diagnostics/r20-asan-unload]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm-cache
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev \
+            libwayland-dev libxkbcommon-dev wayland-protocols \
+            mesa-vulkan-drivers vulkan-validationlayers libvulkan1 xvfb xauth
+      - uses: actions/cache@v4
+        with:
+          path: .cpm-cache
+          key: cpm-${{ runner.os }}-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake', 'cmake/patches/**') }}
+      - name: Record environment
+        run: |
+          mkdir -p diagnosis
+          git rev-parse HEAD HEAD^{tree} > diagnosis/revision.txt
+          lscpu > diagnosis/cpu.txt
+          dpkg-query -W > diagnosis/packages.txt
+          gcc --version > diagnosis/compiler.txt
+          for lib in /usr/lib/x86_64-linux-gnu/libvulkan_lvp.so /usr/lib/x86_64-linux-gnu/libLLVM.so.20.1 /usr/lib/x86_64-linux-gnu/libc.so.6; do
+            sha256sum "$lib" >> diagnosis/libraries.txt
+            readelf -n "$lib" >> diagnosis/libraries.txt
+          done
+      - name: Build unchanged engine with ASan and UBSan
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DPX_BUILD_TESTS=ON \
+            -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DPX_SANITIZERS=address,undefined
+          cmake --build build --parallel 4
+      - name: Diagnose graphics and compute separately
+        env:
+          PX_REQUIRE_GPU: "1"
+          PX_REQUIRE_VALIDATION_LAYER: "1"
+          LP_NUM_THREADS: "2"
+          ASAN_OPTIONS: detect_leaks=1
+          GALLIUM_DUMP_CPU: "1"
+        shell: bash
+        run: |
+          set +e
+          failed=0
+          for mode in baseline generic; do
+            if [[ "$mode" == generic ]]; then
+              export GALLIUM_NOSSE=1
+            else
+              unset GALLIUM_NOSSE
+            fi
+            # Each case is a fresh process; retain unload maps, leak reports and exit codes.
+            for kind in graphics compute; do
+              if [[ "$kind" == graphics ]]; then
+                test='Renderer: a fullscreen pass fills the target with a color from a constant buffer'
+              else
+                test='ClusteredLighting: actual GPU lookup never omits double distance or legacy predicate hits'
+              fi
+              export MESA_SHADER_CACHE_DIR="$RUNNER_TEMP/asan-driver-cache/$mode-$kind"
+              mkdir -p "$MESA_SHADER_CACHE_DIR"
+              LD_DEBUG=files LD_DEBUG_OUTPUT="$GITHUB_WORKSPACE/diagnosis/loader-$mode-$kind" \
+                timeout 300 build/bin/Paralax-Tests "--test-case=$test" \
+                > "diagnosis/$mode-$kind.log" 2>&1
+              code=$?
+              echo "$mode $kind $code" | tee -a diagnosis/exits.txt
+              if [[ "$code" != 0 ]]; then failed=1; fi
+              if ! grep -Eq 'test cases: *[1-9][0-9]* \|' "diagnosis/$mode-$kind.log"; then
+                echo "No selected test ran: $mode $kind" | tee -a diagnosis/exits.txt
+                failed=1
+              fi
+            done
+          done
+          # A passing diagnostic variant never erases a failing baseline.
+          exit "$failed"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: asan-driver-diagnosis
+          path: diagnosis
+          retention-days: 7
