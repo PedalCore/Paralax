@@ -36,7 +36,7 @@ jobs:
           from pathlib import Path
           import hashlib, subprocess
           source = Path('harness/.github/diagnostics/MeshOffsetRenderingTests.cpp').read_bytes()
-          assert hashlib.sha256(source).hexdigest() == 'dae26cf584a464f43695149cfd6a5a7b88273878c46d2b117f2490d28064d424'
+          assert hashlib.sha256(source).hexdigest() == '6c841aec0b42a54d36370a0916528d1d36ffe9ea4d3fbf0db1f243d40e66340e'
           Path('source/Paralax-Tests/src/Renderer/MeshOffsetRenderingTests.cpp').write_bytes(source)
           patch = Path('harness/.github/diagnostics/IndexedVertexAddressing.patch')
           assert hashlib.sha256(patch.read_bytes()).hexdigest() == '3fd0aad3e559901107fed832b1ab633cbaba4cc88b832c5a909e82e4923f0871'

@@ -1,12 +1,14 @@
 #include <doctest/doctest.h>
 
 #include "GPUTestContext.h"
+#include "TestUtilities.h"
 
 #include <Paralax/Asset/AssetManager.h>
 #include <Paralax/Asset/MaterialAsset.h>
 #include <Paralax/Asset/MeshAsset.h>
 #include <Paralax/Asset/MeshImporter.h>
 #include <Paralax/Renderer/SceneRenderer.h>
+#include <Paralax/Renderer/TextRenderer.h>
 #include <Paralax/Renderer/TextureReadback.h>
 #include <Paralax/Scene/Entity.h>
 
@@ -49,6 +51,12 @@ namespace {
 		Global,
 		Separate
 	};
+	struct Transition
+	{
+		const char* Name;
+		bool Blend, Text;
+		std::vector<std::string> PrecedingCases{};
+	};
 
 	struct OracleResult
 	{
@@ -57,11 +65,11 @@ namespace {
 	};
 
 	// Pixel regions are specified independently of mesh projection and draw representation.
-	OracleResult Inspect(const Image& image, uint32_t shift, const Extent* extent = nullptr)
+	OracleResult Inspect(const Image& image, uint32_t shift, const Extent* extent = nullptr, bool footer = false)
 	{
 		const uint32_t width = extent ? 360 : Width, height = extent ? 280 : Height;
 		REQUIRE(image.GetWidth() == width);
-		REQUIRE(image.GetHeight() == height);
+		REQUIRE(image.GetHeight() == height + (footer ? 40 : 0));
 		OracleResult result;
 		result.CenterErrors.resize(extent ? 63 : 3, 0);
 		for (uint32_t y = 0; y < height; ++y)
@@ -357,9 +365,10 @@ namespace {
 	}
 
 	void CheckRepresentation(GraphicsDevice& graphics, Representation representation, const char* name, const Extent* extent = nullptr,
-							 const MeshImportResult* imported = nullptr)
+							 const MeshImportResult* imported = nullptr, const Transition* transition = nullptr)
 	{
-		const uint32_t width = extent ? 360 : Width, height = extent ? 280 : Height;
+		const uint32_t width = extent ? 360 : Width, height = transition ? 320 : extent ? 280
+																						: Height;
 		AssetManager assets;
 		Scene scene("AnalyticMeshOffsets");
 		std::vector<Ref<MeshAsset>> meshes;
@@ -373,6 +382,27 @@ namespace {
 		}
 		else
 			meshes = MakeMeshes(representation, assets, scene, extent);
+		if (transition)
+		{
+			REQUIRE(extent);
+			if (transition->Blend)
+			{
+				auto material = assets.GetAsset<MaterialAsset>(AssetHandle(71062));
+				REQUIRE(material);
+				material->Alpha = AlphaMode::Blend;
+				++material->Version;
+			}
+			if (transition->Text)
+			{
+				auto entity = scene.CreateEntityWithUUID(UUID(74001), "Diagnostic HUD");
+				entity.GetTransform().Translation = {8.0f / width, 286.0f / height, 0};
+				auto& text = entity.AddComponent<TextComponent>();
+				text.Text = "HUD";
+				text.Size = 24.0f * TextRenderer::ReferenceViewportHeight / height;
+				text.ScreenSpace = true;
+				text.Color = glm::vec4(1);
+			}
+		}
 		auto& sky = scene.CreateEntityWithUUID(UUID(74000), "Black sky").AddComponent<SkyLightComponent>();
 		sky.Intensity = 0;
 		sky.ShowBackground = false;
@@ -387,7 +417,7 @@ namespace {
 		settings.DefaultEnvironmentIntensity = 0;
 		auto camera = CameraView::LookAt({}, {0, 0, -1}, glm::radians(60.0f), float(width) / height, 0.1f, 10);
 		camera.Orthographic = true;
-		camera.Projection = glm::orthoRH_ZO(-1.0f, 1.0f, -1.0f, 1.0f, camera.Far, camera.Near);
+		camera.Projection = glm::orthoRH_ZO(-1.0f, 1.0f, transition ? 1.0f - float(height) / 140.0f : -1.0f, 1.0f, camera.Far, camera.Near);
 		auto* device = graphics.GetDevice();
 		nvrhi::TextureDesc desc;
 		desc.width = width;
@@ -405,16 +435,33 @@ namespace {
 		std::filesystem::create_directories(folder, error);
 		REQUIRE_FALSE(error);
 		nlohmann::json report = {{"representation", name}, {"extent", extent ? extent->Name : "small"}, {"width", width}, {"height", height}, {"frames", nlohmann::json::array()}, {"materials", nlohmann::json::array()}, {"oracle", extent ? "63 tiles in9x7 grid,40px cells,24px quads with8px margins. Code=tile+1; two bits/channel encode linear0,.25,.5,1 as sRGB0,137,188,255 (tolerance1). White control overrides all channels255." : "Red/green/blue rectangles x=[16,48),[80,112),[144,176), y=[40,88)."}, {"oracleMargins", "Frame2 shifts x by4. Interiors and black exterior exclude two-pixel edge margins; separate5x5 centers."}, {"camera", "Origin looking -Z; orthographic[-1,1]x[-1,1], reversed depth near.1 far10; geometry z=-2, identity models."}};
+		if (transition)
+		{
+			report["transition"] = {{"control", transition->Name}, {"lastTileBlendAlphaOne", transition->Blend}, {"screenText", transition->Text}};
+			report["processArguments"] = nlohmann::json::array();
+			const auto& arguments = Testing::GetMainArguments();
+			for (int i = 0; i < arguments.Count; ++i)
+				report["processArguments"].push_back(arguments.Values[i]);
+			report["diagnosticCaseIndex"] = transition->PrecedingCases.size();
+			report["precedingDiagnosticCases"] = transition->PrecedingCases;
+			report["initialState"] = "New SceneRenderer, shared GraphicsDevice; no warmup/discard. CTest runs this test alone; unfiltered binary may run earlier tests (see process arguments).";
+			report["oracleMargins"] = "No geometry shift; original63tile oracle in top280 rows; footer40 rows for isolated HUD.";
+			report["camera"] = "Origin looking -Z; ortho x[-1,1], y[1-320/140,1], reversed near.1 far10; original grid pixel positions unchanged.";
+		}
 		for (uint32_t quad = 0; quad < (extent ? 63u : 3u); ++quad)
 		{
 			const auto color = QuadColor(quad, extent);
 			report["materials"].push_back({color.r, color.g, color.b, color.a});
 		}
-		for (uint32_t frame = 0; frame < 3; ++frame)
+		constexpr std::array paths{RenderPath::Visibility, RenderPath::Visibility, RenderPath::Forward, RenderPath::Deferred, RenderPath::Visibility, RenderPath::Visibility};
+		for (uint32_t frame = 0; frame < (transition ? paths.size() : 3); ++frame)
 		{
 			CAPTURE(name);
 			CAPTURE(frame);
-			if (frame == 2)
+			if (transition)
+				settings.Path = paths[frame];
+			const bool reupload = !transition && frame == 2;
+			if (reupload)
 				for (auto& mesh : meshes)
 				{
 					for (auto& vertex : mesh->Vertices)
@@ -424,9 +471,11 @@ namespace {
 				}
 			renderer.Render(scene, camera, framebuffer);
 			const auto image = ReadbackTexture(device, texture);
-			const auto result = Inspect(image, frame == 2 ? 4 : 0, extent);
+			const auto result = Inspect(image, reupload ? 4 : 0, extent, transition != nullptr);
 			const auto& stats = renderer.GetStats();
-			CHECK(stats.EffectivePath == RenderPath::Forward);
+			CHECK(stats.RequestedPath == settings.Path);
+			CHECK(stats.EffectivePath == settings.Path);
+			CHECK(stats.PathFallbackReason.empty());
 			CHECK(stats.CulledSubmeshes == 0);
 			CHECK(result.InteriorSamples == (extent ? 63 * 20 * 20 : 3 * 28 * 44));
 			CHECK(result.BackgroundSamples > 18000);
@@ -434,6 +483,22 @@ namespace {
 			CHECK(result.BackgroundErrors == 0);
 			for (uint32_t failures : result.CenterErrors)
 				CHECK(failures == 0);
+			uint32_t footerWhite = 0, footerErrors = 0;
+			if (transition)
+			{
+				for (uint32_t y = 280; y < 320; ++y)
+					for (uint32_t x = 0; x < width; ++x)
+					{
+						const auto pixel = image.GetPixel(x, y);
+						const bool textRegion = transition->Text && x >= 6 && x < 96 && y >= 284 && y < 318;
+						footerWhite += textRegion && pixel.r > 200 && pixel.g > 200 && pixel.b > 200 ? 1u : 0u;
+						footerErrors += !textRegion && (pixel.r > 1 || pixel.g > 1 || pixel.b > 1) ? 1u : 0u;
+					}
+				CHECK(footerErrors == 0);
+				CHECK(stats.TextGlyphs == (transition->Text ? 3 : 0));
+				if (transition->Text)
+					CHECK(footerWhite > 20);
+			}
 			CHECK(image.SavePNG(folder / (std::to_string(frame) + ".png")));
 			nlohmann::json manifests = nlohmann::json::array();
 			for (const auto& mesh : meshes)
@@ -447,6 +512,15 @@ namespace {
 										{"backgroundErrors", result.BackgroundErrors},
 										{"centerErrors", result.CenterErrors},
 										{"meshes", manifests}});
+			auto& recorded = report["frames"].back();
+			if (transition)
+				recorded["phase"] = "path-transition";
+			recorded["requestedPath"] = static_cast<int>(stats.RequestedPath);
+			recorded["effectivePath"] = static_cast<int>(stats.EffectivePath);
+			recorded["fallback"] = stats.PathFallbackReason;
+			recorded["footerWhite"] = footerWhite;
+			recorded["footerErrors"] = footerErrors;
+			recorded["textGlyphs"] = stats.TextGlyphs;
 			std::ofstream file(folder / "Report.json");
 			REQUIRE(file);
 			file << report.dump(2) << '\n';
@@ -572,5 +646,26 @@ TEST_CASE("MeshOffsets: imported compact and padded primitives match the indepen
 		graphics.WaitForIdle();
 		graphics.CollectGarbage();
 	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("MeshOffsets: raw pulling survives indexed offsets path transitions and screen text")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	std::vector<std::string> preceding;
+	for (const auto& [representation, name] : std::array{
+			 std::pair{Representation::Local, "local-offset"}, std::pair{Representation::Global, "global-index"}})
+		for (auto transition : {Transition{"opaque", false, false}, Transition{"blend", true, false}, Transition{"blend-text", true, true}})
+		{
+			const std::string label = std::string("transition-") + name + "-" + transition.Name;
+			transition.PrecedingCases = preceding;
+			CheckRepresentation(graphics, representation, label.c_str(), &Extents[1], nullptr, &transition);
+			preceding.push_back(label);
+			graphics.WaitForIdle();
+			graphics.CollectGarbage();
+		}
 	CHECK(graphics.GetValidationErrorCount() == errors);
 }
