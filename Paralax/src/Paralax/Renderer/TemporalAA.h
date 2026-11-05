@@ -12,7 +12,8 @@ namespace Paralax {
 	{
 		Off = 0,
 		Spatial = 1,
-		Temporal = 2
+		Temporal = 2,
+		FXAA = 3
 	};
 
 	struct TemporalGPURecord

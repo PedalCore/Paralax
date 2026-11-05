@@ -21,3 +21,5 @@
 #include "Paralax/Events/Event.h"
 #include "Paralax/Events/KeyEvent.h"
 #include "Paralax/Events/MouseEvent.h"
+
+#include "Paralax/Renderer/FXAA.h"

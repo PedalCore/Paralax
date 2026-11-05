@@ -18,6 +18,7 @@
 #include "Paralax/Renderer/TextRenderer.h"
 #include "Paralax/Renderer/TemporalAA.h"
 #include "Paralax/Renderer/SpatialAA.h"
+#include "Paralax/Renderer/FXAA.h"
 #include "Paralax/Renderer/ScreenSpaceReflections.h"
 #include "Paralax/Renderer/VisibilitySurfaces.h"
 
@@ -371,6 +372,7 @@ namespace Paralax {
 		RenderScale m_RenderScale;
 		TemporalAA m_TemporalAA;
 		SpatialAA m_SpatialAA;
+		FXAA m_FXAA;
 		ScreenSpaceReflections m_Reflections;
 		ReflectionHistory m_ReflectionHistory;
 		PostEffectResourceFactory* m_EffectFactory;

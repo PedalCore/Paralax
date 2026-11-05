@@ -90,7 +90,7 @@ namespace {
 
 }
 
-TEST_CASE("TemporalAA: all paths run temporal and spatial modes and restore the exact disabled baseline")
+TEST_CASE("TemporalAA: all paths run temporal FXAA and spatial modes and restore the exact disabled baseline")
 {
 	if (!Testing::RequireTestGraphicsDevice())
 		return;
@@ -112,7 +112,7 @@ TEST_CASE("TemporalAA: all paths run temporal and spatial modes and restore the 
 			settings.AntiAliasing = AntiAliasingMode::Off;
 			renderer.Render(scene, camera, output.Framebuffer);
 			const auto baseline = ReadbackTexture(graphics.GetDevice(), output.Texture);
-			for (auto mode : {AntiAliasingMode::Temporal, AntiAliasingMode::Spatial})
+			for (auto mode : {AntiAliasingMode::Temporal, AntiAliasingMode::FXAA, AntiAliasingMode::Spatial})
 			{
 				settings.AntiAliasing = mode;
 				for (uint32_t frame = 0; frame < 4; ++frame)

@@ -271,6 +271,9 @@ TEST_CASE("EditorLayer: ambient effect settings are reflected and invalid update
 		Run(context, "render.settings.set", {{"settings", {{"InternalRenderScale", scale}}}});
 		CHECK(Run(context, "render.settings.get")["InternalRenderScale"] == scale);
 	}
+	Run(context, "render.settings.set", {{"settings", {{"AntiAliasing", "FXAA"}}}});
+	CHECK(Run(context, "render.settings.get")["AntiAliasing"] == "FXAA");
+	Run(context, "render.settings.set", {{"settings", {{"AntiAliasing", "Temporal"}}}});
 	Run(context, "render.settings.set", {{"settings", {{"InternalRenderScale", 0.75}}}});
 	for (const auto& invalid : {json{{"SSREnabled", "yes"}}, json{{"SSRHistoryWeight", 0.96}}, json{{"SSRMaxSteps", 257}}, json{{"SSRMaxDistance", 201}}, json{{"SSRThickness", 0}}, json{{"SSRMaxRoughness", 0}}, json{{"AntiAliasing", "Unknown"}}, json{{"AAHistoryWeight", -0.1}}, json{{"AAHistoryWeight", 0.96}}, json{{"SSAORadius", -1}}, json{{"SSAOBias", 2}}, json{{"SSAOStrength", 10}}, json{{"SSAOQuality", "Ultra"}},
 								json{{"BloomIntensity", 3}}, json{{"BloomLevels", 7}}, json{{"BloomSoftKnee", -1}}, json{{"BloomThreshold", 65}}, json{{"ProfilingEnabled", "yes"}}, json{{"InternalRenderScale", 0.49}}, json{{"InternalRenderScale", 2.01}}, json{{"InternalRenderScale", "half"}},

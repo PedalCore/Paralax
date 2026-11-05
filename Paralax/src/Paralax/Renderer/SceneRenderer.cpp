@@ -28,7 +28,7 @@ namespace Paralax {
 		static const std::vector<FieldInfo> s_Fields = {
 			MakeField<&SceneRendererSettings::Path>("RenderPath", FieldOptions().Enum({"Forward", "Deferred", "Visibility"}).Describe("Opaque shading path; transparency remains forward. See render.stats for effective path and fallback reason.")),
 			MakeField<&SceneRendererSettings::InternalRenderScale>("InternalRenderScale", FieldOptions().Range(0.5f, 2.0f).Describe("Scene raster scale: below 1 upscales; 1.5 or 2 supersamples with linear HDR area reduction. UI/text stay native. Failed scale retries after scale, output size or text-depth requirement changes.")),
-			MakeField<&SceneRendererSettings::AntiAliasing>("AntiAliasing", FieldOptions().Enum({"Off", "Spatial", "Temporal"}).Describe("Temporal uses conservative motion history; mixed silhouettes and transparent surfaces use current spatial reconstruction.")),
+			MakeField<&SceneRendererSettings::AntiAliasing>("AntiAliasing", FieldOptions().Enum({"Off", "Spatial", "Temporal", "FXAA"}).Describe("Temporal uses conservative motion history; FXAA filters native encoded color without history or jitter.")),
 			MakeField<&SceneRendererSettings::AAHistoryWeight>("AAHistoryWeight", FieldOptions().Range(0.0f, 0.95f)),
 			MakeField<&SceneRendererSettings::ProfilingEnabled>("ProfilingEnabled", FieldOptions().Describe("Nonblocking GPU pass timestamps and separate CPU Render duration; profiling can add GPU overhead.")),
 			MakeField<&SceneRendererSettings::SSAOEnabled>("SSAOEnabled", FieldOptions().Describe("Screen-space occlusion of diffuse environment, probe lighting and fill.")),
@@ -242,6 +242,7 @@ namespace Paralax {
 		, m_RenderScale(device, m_EffectBudget, effectFactory)
 		, m_TemporalAA(device, m_EffectBudget, effectFactory)
 		, m_SpatialAA(device, m_EffectBudget, effectFactory)
+		, m_FXAA(device, m_EffectBudget, effectFactory)
 		, m_Reflections(device, m_EffectBudget, effectFactory)
 		, m_ReflectionHistory(device, m_EffectBudget, effectFactory)
 		, m_EffectFactory(effectFactory)
@@ -265,6 +266,7 @@ namespace Paralax {
 		m_RenderScale.Release();
 		m_TemporalAA.Release();
 		m_SpatialAA.Release();
+		m_FXAA.Release();
 		m_Visibility.Prepare(false, nullptr, nullptr, nullptr, nullptr, nullptr);
 		m_Deferred.Prepare(false, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
 		m_Text.InvalidateDepthFramebuffers(m_DepthTarget);
@@ -1439,6 +1441,7 @@ namespace Paralax {
 			failedScale.reset();
 		const bool cachedFailure = bool(failedScale);
 		glm::uvec2 internalSize = cachedFailure ? outputSize : requestedSize;
+		const bool fxaaRequested = m_Settings.AntiAliasing == AntiAliasingMode::FXAA && m_Settings.DebugView == RenderDebugView::None;
 		const bool temporalRequested = m_Settings.AntiAliasing == AntiAliasingMode::Temporal && m_Settings.DebugView == RenderDebugView::None;
 		const bool reflectionRequested = m_Settings.SSREnabled &&
 										 (m_Settings.DebugView == RenderDebugView::None || m_Settings.DebugView == RenderDebugView::Reflections);
@@ -1501,10 +1504,12 @@ namespace Paralax {
 		}
 		// Retire disabled AA and depth from the previous raster before reserving supersampling.
 		// Otherwise an affordable transition can become a cached budget failure.
-		if (m_SpatialAA.IsReady() && (m_Settings.AntiAliasing == AntiAliasingMode::Off || m_Settings.DebugView != RenderDebugView::None ||
+		if (m_SpatialAA.IsReady() && (m_Settings.AntiAliasing == AntiAliasingMode::Off || fxaaRequested || m_Settings.DebugView != RenderDebugView::None ||
 									  m_SpatialAA.GetFramebuffer()->getFramebufferInfo().width != outputInfo.width ||
 									  m_SpatialAA.GetFramebuffer()->getFramebufferInfo().height != outputInfo.height))
 			m_SpatialAA.Release();
+		if (!fxaaRequested || (m_FXAA.IsReady() && !m_FXAA.MatchesOutput(output)))
+			m_FXAA.Release();
 		if (m_RenderScale.IsReady() && (!worldText || internalSize == outputSize || m_Width != internalSize.x || m_Height != internalSize.y ||
 										!m_RenderScale.MatchesInputs(m_DepthTarget, outputInfo.width, outputInfo.height)))
 		{
@@ -1706,7 +1711,13 @@ namespace Paralax {
 				m_Stats.AAFallbackReason += "; ";
 			m_Stats.AAFallbackReason += m_SpatialAA.GetFallbackReason();
 		}
+		const auto fxaaBacking = m_FXAA.GetBackingAttempts();
+		const bool fxaaActive = m_FXAA.Prepare(fxaaRequested, output);
+		m_StaticLightingDirty |= fxaaBacking != m_FXAA.GetBackingAttempts();
+		if (fxaaRequested && !fxaaActive)
+			m_Stats.AAFallbackReason = m_FXAA.GetFallbackReason();
 		m_Stats.EffectiveAA = temporalActive ? AntiAliasingMode::Temporal : spatialActive ? AntiAliasingMode::Spatial
+																		: fxaaActive      ? AntiAliasingMode::FXAA
 																						  : AntiAliasingMode::Off;
 		aa.m_EffectiveMode = m_Stats.EffectiveAA;
 		aa.m_RenderFallback = m_Stats.AAFallbackReason;
@@ -1745,7 +1756,7 @@ namespace Paralax {
 		m_Stats.BloomFallbackReason = m_Bloom.GetFallbackReason();
 		m_Stats.EffectOwnedBytes = m_EffectBudget.GetUsedBytes();
 		m_Stats.EffectPeakBytes = m_EffectBudget.GetPeakBytes();
-		m_Stats.EffectAllocationAttempts = m_AmbientOcclusion.GetAllocationAttempts() + m_Bloom.GetAllocationAttempts() + m_RenderScale.GetAllocationAttempts() + aa.GetAllocationAttempts() + m_SpatialAA.GetAllocationAttempts() + m_SupersampleAllocationAttempts + m_Reflections.GetAllocationAttempts() + (reflections ? reflections->GetAllocationAttempts() : 0);
+		m_Stats.EffectAllocationAttempts = m_AmbientOcclusion.GetAllocationAttempts() + m_Bloom.GetAllocationAttempts() + m_RenderScale.GetAllocationAttempts() + aa.GetAllocationAttempts() + m_SpatialAA.GetAllocationAttempts() + m_FXAA.GetAllocationAttempts() + m_SupersampleAllocationAttempts + m_Reflections.GetAllocationAttempts() + (reflections ? reflections->GetAllocationAttempts() : 0);
 
 		if (m_StaticLightingDirty)
 		{
@@ -1962,7 +1973,8 @@ namespace Paralax {
 			m_TonemapBindings = m_Device->createBindingSet(set, m_TonemapLayout);
 		}
 		nvrhi::GraphicsState tonemap;
-		auto* tonemapOutput = spatialActive ? m_SpatialAA.GetFramebuffer() : output;
+		auto* tonemapOutput = spatialActive ? m_SpatialAA.GetFramebuffer() : fxaaActive ? m_FXAA.GetFramebuffer()
+																						: output;
 		tonemap.pipeline = GetTonemapPipeline(tonemapOutput);
 		tonemap.framebuffer = tonemapOutput;
 		tonemap.bindings = {m_TonemapBindings};
@@ -1978,14 +1990,19 @@ namespace Paralax {
 		tonemapConstants.Operator = rawDiagnostic ? 3u : static_cast<uint32_t>(m_Settings.Tonemapper);
 		if (spatialActive)
 			tonemapConstants.Operator |= 0x100u;
+		if (fxaaActive)
+			tonemapConstants.Operator |= 0x200u;
 		m_CommandList->setPushConstants(&tonemapConstants, sizeof(tonemapConstants));
 		m_CommandList->draw(nvrhi::DrawArguments().setVertexCount(3));
 
 		m_Profiler.EndSection(m_CommandList, RenderTimingSection::Tonemap);
-		if (spatialActive)
+		if (spatialActive || fxaaActive)
 		{
 			m_Profiler.BeginSection(m_CommandList, RenderTimingSection::AntiAliasing);
-			m_SpatialAA.Render(m_CommandList, output);
+			if (fxaaActive)
+				m_FXAA.Render(m_CommandList, output);
+			else
+				m_SpatialAA.Render(m_CommandList, output);
 			++m_Stats.AAPasses;
 			++m_Stats.DrawCalls;
 			m_Profiler.EndSection(m_CommandList, RenderTimingSection::AntiAliasing);

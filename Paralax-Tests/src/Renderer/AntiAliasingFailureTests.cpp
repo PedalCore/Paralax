@@ -369,3 +369,265 @@ TEST_CASE("TemporalAA: persistent unsupported format or memory pressure retains 
 	}
 	CHECK(graphics.GetValidationErrorCount() == errors);
 }
+
+TEST_CASE("FXAA: every backing and object failure is stable and disable reenable recovers")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		Output output(graphics.GetDevice());
+		for (bool resources : {false, true})
+		{
+			FailureFactory factory;
+			factory.Resources = resources;
+			PostEffectBudget budget;
+			uint32_t count = 0;
+			{
+				FXAA aa(graphics, budget, &factory);
+				REQUIRE(aa.Prepare(true, output.Framebuffer));
+				count = factory.Calls;
+			}
+			REQUIRE(count > 0);
+			for (uint32_t fail = 1; fail <= count; ++fail)
+			{
+				CAPTURE(resources);
+				CAPTURE(fail);
+				FXAA aa(graphics, budget, &factory);
+				factory.Calls = 0;
+				factory.FailAt = fail;
+				REQUIRE_FALSE(aa.Prepare(true, output.Framebuffer));
+				CHECK(budget.GetUsedBytes() == 0);
+				CHECK_FALSE(std::string(aa.GetFallbackReason()).empty());
+				const auto attempts = aa.GetAllocationAttempts();
+				factory.FailAt = 0;
+				for (int frame = 0; frame < 3; ++frame)
+				{
+					CHECK_FALSE(aa.Prepare(true, output.Framebuffer));
+					CHECK(aa.GetAllocationAttempts() == attempts);
+				}
+				CHECK_FALSE(aa.Prepare(false, output.Framebuffer));
+				CHECK(aa.Prepare(true, output.Framebuffer));
+				aa.Release();
+				CHECK(budget.GetUsedBytes() == 0);
+			}
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("FXAA: invalid outputs and unsupported filtering fail before allocation and budget changes retry")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		class Factory : public PostEffectResourceFactory
+		{
+		public:
+			bool Unsupported = true;
+			nvrhi::FormatSupport QueryFormatSupport(nvrhi::IDevice* device, nvrhi::Format format) override
+			{
+				auto support = PostEffectResourceFactory::QueryFormatSupport(device, format);
+				return Unsupported && format == nvrhi::Format::RGBA16_FLOAT ? support & ~nvrhi::FormatSupport::ShaderSample : support;
+			}
+		} factory;
+		Output output(graphics.GetDevice());
+		PostEffectBudget budget;
+		FXAA aa(graphics, budget, &factory);
+		CHECK_FALSE(aa.Prepare(true, nullptr));
+		CHECK_FALSE(aa.Prepare(true, output.Framebuffer));
+		CHECK(aa.GetAllocationAttempts() == 0);
+		factory.Unsupported = false;
+		CHECK_FALSE(aa.Prepare(true, output.Framebuffer));
+		auto reservation = budget.Reserve(1);
+		CHECK(aa.Prepare(true, output.Framebuffer));
+		aa.Release();
+		reservation.Reset();
+		CHECK(budget.GetUsedBytes() == 0);
+		{
+			Testing::ScopedAssertionCapture capture;
+			CHECK_THROWS_AS(aa.Render(nullptr, nullptr), Testing::AssertionFailedError);
+		}
+		auto desc = output.Texture->getDesc();
+		desc.format = nvrhi::Format::R32_UINT;
+		auto integer = graphics.GetDevice()->createTexture(desc);
+		auto integerOutput = graphics.GetDevice()->createFramebuffer(nvrhi::FramebufferDesc().addColorAttachment(integer));
+		aa.Release();
+		const auto attempts = aa.GetAllocationAttempts();
+		CHECK_FALSE(aa.Prepare(true, integerOutput));
+		CHECK(aa.GetAllocationAttempts() == attempts);
+		auto multiple = graphics.GetDevice()->createFramebuffer(nvrhi::FramebufferDesc().addColorAttachment(output.Texture).addColorAttachment(integer));
+		CHECK_FALSE(aa.Prepare(true, multiple));
+		CHECK(aa.GetAllocationAttempts() == attempts);
+		CHECK(budget.GetUsedBytes() == 0);
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("FXAA: stable exhausted budget preserves exact Off output without jitter and releases on mode changes")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		AssetManager assets;
+		Scene scene("FXAAFallback");
+		scene.CreateEntity("Cube").AddComponent<MeshComponent>().Mesh = AssetHandle(AssetManager::BuiltinCube);
+		Output output(graphics.GetDevice());
+		SceneRenderer renderer(graphics, assets, nullptr, nullptr, nullptr, 1);
+		REQUIRE(renderer.Initialize());
+		auto& settings = renderer.GetSettings();
+		settings.Shadows = settings.GIEnabled = false;
+		const auto camera = CameraView::LookAt({0, 0, 3}, {0, 0, 0}, glm::radians(60.0f), 1);
+		renderer.Render(scene, camera, output.Framebuffer);
+		const auto baseline = ReadbackTexture(graphics.GetDevice(), output.Texture);
+		settings.AntiAliasing = AntiAliasingMode::FXAA;
+		uint64_t attempts = 0;
+		for (int frame = 0; frame < 3; ++frame)
+		{
+			renderer.Render(scene, camera, output.Framebuffer);
+			const auto& stats = renderer.GetStats();
+			CHECK(stats.RequestedAA == AntiAliasingMode::FXAA);
+			CHECK(stats.EffectiveAA == AntiAliasingMode::Off);
+			CHECK_FALSE(stats.AAFallbackReason.empty());
+			CHECK(stats.AASampleIndex == 0);
+			CHECK(stats.AACompletedFrames == 0);
+			CHECK(stats.AAPasses == 0);
+			CHECK(stats.EffectOwnedBytes == 0);
+			CHECK(stats.StaticLightingGenerations == 0);
+			CHECK(Image::MaxChannelDifference(baseline, ReadbackTexture(graphics.GetDevice(), output.Texture)) == 0);
+			if (frame)
+				CHECK(stats.EffectAllocationAttempts == attempts);
+			attempts = stats.EffectAllocationAttempts;
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("FXAA: real memory pressure recovers and incompatible framebuffer rendering verifies its contract")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		auto* device = graphics.GetDevice();
+		Output output(device);
+		uint64_t bytes = 0;
+		{
+			PostEffectBudget measureBudget;
+			FXAA measure(graphics, measureBudget);
+			REQUIRE(measure.Prepare(true, output.Framebuffer));
+			bytes = measure.GetOwnedBytes();
+		}
+		PostEffectBudget budget(bytes);
+		FXAA aa(graphics, budget);
+		auto pressure = budget.Reserve(1);
+		REQUIRE_FALSE(aa.Prepare(true, output.Framebuffer));
+		const auto attempts = aa.GetAllocationAttempts();
+		CHECK_FALSE(aa.Prepare(true, output.Framebuffer));
+		CHECK(aa.GetAllocationAttempts() == attempts);
+		pressure.Reset();
+		REQUIRE(aa.Prepare(true, output.Framebuffer));
+		CHECK(aa.GetOwnedBytes() == bytes);
+		auto depthDesc = output.Texture->getDesc();
+		depthDesc.format = nvrhi::Format::D32;
+		depthDesc.initialState = nvrhi::ResourceStates::DepthWrite;
+		auto depth = device->createTexture(depthDesc);
+		auto withDepth = device->createFramebuffer(nvrhi::FramebufferDesc().addColorAttachment(output.Texture).setDepthAttachment(depth));
+		auto commands = device->createCommandList();
+		{
+			Testing::ScopedAssertionCapture capture;
+			CHECK_THROWS_AS(aa.Render(commands, withDepth), Testing::AssertionFailedError);
+		}
+		for (auto* target : {withDepth.Get(), output.Framebuffer.Get()})
+		{
+			REQUIRE(aa.Prepare(true, target));
+			commands->open();
+			auto* input = aa.GetFramebuffer()->getDesc().colorAttachments[0].texture;
+			PostEffectTextures::TrackUsage(commands, input, nvrhi::ResourceStates::CopyDest);
+			commands->clearTextureFloat(input, nvrhi::AllSubresources, nvrhi::Color(0.25f));
+			aa.Render(commands, target);
+			commands->close();
+			device->executeCommandList(commands);
+			device->waitForIdle();
+		}
+		commands = nullptr;
+		aa.Release();
+		CHECK(budget.GetUsedBytes() == 0);
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("FXAA: malformed output descriptors fail before GPU calls")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		class DescriptionOnly final : public nvrhi::RefCounter<nvrhi::IFramebuffer>
+		{
+		public:
+			nvrhi::FramebufferInfoEx Info;
+			nvrhi::FramebufferDesc Desc;
+			const nvrhi::FramebufferInfoEx& getFramebufferInfo() const override { return Info; }
+			const nvrhi::FramebufferDesc& getDesc() const override { return Desc; }
+		} output;
+		PostEffectBudget budget;
+		FXAA aa(graphics, budget);
+		for (int invalid = 0; invalid < 8; ++invalid)
+		{
+			output.Info = nvrhi::FramebufferInfoEx();
+			output.Info.width = output.Info.height = 17;
+			output.Info.colorFormats = {nvrhi::Format::SRGBA8_UNORM};
+			switch (invalid)
+			{
+				case 0: output.Info.width = 0; break;
+				case 1: output.Info.height = 0; break;
+				case 2: output.Info.width = 8193; break;
+				case 3: output.Info.height = 8193; break;
+				case 4: output.Info.colorFormats = {}; break;
+				case 5: output.Info.sampleCount = 4; break;
+				case 6: output.Info.arraySize = 2; break;
+				case 7: output.Info.colorFormats.push_back(nvrhi::Format::RGBA16_FLOAT); break;
+			}
+			CAPTURE(invalid);
+			CHECK_FALSE(aa.Prepare(true, &output));
+			CHECK(aa.GetAllocationAttempts() == 0);
+			CHECK(budget.GetUsedBytes() == 0);
+		}
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("FXAA: retired input remains budgeted while external references retain its backing")
+{
+	if (!Testing::RequireTestGraphicsDevice())
+		return;
+	auto& graphics = *Testing::GetTestGraphicsDevice();
+	const auto errors = graphics.GetValidationErrorCount();
+	{
+		Output output(graphics.GetDevice());
+		PostEffectBudget budget;
+		FXAA aa(graphics, budget);
+		const auto references = output.Framebuffer->GetRefCount();
+		REQUIRE(aa.Prepare(true, output.Framebuffer));
+		CHECK(output.Framebuffer->GetRefCount() == references);
+		nvrhi::TextureHandle retained = aa.GetFramebuffer()->getDesc().colorAttachments[0].texture;
+		const auto bytes = budget.GetUsedBytes();
+		REQUIRE(bytes > 0);
+		aa.Release();
+		CHECK(aa.GetOwnedBytes() == 0);
+		CHECK(budget.GetUsedBytes() == bytes);
+		retained = nullptr;
+		budget.CollectRetired();
+		CHECK(budget.GetUsedBytes() == 0);
+		CHECK(output.Framebuffer->GetRefCount() == references);
+	}
+	CHECK(graphics.GetValidationErrorCount() == errors);
+}
