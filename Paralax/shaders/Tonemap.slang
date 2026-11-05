@@ -2,6 +2,7 @@
 // buffer applies the transfer function.
 import Common.Fullscreen;
 import Common.AreaFootprint;
+import Common.DisplayTransfer;
 
 struct TonemapConstants
 {
@@ -98,6 +99,9 @@ float3 ACESFitted(float3 color)
 		color = ACESFitted(hdr);
 	else
 		color = saturate(hdr);
+
+	if ((g_Tonemap.Operator & 0x200u) != 0)
+		return float4(EncodeSRGB(color), 1);
 
 	if ((g_Tonemap.Operator & 0x100u) != 0)
 		return float4(color, 1);

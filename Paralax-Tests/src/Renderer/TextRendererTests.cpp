@@ -362,7 +362,7 @@ TEST_CASE("Text: the component's text is limited in length through reflection")
 	CHECK_FALSE(ComponentRegistry::SetField(*info->FindField("Alignment"), &text, "Justified", error));
 }
 
-TEST_CASE("TextRenderer: temporal and spatial AA keep moving UI native and outside history")
+TEST_CASE("TextRenderer: temporal FXAA and spatial AA keep moving UI native and outside history")
 {
 	if (!Testing::RequireTestGraphicsDevice())
 		return;
@@ -383,7 +383,7 @@ TEST_CASE("TextRenderer: temporal and spatial AA keep moving UI native and outsi
 		renderer.Render(scene, camera, output.Framebuffer);
 		const auto baseline = ReadbackTexture(graphics.GetDevice(), output.Texture);
 		REQUIRE(WhiteBox(baseline, 0, 0, 160, 90).Count > 10);
-		for (auto mode : {AntiAliasingMode::Temporal, AntiAliasingMode::Spatial})
+		for (auto mode : {AntiAliasingMode::Temporal, AntiAliasingMode::FXAA, AntiAliasingMode::Spatial})
 		{
 			hud.GetTransform().Translation = {0.1f, 0.1f, 0};
 			settings.AntiAliasing = mode;

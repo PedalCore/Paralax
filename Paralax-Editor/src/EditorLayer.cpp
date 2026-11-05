@@ -44,6 +44,7 @@ namespace Paralax::Editor {
 				case AntiAliasingMode::Off: return "Off";
 				case AntiAliasingMode::Spatial: return "Spatial";
 				case AntiAliasingMode::Temporal: return "Temporal";
+				case AntiAliasingMode::FXAA: return "FXAA";
 			}
 			return "Invalid";
 		}

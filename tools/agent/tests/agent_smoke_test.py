@@ -172,6 +172,20 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
     check(not ambient_off["stats"]["ssaoActive"] and ambient_off["stats"]["effectOwnedBytes"] == 0,
           f"disabling AO retained optional resources: {ambient_off['stats']}")
 
+    fxaa_settings, fxaa_capture, fxaa_restore = editor.batch([
+        ("render.settings.set", {"settings": {"AntiAliasing": "FXAA", "GIEnabled": False}}),
+        ("render.capture", {"path": str(output / "FXAA.png"), "width": 65, "height": 49}),
+        ("render.settings.set", {"settings": ambient_saved}),
+    ])
+    check(fxaa_settings["AntiAliasing"] == "FXAA", "FXAA setting did not apply")
+    fxaa_state = fxaa_capture["stats"]["antiAliasing"]
+    check(fxaa_state["requested"] == "FXAA" and fxaa_state["effective"] == "FXAA"
+          and fxaa_state["passes"] == 1 and fxaa_state["sampleIndex"] == 0
+          and not fxaa_state["historyValid"], f"FXAA capture failed: {fxaa_state}")
+    check(fxaa_restore == ambient_saved and editor.call("render.settings.get") == ambient_saved,
+          "FXAA batch did not restore exact settings")
+    print("agent smoke: FXAA batch passed", flush=True)
+
     print("agent smoke: temporal phase begin", flush=True)
     # A batch prevents viewport frames between reset/state and two fresh deterministic captures.
     editor.call("render.settings.set", settings={"AntiAliasing": "Temporal", "GIEnabled": False})
