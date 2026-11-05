@@ -20,6 +20,7 @@ namespace Paralax {
 		AntiAliasing,
 		DepthHierarchy,
 		Reflections,
+		ClusterBuild,
 		Count
 	};
 
@@ -28,14 +29,14 @@ namespace Paralax {
 		uint64_t Frame = 0;
 		uint32_t InternalWidth = 0, InternalHeight = 0, OutputWidth = 0, OutputHeight = 0;
 		uint32_t RequestedPath = 0, EffectivePath = 0, EffectiveAA = 0;
-		bool AmbientOcclusionActive = false, BloomActive = false, ReflectionsActive = false, ReflectionHistoryActive = false;
+		bool AmbientOcclusionActive = false, BloomActive = false, ReflectionsActive = false, ReflectionHistoryActive = false, ClusteredLightingActive = false;
 		std::string Settings;
 	};
 
 	struct RenderTimingSample
 	{
 		RenderTimingContext Context;
-		// Missing sections were not recorded, rather than measured as zero. Scene includes AO and reflections; reflections includes the depth hierarchy.
+		// Missing sections were not recorded, rather than measured as zero. Scene includes AO and reflections; reflections includes the depth hierarchy. ClusterBuild is outside Scene, inside Total.
 		std::array<std::optional<double>, static_cast<size_t>(RenderTimingSection::Count)> Milliseconds;
 	};
 
@@ -72,7 +73,7 @@ namespace Paralax {
 		bool BeginFrame(bool enabled, nvrhi::ICommandList* commands, const RenderTimingContext& context, double hostSeconds);
 		void BeginSection(nvrhi::ICommandList* commands, RenderTimingSection section);
 		void EndSection(nvrhi::ICommandList* commands, RenderTimingSection section);
-		void EndFrame(nvrhi::ICommandList* commands, uint32_t effectivePath, bool ambientOcclusionActive = false, bool bloomActive = false, uint32_t effectiveAA = 0, bool reflectionsActive = false, bool reflectionHistoryActive = false);
+		void EndFrame(nvrhi::ICommandList* commands, uint32_t effectivePath, bool ambientOcclusionActive = false, bool bloomActive = false, uint32_t effectiveAA = 0, bool reflectionsActive = false, bool reflectionHistoryActive = false, bool clusteredLightingActive = false);
 		// Call immediately AFTER executeCommandList; hostSeconds was measured BEFORE that submission call.
 		void Submitted(double hostSeconds);
 		// Retain abandoned query indices until owner destruction; an unsubmitted command may still reference them.

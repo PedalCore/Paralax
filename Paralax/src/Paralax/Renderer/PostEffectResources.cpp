@@ -212,8 +212,18 @@ namespace Paralax {
 
 	nvrhi::IBuffer* PostEffectBuffers::Create(uint64_t bytes, uint32_t stride, const char* name)
 	{
+		return CreateStorage(bytes, stride, false, name);
+	}
+
+	nvrhi::IBuffer* PostEffectBuffers::CreateRaw(uint64_t bytes, const char* name)
+	{
+		return CreateStorage(bytes, 0, true, name);
+	}
+
+	nvrhi::IBuffer* PostEffectBuffers::CreateStorage(uint64_t bytes, uint32_t stride, bool raw, const char* name)
+	{
 		m_FailureReason = "invalid effect buffer description";
-		if (!name || !bytes || !stride || stride % 4 || bytes % stride || bytes > PostEffectBudget::DefaultCapacity)
+		if (!name || !bytes || bytes % 4 || (!raw && (!stride || stride % 4 || bytes % stride)) || bytes > PostEffectBudget::DefaultCapacity)
 			return nullptr;
 		auto* device = m_Graphics.GetDevice();
 		m_FailureReason = "effect buffer preflight unsupported";
@@ -222,6 +232,8 @@ namespace Paralax {
 		nvrhi::BufferDesc desc;
 		desc.byteSize = bytes;
 		desc.structStride = stride;
+		desc.canHaveRawViews = raw;
+		desc.canHaveUAVs = raw;
 		desc.debugName = name;
 		desc.initialState = nvrhi::ResourceStates::ShaderResource;
 		desc.keepInitialState = true;

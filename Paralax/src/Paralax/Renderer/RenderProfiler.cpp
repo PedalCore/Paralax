@@ -18,7 +18,7 @@ namespace Paralax {
 
 	const char* RenderProfiler::GetSectionName(RenderTimingSection section)
 	{
-		constexpr std::array names = {"total", "shadows", "sceneIncludingAO", "ambientOcclusion", "bloom", "tonemap", "overlays", "antiAliasing", "depthHierarchy", "reflections"};
+		constexpr std::array names = {"total", "shadows", "sceneIncludingAO", "ambientOcclusion", "bloom", "tonemap", "overlays", "antiAliasing", "depthHierarchy", "reflections", "clusterBuild"};
 		const auto index = static_cast<size_t>(section);
 		return index < names.size() ? names[index] : "invalid";
 	}
@@ -104,7 +104,7 @@ namespace Paralax {
 		slot.Open[index] = false;
 	}
 
-	void RenderProfiler::EndFrame(nvrhi::ICommandList* commands, uint32_t effectivePath, bool ambientOcclusionActive, bool bloomActive, uint32_t effectiveAA, bool reflectionsActive, bool reflectionHistoryActive)
+	void RenderProfiler::EndFrame(nvrhi::ICommandList* commands, uint32_t effectivePath, bool ambientOcclusionActive, bool bloomActive, uint32_t effectiveAA, bool reflectionsActive, bool reflectionHistoryActive, bool clusteredLightingActive)
 	{
 		if (m_Recording != SlotCount)
 		{
@@ -114,6 +114,7 @@ namespace Paralax {
 			m_Slots[m_Recording].Context.EffectiveAA = effectiveAA;
 			m_Slots[m_Recording].Context.ReflectionsActive = reflectionsActive;
 			m_Slots[m_Recording].Context.ReflectionHistoryActive = reflectionHistoryActive;
+			m_Slots[m_Recording].Context.ClusteredLightingActive = clusteredLightingActive;
 		}
 		EndSection(commands, RenderTimingSection::Total);
 	}

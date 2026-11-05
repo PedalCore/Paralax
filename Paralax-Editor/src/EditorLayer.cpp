@@ -78,7 +78,7 @@ namespace Paralax::Editor {
 				json sections = json::object();
 				for (size_t i = 0; i < sample.Milliseconds.size(); ++i)
 					sections[RenderProfiler::GetSectionName(static_cast<RenderTimingSection>(i))] = sample.Milliseconds[i] ? json(*sample.Milliseconds[i]) : json(nullptr);
-				profiling["gpu"] = {{"frame", context.Frame}, {"internalSize", {context.InternalWidth, context.InternalHeight}}, {"outputSize", {context.OutputWidth, context.OutputHeight}}, {"requestedRenderPath", pathName(static_cast<RenderPath>(context.RequestedPath))}, {"effectiveRenderPath", pathName(static_cast<RenderPath>(context.EffectivePath))}, {"ssaoActive", context.AmbientOcclusionActive}, {"bloomActive", context.BloomActive}, {"ssrActive", context.ReflectionsActive}, {"ssrHistoryActive", context.ReflectionHistoryActive}, {"effectiveAA", AAName(static_cast<AntiAliasingMode>(context.EffectiveAA))}, {"settings", json::parse(context.Settings, nullptr, false)}, {"milliseconds", std::move(sections)}, {"scope", "SceneRenderer commands; excludes presentation. Scene includes AO and reflections; reflections includes depth hierarchy. Do not sum nested sections."}};
+				profiling["gpu"] = {{"frame", context.Frame}, {"internalSize", {context.InternalWidth, context.InternalHeight}}, {"outputSize", {context.OutputWidth, context.OutputHeight}}, {"requestedRenderPath", pathName(static_cast<RenderPath>(context.RequestedPath))}, {"effectiveRenderPath", pathName(static_cast<RenderPath>(context.EffectivePath))}, {"ssaoActive", context.AmbientOcclusionActive}, {"bloomActive", context.BloomActive}, {"clusteredLightingActive", context.ClusteredLightingActive}, {"ssrActive", context.ReflectionsActive}, {"ssrHistoryActive", context.ReflectionHistoryActive}, {"effectiveAA", AAName(static_cast<AntiAliasingMode>(context.EffectiveAA))}, {"settings", json::parse(context.Settings, nullptr, false)}, {"milliseconds", std::move(sections)}, {"scope", "SceneRenderer commands; excludes presentation. Scene includes AO and reflections; reflections includes depth hierarchy. Cluster build is outside scene and inside total. Do not sum nested sections."}};
 			}
 			if (stats.ProfilingDevice)
 			{
@@ -92,6 +92,18 @@ namespace Paralax::Editor {
 					{"effectiveRenderPath", pathName(stats.EffectivePath)},
 					{"renderPathFallbackReason", stats.PathFallbackReason},
 					{"bloomActive", stats.BloomActive},
+					{"clusteredLightingRequested", stats.ClusteredLightingRequested},
+					{"clusteredLightingActive", stats.ClusteredLightingActive},
+					{"clusteredLightingFallbackReason", stats.ClusteredLightingFallbackReason},
+					{"clusterGrid", {stats.ClusterGrid.x, stats.ClusterGrid.y, stats.ClusterGrid.z}},
+					{"clusterCells", stats.ClusterCells},
+					{"clusterDispatches", stats.ClusterDispatches},
+					{"clusterLogicalBytes", stats.ClusterLogicalBytes},
+					{"clusterOwnedBytes", stats.ClusterOwnedBytes},
+					{"clusterAllocationAttempts", stats.ClusterAllocationAttempts},
+					{"clusterBackingAttempts", stats.ClusterBackingAttempts},
+					{"clusterPrefixUploadBytes", stats.ClusterPrefixUploadBytes},
+					{"clusterLightTestsUpperBound", stats.ClusterLightTestsUpperBound},
 					{"ssrActive", stats.SSRActive},
 					{"ssrFallbackReason", stats.SSRFallbackReason},
 					{"ssrPasses", stats.SSRPasses},
