@@ -1,0 +1,86 @@
+diff --git a/Paralax/src/Paralax/Renderer/SceneRenderer.cpp b/Paralax/src/Paralax/Renderer/SceneRenderer.cpp
+index f727740..41fa1a4 100644
+--- a/Paralax/src/Paralax/Renderer/SceneRenderer.cpp
++++ b/Paralax/src/Paralax/Renderer/SceneRenderer.cpp
+@@ -82,6 +82,13 @@ namespace Paralax {
+ 
+ 	namespace {
+ 
++		nvrhi::VertexBufferBinding MeshVertexBinding(nvrhi::IBuffer* buffer, uint32_t vertexOffset)
++		{
++			// Express the mesh-local origin in the binding: large indexed base vertices fail on some Vulkan backends.
++			// Keep indexed baseVertex zero in every mesh pass; vertex pulling retains its explicit element offset.
++			return nvrhi::VertexBufferBinding().setBuffer(buffer).setOffset(uint64_t(vertexOffset) * sizeof(MeshVertex));
++		}
++
+ 		struct SceneIdentity
+ 		{
+ 		};
+@@ -1018,14 +1025,14 @@ namespace Paralax {
+ 				state.pipeline = draw.AlphaMask ? m_ShadowMaskPipeline : m_ShadowPipeline;
+ 				state.framebuffer = framebuffer;
+ 				state.bindings = {m_ShadowViewBindings, material};
+-				state.vertexBuffers = {nvrhi::VertexBufferBinding().setBuffer(draw.Mesh->VertexBuffer)};
++				state.vertexBuffers = {MeshVertexBinding(draw.Mesh->VertexBuffer, draw.VertexOffset)};
+ 				state.indexBuffer = nvrhi::IndexBufferBinding().setBuffer(draw.Mesh->IndexBuffer).setFormat(nvrhi::Format::R32_UINT);
+ 				state.viewport.addViewportAndScissorRect(nvrhi::Viewport(static_cast<float>(m_ShadowMapSize), static_cast<float>(m_ShadowMapSize)));
+ 				m_CommandList->setGraphicsState(state);
+ 
+ 				const glm::mat4 worldLightViewProjection = view.CascadeViewProjection[cascade] * draw.World;
+ 				m_CommandList->setPushConstants(&worldLightViewProjection, sizeof(worldLightViewProjection));
+-				m_CommandList->drawIndexed(nvrhi::DrawArguments().setVertexCount(draw.IndexCount).setStartIndexLocation(draw.IndexOffset).setStartVertexLocation(draw.VertexOffset));
++				m_CommandList->drawIndexed(nvrhi::DrawArguments().setVertexCount(draw.IndexCount).setStartIndexLocation(draw.IndexOffset).setStartVertexLocation(0));
+ 				m_Stats.ShadowDrawCalls++;
+ 			}
+ 		}
+@@ -1149,14 +1156,14 @@ namespace Paralax {
+ 					state.pipeline = draw.AlphaMask ? m_LocalShadowMaskPipeline : m_LocalShadowPipeline;
+ 					state.framebuffer = m_LocalShadowMaps.GetFramebuffer(layer);
+ 					state.bindings = {m_ShadowViewBindings, draw.Material};
+-					state.vertexBuffers = {nvrhi::VertexBufferBinding().setBuffer(draw.Mesh->VertexBuffer)};
++					state.vertexBuffers = {MeshVertexBinding(draw.Mesh->VertexBuffer, draw.VertexOffset)};
+ 					state.indexBuffer = nvrhi::IndexBufferBinding().setBuffer(draw.Mesh->IndexBuffer).setFormat(nvrhi::Format::R32_UINT);
+ 					const float size = static_cast<float>(m_LocalShadowMaps.GetResolution());
+ 					state.viewport.addViewportAndScissorRect(nvrhi::Viewport(size, size));
+ 					m_CommandList->setGraphicsState(state);
+ 					const glm::mat4 matrix = slot.ViewProjection[face] * draw.World;
+ 					m_CommandList->setPushConstants(&matrix, sizeof(matrix));
+-					m_CommandList->drawIndexed(nvrhi::DrawArguments().setVertexCount(draw.IndexCount).setStartIndexLocation(draw.IndexOffset).setStartVertexLocation(draw.VertexOffset));
++					m_CommandList->drawIndexed(nvrhi::DrawArguments().setVertexCount(draw.IndexCount).setStartIndexLocation(draw.IndexOffset).setStartVertexLocation(0));
+ 					++m_Stats.ShadowDrawCalls;
+ 					++m_Stats.LocalShadowDrawCalls;
+ 				}
+@@ -1255,14 +1262,14 @@ namespace Paralax {
+ 					state.framebuffer = m_AmbientOcclusion.GetGuideFramebuffer();
+ 				}
+ 				state.bindings = {m_ActiveViewBindings, draw.Material, m_ProbeGI.GetBindings()};
+-				state.vertexBuffers = {nvrhi::VertexBufferBinding().setBuffer(draw.Mesh->VertexBuffer)};
++				state.vertexBuffers = {MeshVertexBinding(draw.Mesh->VertexBuffer, draw.VertexOffset)};
+ 				state.indexBuffer = nvrhi::IndexBufferBinding().setBuffer(draw.Mesh->IndexBuffer).setFormat(nvrhi::Format::R32_UINT);
+ 				state.viewport.addViewportAndScissorRect(viewport);
+ 				m_CommandList->setGraphicsState(state);
+ 
+ 				const GPU::DrawConstants constants = MakeDrawConstants(draw.World);
+ 				m_CommandList->setPushConstants(&constants, sizeof(constants));
+-				m_CommandList->drawIndexed(nvrhi::DrawArguments().setVertexCount(draw.IndexCount).setStartIndexLocation(draw.IndexOffset).setStartVertexLocation(draw.VertexOffset));
++				m_CommandList->drawIndexed(nvrhi::DrawArguments().setVertexCount(draw.IndexCount).setStartIndexLocation(draw.IndexOffset).setStartVertexLocation(0));
+ 				m_Stats.DrawCalls++;
+ 			}
+ 		};
+@@ -1350,14 +1357,14 @@ namespace Paralax {
+ 				state.pipeline = reactive ? history.GetReactivePipeline() : history.GetGuidePipeline(draw.DoubleSided, draw.Mirrored);
+ 				state.framebuffer = reactive ? history.GetReactiveFramebuffer() : history.GetGuideFramebuffer();
+ 				state.bindings = {m_ActiveViewBindings, draw.Material, m_ProbeGI.GetBindings(), history.GetDrawBindings()};
+-				state.vertexBuffers = {nvrhi::VertexBufferBinding().setBuffer(draw.Mesh->VertexBuffer)};
++				state.vertexBuffers = {MeshVertexBinding(draw.Mesh->VertexBuffer, draw.VertexOffset)};
+ 				state.indexBuffer = nvrhi::IndexBufferBinding().setBuffer(draw.Mesh->IndexBuffer).setFormat(nvrhi::Format::R32_UINT);
+ 				state.viewport.addViewportAndScissorRect(nvrhi::Viewport(float(m_Width), float(m_Height)));
+ 				m_CommandList->setGraphicsState(state);
+ 				auto constants = MakeDrawConstants(draw.World);
+ 				constants.Geometry.x = draw.TemporalIndex;
+ 				m_CommandList->setPushConstants(&constants, sizeof(constants));
+-				m_CommandList->drawIndexed(nvrhi::DrawArguments().setVertexCount(draw.IndexCount).setStartIndexLocation(draw.IndexOffset).setStartVertexLocation(draw.VertexOffset));
++				m_CommandList->drawIndexed(nvrhi::DrawArguments().setVertexCount(draw.IndexCount).setStartIndexLocation(draw.IndexOffset).setStartVertexLocation(0));
+ 				++m_Stats.DrawCalls;
+ 			}
+ 	}

@@ -35,10 +35,12 @@ namespace {
 		const char* Name;
 		uint32_t VertexStride, IndexStride;
 		bool White = false;
+		uint32_t VertexPrefix = 0;
 	};
 	constexpr std::array Extents{
 		Extent{"compact", 4, 6}, Extent{"vertex-extent", 12160, 6},
 		Extent{"index-extent", 4, 12288}, Extent{"combined-extent", 12160, 12288},
+		Extent{"boundary-65535", 4, 6, false, 65535}, Extent{"boundary-65536", 4, 6, false, 65536}, Extent{"boundary-65537", 4, 6, false, 65537},
 		Extent{"combined-white", 12160, 12288, true}};
 
 	enum class Representation
@@ -209,7 +211,7 @@ namespace {
 			auto mesh = CreateRef<MeshAsset>();
 			mesh->Handle = AssetHandle(72000 + meshIndex);
 			mesh->Materials = materials;
-			mesh->Vertices.resize(separate ? 4 : extent ? quadCount * extent->VertexStride
+			mesh->Vertices.resize(separate ? 4 : extent ? extent->VertexPrefix + quadCount * extent->VertexStride
 														: 30);
 			mesh->Indices.resize(separate ? 6 : extent ? quadCount * extent->IndexStride
 													   : 30,
@@ -220,7 +222,7 @@ namespace {
 			{
 				if (separate && quad != meshIndex)
 					continue;
-				const uint32_t vertexOffset = separate ? 0 : extent ? quad * extent->VertexStride
+				const uint32_t vertexOffset = separate ? 0 : extent ? extent->VertexPrefix + quad * extent->VertexStride
 																	: VertexOffsets[quad];
 				const uint32_t indexOffset = separate ? 0 : extent ? quad * extent->IndexStride
 																   : IndexOffsets[quad];

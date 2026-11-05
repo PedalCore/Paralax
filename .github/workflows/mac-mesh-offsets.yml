@@ -34,10 +34,15 @@ jobs:
         run: |
           python3 - <<'PYTHON'
           from pathlib import Path
-          import hashlib
+          import hashlib, subprocess
           source = Path('harness/.github/diagnostics/MeshOffsetRenderingTests.cpp').read_bytes()
-          assert hashlib.sha256(source).hexdigest() == 'e1df26b16728bea5f77f53f1e04884695720fdcea43aa3afb9f007ce905d36d9'
+          assert hashlib.sha256(source).hexdigest() == 'dae26cf584a464f43695149cfd6a5a7b88273878c46d2b117f2490d28064d424'
           Path('source/Paralax-Tests/src/Renderer/MeshOffsetRenderingTests.cpp').write_bytes(source)
+          patch = Path('harness/.github/diagnostics/IndexedVertexAddressing.patch')
+          assert hashlib.sha256(patch.read_bytes()).hexdigest() == '3fd0aad3e559901107fed832b1ab633cbaba4cc88b832c5a909e82e4923f0871'
+          subprocess.run(['git', '-C', 'source', 'apply', '--check', str(patch.resolve())], check=True)
+          subprocess.run(['git', '-C', 'source', 'apply', str(patch.resolve())], check=True)
+          assert hashlib.sha256(Path('source/Paralax/src/Paralax/Renderer/SceneRenderer.cpp').read_bytes()).hexdigest() == '3e16a82bef9a07eca6bbc20de44fdeb5b9f6edbbded739b568489bfa5bad6046'
           PYTHON
       - name: Configure and build Release tests
         shell: bash
