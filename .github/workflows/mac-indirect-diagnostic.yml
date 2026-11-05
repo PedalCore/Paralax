@@ -1,0 +1,93 @@
+name: R21 macOS indirect diagnostic
+
+on:
+  push:
+    branches: [ci/r21-mac-indirect-diagnostic]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm-cache
+  CTEST_OUTPUT_ON_FAILURE: "1"
+  PX_REQUIRE_GPU: "1"
+  LP_NUM_THREADS: "2"
+
+jobs:
+  diagnose:
+    name: macOS Debug ${{ matrix.label }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: before-extraction, revision: "87593862d7ebec426ac1002f99624e18374e9d68" }
+          - { label: merged-extraction, revision: "655aa19bf9ce4f9a7a054dda36beca5ffaa63244" }
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ matrix.revision }}
+      - name: Dependencies and provenance
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          mkdir -p Diagnostic
+          brew list ninja >/dev/null 2>&1 || brew install ninja
+          brew install vulkan-loader molten-vk
+          {
+            git log -1 --format='%H %T %s'
+            sw_vers
+            uname -m
+            clang++ --version
+            brew list --versions vulkan-loader molten-vk ninja
+            shasum -a 256 Paralax-Tests/src/Renderer/ClusteredLightingIntegrationTests.cpp Paralax/shaders/ProbeGI.slang Paralax/src/Paralax/Renderer/ProbeGI.cpp
+          } > Diagnostic/provenance.txt
+      - uses: actions/cache@v4
+        with:
+          path: .cpm-cache
+          key: cpm-${{ runner.os }}-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake', 'cmake/patches/**') }}
+      - name: Configure and build unchanged source
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DPX_BUILD_TESTS=ON 2>&1 | tee Diagnostic/configure.log
+          cmake --build build --target Paralax-Tests --parallel 4 2>&1 | tee Diagnostic/build.log
+      - name: Device provenance and bounded repeated cases
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -euo pipefail
+          failed=0
+          device_status=0
+          ctest --test-dir build -V --parallel 1 --timeout 300 --no-tests=error -R '^GraphicsDevice: creates a headless' > Diagnostic/device.log 2>&1 || device_status=$?
+          printf 'device\t%s\n' "$device_status" > Diagnostic/results.tsv
+          if [[ $device_status -ne 0 ]]; then
+            cat Diagnostic/device.log
+            exit "$device_status"
+          fi
+          for iteration in $(seq 1 20); do
+            status=0
+            ctest --test-dir build --parallel 1 --timeout 300 --no-tests=error --output-on-failure -R '^ClusteredLighting: Deferred perspective preserves HDR material and shadow lighting$' > "Diagnostic/serial-$iteration.log" 2>&1 || status=$?
+            printf 'serial-%s\t%s\n' "$iteration" "$status" >> Diagnostic/results.tsv
+            [[ $status -eq 0 ]] || failed=1
+          done
+          for iteration in $(seq 1 5); do
+            status=0
+            ctest --test-dir build --parallel 2 --timeout 300 --no-tests=error --output-on-failure -R '^ClusteredLighting: (Forward|Deferred|Visibility) (perspective|orthographic) preserves HDR material and shadow lighting$' > "Diagnostic/concurrent-$iteration.log" 2>&1 || status=$?
+            printf 'concurrent-%s\t%s\n' "$iteration" "$status" >> Diagnostic/results.tsv
+            [[ $status -eq 0 ]] || failed=1
+          done
+          cat Diagnostic/results.tsv
+          exit "$failed"
+      - name: Preserve diagnostics including failures
+        timeout-minutes: 5
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-indirect-${{ matrix.label }}
+          path: Diagnostic
+          if-no-files-found: error
+          retention-days: 7
