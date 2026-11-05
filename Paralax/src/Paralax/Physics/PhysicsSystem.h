@@ -12,6 +12,8 @@
 
 namespace Paralax {
 
+	class AssetManager;
+
 	struct PhysicsSystemSpecification
 	{
 		glm::vec3 Gravity{0.0f, -9.81f, 0.0f};
@@ -76,11 +78,18 @@ namespace Paralax {
 	// receive them as OnCollisionEnter/Exit and OnTriggerEnter/Exit). Simulation is deterministic across platforms for
 	// identical inputs.
 	//
+	// Mesh colliders borrow CPU assets through the supplied AssetManager; Jolt owns a cooked copy of their
+	// triangles. Static and kinematic bodies support concave meshes, including compound children; dynamic bodies
+	// containing one are rejected. Missing/invalid geometry rejects the whole owning body, with no fallback shape.
+	// Asset changes rebuild at the next sync; failures are retried when their configuration or asset version changes.
 	// Main-thread-only (the simulation uses worker threads internally).
 	class PhysicsSystem final : public SceneSystem
 	{
 	public:
+		// Without an asset manager, Mesh colliders fail with a logged error; primitives need no assets.
 		explicit PhysicsSystem(PhysicsSystemSpecification specification = {});
+		// Borrows assets, which must outlive this main-thread-only system. Mesh reloads apply at the next sync.
+		explicit PhysicsSystem(AssetManager& assets, PhysicsSystemSpecification specification = {});
 		~PhysicsSystem() override;
 
 		PhysicsSystem(const PhysicsSystem&) = delete;
@@ -110,7 +119,8 @@ namespace Paralax {
 		bool HasBody(UUID entity) const;
 
 		// Closest non-trigger collider hit by a ray from origin along direction (need not be normalized), within
-		// maxDistance. Returns nullopt for no hit, a zero direction or a non-positive distance.
+		// maxDistance. Mesh backfaces are hit only with BackfaceCollision enabled. Returns nullopt for no hit,
+		// a zero direction or a non-positive distance.
 		std::optional<RaycastHit> Raycast(const glm::vec3& origin, const glm::vec3& direction, float maxDistance) const;
 
 		glm::vec3 GetGravity() const;
