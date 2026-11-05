@@ -1,0 +1,147 @@
+name: R21 instrumented macOS full-suite diagnostic
+
+on:
+  push:
+    branches: [ci/r21-mac-indirect-capture]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm-cache
+  CTEST_OUTPUT_ON_FAILURE: "1"
+  PX_REQUIRE_GPU: "1"
+  LP_NUM_THREADS: "2"
+
+jobs:
+  diagnose:
+    name: Instrumented macOS Debug ${{ matrix.label }}
+    runs-on: macos-15
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: before-extraction, revision: "87593862d7ebec426ac1002f99624e18374e9d68" }
+          - { label: merged-extraction, revision: "655aa19bf9ce4f9a7a054dda36beca5ffaa63244" }
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    steps:
+      - name: Check out diagnostic payload
+        uses: actions/checkout@v5
+        timeout-minutes: 2
+        with:
+          ref: ${{ github.sha }}
+          path: harness
+          sparse-checkout: .github/diagnostics/R21ClusteredLightingIntegrationTests.cpp
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Check out pinned production source
+        uses: actions/checkout@v5
+        timeout-minutes: 2
+        with:
+          ref: ${{ matrix.revision }}
+          path: source
+          persist-credentials: false
+      - name: Verify and apply identical instrumentation
+        timeout-minutes: 3
+        env:
+          EXPECTED_REVISION: ${{ matrix.revision }}
+        run: |
+          set -euo pipefail
+          mkdir -p ../Diagnostic/provenance
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_REVISION" ]]
+          target=Paralax-Tests/src/Renderer/ClusteredLightingIntegrationTests.cpp
+          payload=../harness/.github/diagnostics/R21ClusteredLightingIntegrationTests.cpp
+          printf '%s  %s\n' 6bc2930289c47d61a1411e72cee95d7d7ee7327ada8e41f83947e5204a308d6f "$target" | shasum -a 256 -c -
+          printf '%s  %s\n' 5a538025fbc7f26acdadf7a28bca54e9c77cf81edc2c737369d8aa81930b82db "$payload" | shasum -a 256 -c -
+          git log -1 --format='%H %T %s' > ../Diagnostic/provenance/base.txt
+          cp "$payload" "$target"
+          [[ "$(git diff --name-only)" == "$target" ]]
+          git diff --check
+          git diff > ../Diagnostic/provenance/instrumentation.patch
+          shasum -a 256 "$target" Paralax/shaders/ProbeGI.slang Paralax/src/Paralax/Renderer/ProbeGI.cpp > ../Diagnostic/provenance/source-sha256.txt
+          printf '%s\n' 'Instrumented comparison: CPU state copies and retained readback images may perturb timing. No extra GPU copies/readbacks. No known-HDR exclusions or retry-as-repair. Separate hosted hosts; one four-worker full suite per revision.' > ../Diagnostic/Scope.txt
+          printf 'invocation\tstate\texit\n' > ../Diagnostic/results.tsv
+      - name: Dependencies and device environment
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          brew list ninja >/dev/null 2>&1 || brew install ninja
+          brew install vulkan-loader molten-vk
+          {
+            sw_vers
+            uname -m
+            clang++ --version
+            brew list --versions vulkan-loader molten-vk ninja
+          } > ../Diagnostic/provenance/host.txt
+      - uses: actions/cache@v4
+        timeout-minutes: 3
+        with:
+          path: .cpm-cache
+          key: cpm-${{ runner.os }}-${{ hashFiles('source/cmake/Dependencies.cmake', 'source/cmake/CPM.cmake', 'source/cmake/patches/**') }}
+      - name: Configure and build all full-suite dependencies
+        timeout-minutes: 25
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DPX_BUILD_TESTS=ON 2>&1 | tee ../Diagnostic/configure.log
+          cmake --build build --parallel 4 2>&1 | tee ../Diagnostic/build.log
+      - name: Required GPU device provenance
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          mkdir -p ../Diagnostic/device-1
+          printf 'device-1\tSTARTED\tpending\n' >> ../Diagnostic/results.tsv
+          status=0
+          ctest --test-dir build -V --parallel 1 --timeout 120 --no-tests=error -R '^GraphicsDevice: creates a headless' > ../Diagnostic/device-1/ctest.log 2>&1 || status=$?
+          printf 'device-1\tCOMPLETED\t%s\n' "$status" >> ../Diagnostic/results.tsv
+          exit "$status"
+      - name: Preserve device invocation output
+        if: always()
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          if [[ -d ../Diagnostic/device-1 ]]; then
+            if [[ -d build/Paralax-Tests/TestOutput ]]; then
+              cp -R build/Paralax-Tests/TestOutput ../Diagnostic/device-1/TestOutput
+            fi
+            if [[ -d build/Testing ]]; then
+              cp -R build/Testing ../Diagnostic/device-1/Testing
+            fi
+          fi
+      - name: One instrumented full suite with original four-way concurrency
+        timeout-minutes: 25
+        run: |
+          set -euo pipefail
+          mkdir -p ../Diagnostic/full-suite-1
+          printf 'full-suite-1\tSTARTED\tpending\n' >> ../Diagnostic/results.tsv
+          status=0
+          ctest --test-dir build --build-config Debug --parallel 4 --timeout 300 --no-tests=error --output-on-failure > ../Diagnostic/full-suite-1/ctest.log 2>&1 || status=$?
+          printf 'full-suite-1\tCOMPLETED\t%s\n' "$status" >> ../Diagnostic/results.tsv
+          cat ../Diagnostic/results.tsv
+          exit "$status"
+      - name: Preserve full-suite output even after failure or step timeout
+        if: always()
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          if [[ -d ../Diagnostic/full-suite-1 ]]; then
+            if [[ -d build/Paralax-Tests/TestOutput ]]; then
+              cp -R build/Paralax-Tests/TestOutput ../Diagnostic/full-suite-1/TestOutput
+            fi
+            if [[ -d build/Testing ]]; then
+              cp -R build/Testing ../Diagnostic/full-suite-1/Testing
+            fi
+          fi
+      - name: Upload all diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        timeout-minutes: 10
+        with:
+          name: mac-indirect-instrumented-fullsuite-${{ matrix.label }}
+          path: Diagnostic
+          if-no-files-found: error
+          retention-days: 7
