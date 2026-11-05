@@ -61,6 +61,8 @@ namespace Paralax {
 		bool SupportsRayTracingPipeline = false;
 		bool SupportsMeshShaders = false;
 		bool SupportsIndependentBlend = false;
+		// Optional compute modules can explicitly request round-to-nearest-even binary32 arithmetic.
+		bool SupportsFloat32RTE = false;
 	};
 
 	// Owns the native graphics API objects (Vulkan instance, physical and logical device, queues) and the NVRHI

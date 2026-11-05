@@ -671,8 +671,11 @@ namespace Paralax {
 
 		VkPhysicalDeviceProperties2 properties = MakeVkStruct<VkPhysicalDeviceProperties2>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2);
 		VkPhysicalDeviceDriverProperties driverProperties = MakeVkStruct<VkPhysicalDeviceDriverProperties>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES);
+		VkPhysicalDeviceFloatControlsProperties floatControls = MakeVkStruct<VkPhysicalDeviceFloatControlsProperties>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES);
+		driverProperties.pNext = &floatControls;
 		properties.pNext = &driverProperties;
 		m_Functions.GetPhysicalDeviceProperties2(m_PhysicalDevice, &properties);
+		m_Info.SupportsFloat32RTE = floatControls.shaderRoundingModeRTEFloat32 == VK_TRUE;
 		m_Info.DriverName = fmt::format("{} {}", driverProperties.driverName, driverProperties.driverInfo);
 
 		const float priority = 1.0f;
