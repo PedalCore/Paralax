@@ -1439,3 +1439,26 @@ TEST_CASE("ScriptSystem: an error too long to keep whole is cut before its trace
 	CHECK_FALSE(fixture.System->Evaluate("error(string.rep('y', 1000))", failure));
 	CHECK(failure.find(std::string(1000, 'y') + "\nstack traceback:") != std::string::npos);
 }
+
+TEST_CASE("ScriptSystem: reflected mesh colliders are editable and drive physical raycasts")
+{
+	ScriptFixture fixture;
+	fixture.World.AddSystem(CreateScope<PhysicsSystem>(fixture.Assets));
+	fixture.CreateScripted(R"(
+		local S = {}
+		function S:OnCreate()
+			local collider = self.entity:AddComponent("Collider")
+			collider.Shape = "Mesh"
+			collider.Mesh = "3"
+			collider.BackfaceCollision = true
+			assert(collider.Shape == "Mesh" and collider.Mesh == "3" and collider.BackfaceCollision)
+			assert(not pcall(function() collider.Mesh = "invalid" end))
+		end
+		return S
+	)");
+	fixture.Start();
+	fixture.Update(2);
+	CHECK(fixture.System->GetErrors().empty());
+	CHECK(fixture.Eval("return Physics.Raycast(vec3(0, 1, 0), vec3(0, -1, 0), 2).entity.name") == "Scripted");
+	CHECK(fixture.Eval("return Physics.Raycast(vec3(0, -1, 0), vec3(0, 1, 0), 2).entity.name") == "Scripted");
+}

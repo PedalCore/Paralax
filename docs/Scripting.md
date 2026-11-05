@@ -142,6 +142,19 @@ an entity solid. Add a **Rigidbody** as well to simulate it:
 - `Kinematic` bodies follow their Transform, and push dynamic ones.
 - `Static` bodies (and colliders without a Rigidbody) never move.
 
+A `Collider` with `Shape = "Mesh"` uses the triangle geometry of its `Mesh` asset handle (including submesh
+transforms), scaled by the entity Transform and shifted by `Offset`. `Size` is ignored. This supports concave
+surfaces on static and kinematic bodies, including mesh children of a compound body. A dynamic body containing
+any mesh collider is rejected with an error; it has no physics body. Triangles collide on their front side by
+default; set `BackfaceCollision = true` to collide with both sides. Mirrored transforms preserve the front side.
+Mesh colliders are surfaces, so a trigger detects contact with those surfaces rather than containment inside a volume.
+
+Missing or invalid mesh assets leave their entire owning body unsimulated until repaired. Successful asset reloads
+rebuild collision geometry at the next physics sync; failed file reloads retain the cached asset and its existing
+collision geometry. Removing the asset removes its collision geometry. Mesh cooking accepts at most 1,000,000
+triangles (both sides count), 3,000,000 vertices and 65,536 submeshes, with transformed coordinates within ±100,000
+body-local units. Collapsed triangles are omitted; geometry with no usable triangles is rejected.
+
 A collider with `IsTrigger = true` detects overlaps without colliding. The simulation runs in fixed 1/60 s steps and is
 deterministic. An entity destroyed during an update leaves the simulation at once (it no longer collides in the
 update's remaining steps). Setting a body's Transform from a script teleports it (kinematic bodies move there smoothly).

@@ -556,3 +556,13 @@ editor.call("render.capture", path="Captures/Overview.png", camera="editor", wid
 - `project.export { output: string }`: writes the standalone game folder of step 6: `{ path, executable, files,
   warnings? }`. `output` lies outside the project (a relative one is taken from the project directory), its parent
   must exist, and it must be new, empty, or an earlier export holding nothing else.
+
+### Triangle mesh colliders
+
+Use `component.set` on `Collider` with `Shape: "Mesh"` and `Mesh` set to the imported mesh
+asset handle (a decimal string). `BackfaceCollision: true` enables both sides; the default is front faces only.
+The collider uses the asset's submesh transforms and entity Transform, plus `Offset`; `Size` has no effect.
+Use a static body or `Rigidbody.Type: "Kinematic"`, including for an ancestor owning compound mesh children.
+Dynamic bodies containing a mesh collider are rejected. Missing or invalid geometry is logged once and leaves
+the owning body unsimulated until repaired. Asset reloads apply at the next physics sync. See the physics section
+of `Scripting.md` for the geometry limits and reload behavior.

@@ -851,6 +851,45 @@
 			},
 			"ID": "8755870330327501315",
 			"Parent": "0"
+		},
+		{
+			"ID": "8000000000000000101",
+			"Parent": "0",
+			"Components": {
+				"Tag": {
+					"Name": "MeshSurface",
+					"Tag": "Feature"
+				},
+				"Transform": {
+					"Translation": [
+						30,
+						2,
+						0
+					],
+					"Rotation": [
+						0,
+						0,
+						0,
+						1
+					],
+					"Scale": [
+						-4,
+						1,
+						4
+					]
+				},
+				"Mesh": {
+					"Mesh": "3"
+				},
+				"Collider": {
+					"Shape": "Mesh",
+					"Mesh": "3",
+					"BackfaceCollision": true
+				},
+				"Rigidbody": {
+					"Type": "Kinematic"
+				}
+			}
 		}
 	],
 	"Name": "FeatureTest",

@@ -135,7 +135,9 @@ namespace Paralax {
 
 			components.push_back(MakeComponent<ColliderComponent>("Collider", "The entity's physical shape (static unless it has a Rigidbody).",
 																  {
-																	  MakeField<&ColliderComponent::Shape>("Shape", FieldOptions().Enum({"Box", "Sphere", "Capsule", "Cylinder"})),
+																	  MakeField<&ColliderComponent::Shape>("Shape", FieldOptions().Enum({"Box", "Sphere", "Capsule", "Cylinder", "Mesh"})),
+																	  MakeField<&ColliderComponent::Mesh>("Mesh", FieldOptions().Describe("Triangle mesh asset; static or kinematic bodies only. Size is ignored.")),
+																	  MakeField<&ColliderComponent::BackfaceCollision>("BackfaceCollision", FieldOptions().Describe("Mesh only: collide with both sides of triangles.")),
 																	  MakeField<&ColliderComponent::Size>("Size", FieldOptions().Range(0.001f, 100000.0f).Describe("Bounding box in local units (scaled by the Transform).")),
 																	  MakeField<&ColliderComponent::Offset>("Offset", FieldOptions().Describe("Shape centre relative to the entity.")),
 																	  MakeField<&ColliderComponent::Friction>("Friction", FieldOptions().Range(0.0f, 10.0f)),

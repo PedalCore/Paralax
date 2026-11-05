@@ -35,7 +35,7 @@ namespace Paralax {
 		scripts.State = &m_State;
 		m_Scripts = static_cast<ScriptSystem*>(m_Scene->AddSystem(CreateScope<ScriptSystem>(m_Assets, scripts)));
 		m_Animation = static_cast<AnimationSystem*>(m_Scene->AddSystem(CreateScope<AnimationSystem>(m_Assets)));
-		m_Physics = static_cast<PhysicsSystem*>(m_Scene->AddSystem(CreateScope<PhysicsSystem>()));
+		m_Physics = static_cast<PhysicsSystem*>(m_Scene->AddSystem(CreateScope<PhysicsSystem>(m_Assets)));
 		AudioSystemSpecification audio;
 		audio.Output = m_Specification.Audio;
 		m_Audio = static_cast<AudioSystem*>(m_Scene->AddSystem(CreateScope<AudioSystem>(m_Assets, audio)));

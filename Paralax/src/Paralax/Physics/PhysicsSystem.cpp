@@ -1,6 +1,8 @@
 #include "pxpch.h"
 #include "Paralax/Physics/PhysicsSystem.h"
 
+#include "Paralax/Asset/AssetManager.h"
+#include "Paralax/Asset/MeshAsset.h"
 #include "Paralax/Math/Math.h"
 #include "Paralax/Scene/Components.h"
 #include "Paralax/Scene/Entity.h"
@@ -15,10 +17,12 @@
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Collision/CastResult.h>
+#include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/CylinderShape.h>
+#include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
@@ -201,6 +205,21 @@ namespace Paralax {
 			return glm::all(glm::lessThanEqual(glm::abs(x - y), glm::vec4(1e-5f))) || glm::all(glm::lessThanEqual(glm::abs(x + y), glm::vec4(1e-5f)));
 		}
 
+		bool SameMatrix(const glm::mat4& a, const glm::mat4& b)
+		{
+			for (int column = 0; column < 3; column++)
+			{
+				const glm::vec3 x(a[column]);
+				const glm::vec3 y(b[column]);
+				// Cancelling a body's rotation leaves scale-proportional rounding even in coefficients near zero.
+				const glm::vec3 magnitude = glm::max(glm::abs(x), glm::abs(y));
+				const float tolerance = 1e-5f * std::max({1.0f, magnitude.x, magnitude.y, magnitude.z});
+				if (!glm::all(glm::lessThanEqual(glm::abs(x - y), glm::vec3(tolerance))))
+					return false;
+			}
+			return SameVector(glm::vec3(a[3]), glm::vec3(b[3]));
+		}
+
 		// One collider of a body: the body entity's own, or a descendant's merged into it. Its placement is relative to
 		// the body (in the body's rotated, unscaled frame); its scale is the collider entity's world scale.
 		struct BodyPart
@@ -209,12 +228,18 @@ namespace Paralax {
 			glm::vec3 Scale{1.0f};
 			glm::vec3 Position{0.0f};
 			glm::quat Rotation{1.0f, 0.0f, 0.0f, 0.0f};
+			Ref<MeshAsset> Mesh;
+			uint32_t MeshVersion = 0;
+			// Keep the root's rotation-cancelled linear frame separate from the stable local chain: multiplying
+			// them during sync would amplify rounding into an offset child's translation and rebuild a rotating body.
+			glm::mat4 MeshTransform{1.0f};
+			glm::mat4 MeshRelative{1.0f};
 
 			bool operator==(const BodyPart& other) const
 			{
 				const ColliderComponent& c = Collider;
 				const ColliderComponent& d = other.Collider;
-				return c.Shape == d.Shape && c.Size == d.Size && c.Offset == d.Offset && c.Friction == d.Friction && c.Restitution == d.Restitution &&
+				return c.Shape == d.Shape && c.Mesh == d.Mesh && c.BackfaceCollision == d.BackfaceCollision && Mesh == other.Mesh && MeshVersion == other.MeshVersion && SameMatrix(MeshTransform, other.MeshTransform) && SameMatrix(MeshRelative, other.MeshRelative) && c.Size == d.Size && c.Offset == d.Offset && c.Friction == d.Friction && c.Restitution == d.Restitution &&
 					   c.IsTrigger == d.IsTrigger && SameVector(Scale, other.Scale) && SameVector(Position, other.Position) && SameRotation(Rotation, other.Rotation);
 			}
 
@@ -243,6 +268,11 @@ namespace Paralax {
 					   Parts == other.Parts;
 			}
 
+			bool HasMesh() const
+			{
+				return std::any_of(Parts.begin(), Parts.end(), [](const BodyPart& part) { return part.Collider.Shape == ColliderShape::Mesh; });
+			}
+
 			RigidbodyType Type() const { return HasRigidbody ? Rigidbody.Type : (FollowsBody ? RigidbodyType::Kinematic : RigidbodyType::Static); }
 			// Triggers never merge, so a trigger body has exactly one part.
 			bool IsTrigger() const { return !Parts.empty() && Parts.front().Collider.IsTrigger; }
@@ -253,8 +283,105 @@ namespace Paralax {
 		constexpr float MinimumExtent = 0.001f;
 		constexpr float MaximumExtent = 100000.0f;
 
-		JPH::ShapeRefC CreateShape(const ColliderComponent& collider, const glm::vec3& scale, std::string& outError)
+		// Bound CPU cooking and Jolt's acceleration structure before traversing untrusted asset buffers.
+		constexpr size_t MaxMeshTriangles = 1000000;
+		constexpr size_t MaxMeshVertices = 3000000;
+		constexpr size_t MaxMeshSubmeshes = 65536;
+
+		JPH::ShapeRefC CreateMeshShape(const BodyPart& part, std::string& outError)
 		{
+			if (!part.Mesh)
+			{
+				outError = "Mesh collider requires a loaded mesh asset and an asset manager";
+				return nullptr;
+			}
+			const MeshAsset& mesh = *part.Mesh;
+			if (mesh.Vertices.size() > MaxMeshVertices || mesh.Indices.size() > MaxMeshTriangles * 3 || mesh.Submeshes.size() > MaxMeshSubmeshes)
+			{
+				outError = "Mesh collider exceeds geometry limits";
+				return nullptr;
+			}
+			size_t triangleCount = 0;
+			for (const Submesh& submesh : mesh.Submeshes)
+			{
+				triangleCount += submesh.IndexCount / 3;
+				if (triangleCount > MaxMeshTriangles / (part.Collider.BackfaceCollision ? 2 : 1))
+				{
+					outError = "Mesh collider exceeds triangle limit";
+					return nullptr;
+				}
+			}
+			// Validate traverses every submesh index range, including overlapping ranges. Cap their sum first.
+			if (!mesh.Validate(outError))
+				return nullptr;
+			JPH::TriangleList triangles;
+			triangles.reserve(triangleCount * (part.Collider.BackfaceCollision ? 2 : 1));
+			for (const Submesh& submesh : mesh.Submeshes)
+			{
+				// Match rendering's world * submesh.Transform, then apply the collider's local offset.
+				const glm::mat4 transform = part.MeshTransform * part.MeshRelative * glm::translate(glm::mat4(1.0f), part.Collider.Offset) * submesh.Transform;
+				for (int column = 0; column < 4; column++)
+					for (int row = 0; row < 4; row++)
+						if (!std::isfinite(transform[column][row]))
+						{
+							outError = "Mesh collider transform is not finite";
+							return nullptr;
+						}
+				if (transform[0][3] != 0.0f || transform[1][3] != 0.0f || transform[2][3] != 0.0f || transform[3][3] != 1.0f)
+				{
+					outError = "Mesh collider transform is not affine";
+					return nullptr;
+				}
+				const double determinant = glm::determinant(glm::dmat3(transform));
+				if (!std::isfinite(determinant) || determinant == 0.0)
+				{
+					outError = "Mesh collider transform is singular";
+					return nullptr;
+				}
+				for (uint32_t i = 0; i < submesh.IndexCount; i += 3)
+				{
+					glm::vec3 positions[3];
+					for (uint32_t corner = 0; corner < 3; corner++)
+					{
+						const size_t index = static_cast<size_t>(submesh.VertexOffset) + mesh.Indices[static_cast<size_t>(submesh.IndexOffset) + i + corner];
+						positions[corner] = glm::vec3(transform * glm::vec4(mesh.Vertices[index].Position, 1.0f));
+						if (!IsFinite(positions[corner]) || glm::any(glm::greaterThan(glm::abs(positions[corner]), glm::vec3(MaximumExtent))))
+						{
+							outError = "Mesh collider vertex is not finite or exceeds coordinate limits";
+							return nullptr;
+						}
+					}
+					const glm::dvec3 cross = glm::cross(glm::dvec3(positions[1]) - glm::dvec3(positions[0]), glm::dvec3(positions[2]) - glm::dvec3(positions[0]));
+					// Importers can retain collapsed triangles. They have no collision surface; Jolt also removes them.
+					if (glm::dot(cross, cross) <= 1e-24)
+						continue;
+					if (determinant < 0.0)
+						std::swap(positions[1], positions[2]);
+					triangles.emplace_back(ToJolt(positions[0]), ToJolt(positions[1]), ToJolt(positions[2]));
+					if (part.Collider.BackfaceCollision)
+						triangles.emplace_back(ToJolt(positions[0]), ToJolt(positions[2]), ToJolt(positions[1]));
+				}
+			}
+			if (triangles.empty())
+			{
+				outError = "Mesh collider has no nondegenerate triangles";
+				return nullptr;
+			}
+			const auto result = JPH::MeshShapeSettings(triangles).Create();
+			if (result.HasError() || !result.IsValid())
+			{
+				outError = result.HasError() ? result.GetError().c_str() : "invalid mesh collider";
+				return nullptr;
+			}
+			return result.Get();
+		}
+
+		JPH::ShapeRefC CreateShape(const BodyPart& part, std::string& outError)
+		{
+			const ColliderComponent& collider = part.Collider;
+			const glm::vec3& scale = part.Scale;
+			if (collider.Shape == ColliderShape::Mesh)
+				return CreateMeshShape(part, outError);
 			auto clampExtent = [](float value) {
 				return std::isfinite(value) ? std::clamp(std::abs(value), MinimumExtent, MaximumExtent) : 1.0f;
 			};
@@ -263,6 +390,8 @@ namespace Paralax {
 			JPH::ShapeSettings::ShapeResult result;
 			switch (collider.Shape)
 			{
+				case ColliderShape::Mesh:
+					break; // Handled before the primitive size calculation.
 				case ColliderShape::Box:
 				{
 					const glm::vec3 half = size * 0.5f;
@@ -315,12 +444,17 @@ namespace Paralax {
 		// rejects it.
 		JPH::ShapeRefC CreateBodyShape(const BodyConfiguration& configuration, std::string& outError)
 		{
+			if (configuration.Type() == RigidbodyType::Dynamic && configuration.HasMesh())
+			{
+				outError = "Dynamic bodies cannot contain Mesh colliders; use Static or Kinematic";
+				return nullptr;
+			}
 			if (configuration.Parts.size() == 1 && configuration.Parts.front().IsAtOrigin())
-				return CreateShape(configuration.Parts.front().Collider, configuration.Parts.front().Scale, outError);
+				return CreateShape(configuration.Parts.front(), outError);
 			JPH::StaticCompoundShapeSettings compound;
 			for (const BodyPart& part : configuration.Parts)
 			{
-				JPH::ShapeRefC shape = CreateShape(part.Collider, part.Scale, outError);
+				JPH::ShapeRefC shape = CreateShape(part, outError);
 				if (!shape)
 					return nullptr;
 				compound.AddShape(ToJolt(part.Position), ToJolt(glm::normalize(part.Rotation)), shape);
@@ -430,6 +564,7 @@ namespace Paralax {
 		}
 
 		PhysicsSystemSpecification Specification;
+		AssetManager* Assets = nullptr; // Borrowed; all access is on the main thread.
 		Scene* ActiveScene = nullptr;
 
 		Scope<JPH::TempAllocatorImpl> TempAllocator;
@@ -440,8 +575,9 @@ namespace Paralax {
 		ContactCollector Contacts;
 		Scope<JPH::PhysicsSystem> Physics;
 
-		std::unordered_map<uint64_t, BodyRecord> Records; // By entity UUID.
-		std::vector<ContactPair> Touching;                // Pairs in contact after the last step, sorted.
+		std::unordered_map<uint64_t, BodyConfiguration> Rejected; // Failed cooking retried only when inputs change.
+		std::unordered_map<uint64_t, BodyRecord> Records;         // By entity UUID.
+		std::vector<ContactPair> Touching;                        // Pairs in contact after the last step, sorted.
 		std::vector<ContactEvent> PendingEvents;
 		bool DroppedEvents = false;
 		// Whether Jolt's capacity error has been reported this run: the condition (more contacts than the caches
@@ -518,6 +654,7 @@ namespace Paralax {
 				Bodies().DestroyBody(record.Body);
 			}
 			Records.clear();
+			Rejected.clear();
 			Touching.clear();
 			PendingEvents.clear();
 			DroppedEvents = false;
@@ -556,10 +693,13 @@ namespace Paralax {
 		BodyRecord* CreateBody(Entity entity, const BodyConfiguration& configuration, const glm::mat4& world, const glm::vec3& position, const glm::quat& rotation)
 		{
 			const uint64_t id = entity.GetUUID();
+			if (auto it = Rejected.find(id); it != Rejected.end() && it->second == configuration)
+				return nullptr;
 			std::string shapeError;
 			JPH::ShapeRefC shape = CreateBodyShape(configuration, shapeError);
 			if (!shape)
 			{
+				Rejected[id] = configuration;
 				if (FirstReport(id))
 					PX_CORE_ERROR("Physics: cannot create the collider of '{}': {}", entity.GetName(), shapeError);
 				return nullptr;
@@ -571,6 +711,13 @@ namespace Paralax {
 																			   : JPH::EMotionType::Dynamic;
 			JPH::BodyCreationSettings settings(shape, JPH::RVec3(position.x, position.y, position.z), ToJolt(glm::normalize(rotation)), motion,
 											   type == RigidbodyType::Static ? Layers::Static : Layers::Moving);
+			if (type == RigidbodyType::Kinematic && configuration.HasMesh())
+			{
+				// Kinematic motion is prescribed, but Jolt still requires valid mass properties. A triangle
+				// surface has no volume; these values do not affect its motion or the contact response.
+				settings.mOverrideMassProperties = JPH::EOverrideMassProperties::MassAndInertiaProvided;
+				settings.mMassPropertiesOverride.SetMassAndInertiaOfSolidBox(JPH::Vec3::sOne(), 1.0f);
+			}
 			settings.mUserData = id;
 			// One material per body: that of its first collider (its own, if it has one).
 			const ColliderComponent& material = configuration.Parts.front().Collider;
@@ -608,6 +755,7 @@ namespace Paralax {
 			if (type == RigidbodyType::Static)
 				WakeAround(body);
 			Reported.erase(id);
+			Rejected.erase(id);
 			BodiesCreated++;
 			BodyRecord& record = Records[id];
 			record = BodyRecord{body, configuration, world};
@@ -622,6 +770,7 @@ namespace Paralax {
 			glm::mat4 World{1.0f};
 			glm::vec3 Position{0.0f};
 			glm::quat Rotation{1.0f, 0.0f, 0.0f, 0.0f};
+			glm::mat4 MeshFrame{1.0f};
 			bool Usable = true; // False while the body entity's transform has zero scale or is not finite.
 		};
 
@@ -694,7 +843,20 @@ namespace Paralax {
 								PX_CORE_WARN("Physics: '{}' has more than {} colliders; the rest are left out", owner->Owner.GetName(), Specification.MaxCollidersPerBody);
 							return;
 						}
-						owner->Configuration.Parts.push_back(BodyPart{*collider, scale, position, rotation});
+						BodyPart part;
+						part.Collider = *collider;
+						part.Scale = scale;
+						if (collider->Shape == ColliderShape::Mesh)
+						{
+							part.MeshTransform = owner->MeshFrame;
+							part.MeshRelative = place.Relative;
+						}
+						else
+						{
+							part.Position = position;
+							part.Rotation = rotation;
+						}
+						owner->Configuration.Parts.push_back(std::move(part));
 						return;
 					}
 				}
@@ -714,11 +876,26 @@ namespace Paralax {
 					body.Configuration.HasRigidbody = true;
 				}
 				body.Configuration.FollowsBody = owner && owner->Configuration.Type() != RigidbodyType::Static;
+				body.MeshFrame = glm::mat4(glm::inverse(glm::mat3_cast(body.Rotation)) * glm::mat3(world));
 				if (collider)
-					body.Configuration.Parts.push_back(BodyPart{*collider, body.Configuration.WorldScale});
+				{
+					BodyPart part;
+					part.Collider = *collider;
+					part.Scale = body.Configuration.WorldScale;
+					if (collider->Shape == ColliderShape::Mesh)
+						part.MeshTransform = body.MeshFrame;
+					body.Configuration.Parts.push_back(std::move(part));
+				}
 				bodyIndex[id] = bodies.size();
 				bodies.push_back(std::move(body));
 			});
+			for (PendingBody& body : bodies)
+				for (BodyPart& part : body.Configuration.Parts)
+					if (part.Collider.Shape == ColliderShape::Mesh && Assets)
+					{
+						part.Mesh = Assets->GetAsset<MeshAsset>(part.Collider.Mesh);
+						part.MeshVersion = part.Mesh ? part.Mesh->Version : 0;
+					}
 			return bodies;
 		}
 
@@ -799,6 +976,7 @@ namespace Paralax {
 				record.World = body.World;
 			}
 
+			std::erase_if(Rejected, [&](const auto& entry) { return !kept.contains(entry.first); });
 			// Bodies the scene no longer describes (collider or rigidbody removed, entity gone).
 			std::vector<uint64_t> orphaned;
 			for (const auto& [entity, record] : Records)
@@ -977,6 +1155,12 @@ namespace Paralax {
 		PX_CORE_VERIFY(specification.MaxCollidersPerBody >= 1, "MaxCollidersPerBody must be at least 1");
 	}
 
+	PhysicsSystem::PhysicsSystem(AssetManager& assets, PhysicsSystemSpecification specification)
+		: PhysicsSystem(specification)
+	{
+		m_Impl->Assets = &assets;
+	}
+
 	PhysicsSystem::~PhysicsSystem()
 	{
 		m_Impl->Stop();
@@ -1085,10 +1269,16 @@ namespace Paralax {
 			return std::nullopt;
 		const glm::vec3 unit = glm::normalize(direction);
 		const JPH::RRayCast ray(JPH::RVec3(origin.x, origin.y, origin.z), ToJolt(unit * maxDistance));
-		JPH::RayCastResult result;
+		JPH::ClosestHitCollisionCollector<JPH::CastRayCollector> collector;
+		JPH::RayCastSettings settings;
+		settings.mBackFaceModeTriangles = JPH::EBackFaceMode::IgnoreBackFaces;
 		IgnoreTriggers filter;
-		if (!m_Impl->Physics->GetNarrowPhaseQuery().CastRay(ray, result, {}, {}, filter))
+		// The simpler overload always hits triangle backfaces. With a collector, a rejected backface also
+		// cannot hide a farther front face; two-sided mesh colliders supply their own reversed triangles.
+		m_Impl->Physics->GetNarrowPhaseQuery().CastRay(ray, settings, collector, {}, {}, filter);
+		if (!collector.HadHit())
 			return std::nullopt;
+		const JPH::RayCastResult& result = collector.mHit;
 
 		RaycastHit hit;
 		hit.Distance = result.mFraction * maxDistance;

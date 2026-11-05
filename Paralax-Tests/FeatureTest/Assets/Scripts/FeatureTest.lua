@@ -148,6 +148,11 @@ local function TestPhysics()
 	local hit = Physics.Raycast(vec3(4, 5, 4), vec3(0, -1, 0), 20)
 	assert(hit and hit.entity.name == "Ground" and near(hit.distance, 5) and hit.normal.y > 0.99 and near(hit.point.y, 0), "raycast should hit the ground")
 	assert(Physics.Raycast(vec3(0, 50, 0), vec3(0, 1, 0), 10) == nil)
+	local meshSurface = Scene.FindEntityByName("MeshSurface")
+	local meshCollider = meshSurface:GetComponent("Collider")
+	assert(meshCollider.Shape == "Mesh" and meshCollider.Mesh == "3" and meshCollider.BackfaceCollision)
+	local meshHit = Physics.Raycast(vec3(30, 5, 0), vec3(0, -1, 0), 4)
+	assert(meshHit and meshHit.entity == meshSurface and near(meshHit.point.y, 2), "mesh collider should use authored geometry")
 	-- The crate prefab is one compound body: the lid's collider is part of the crate's Rigidbody.
 	local crate
 	for _, entity in ipairs(Scene.FindEntitiesByTag("Feature")) do

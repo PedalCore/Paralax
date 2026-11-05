@@ -139,17 +139,21 @@ namespace Paralax {
 	{
 		Box = 0,
 		Sphere = 1,
-		Capsule = 2, // Upright (along Y).
-		Cylinder = 3 // Upright (along Y).
+		Capsule = 2,  // Upright (along Y).
+		Cylinder = 3, // Upright (along Y).
+		Mesh = 4      // Authored triangles, static or kinematic only.
 	};
 
 	// The physical shape of an entity. Size is the shape's bounding box in local units (before the Transform's scale,
 	// which applies too): a box uses it directly; a sphere's diameter is its largest component; capsules and cylinders
 	// take their diameter from X and Z and their total height from Y. The defaults match the built-in unit meshes
-	// (the built-in capsule is 1 x 2 x 1).
+	// (the built-in capsule is 1 x 2 x 1). Mesh ignores Size and uses the Mesh asset
+	// including its submesh transforms. Missing or invalid geometry leaves the owning body unsimulated.
 	struct ColliderComponent
 	{
 		ColliderShape Shape = ColliderShape::Box;
+		AssetHandle Mesh = 0;
+		bool BackfaceCollision = false; // Mesh only: collide with both sides of each triangle.
 		glm::vec3 Size{1.0f};
 		glm::vec3 Offset{0.0f}; // Shape centre relative to the entity, in local units.
 		float Friction = 0.5f;
