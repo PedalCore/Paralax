@@ -36,7 +36,7 @@ jobs:
           from pathlib import Path
           import hashlib
           source = Path('harness/.github/diagnostics/MeshOffsetRenderingTests.cpp').read_bytes()
-          assert hashlib.sha256(source).hexdigest() == '19021e9ba8b8dd630a20584d3e8ce9fa13168da483758c64b26bf4f88958ee1a'
+          assert hashlib.sha256(source).hexdigest() == 'e1df26b16728bea5f77f53f1e04884695720fdcea43aa3afb9f007ce905d36d9'
           Path('source/Paralax-Tests/src/Renderer/MeshOffsetRenderingTests.cpp').write_bytes(source)
           PYTHON
       - name: Configure and build Release tests
