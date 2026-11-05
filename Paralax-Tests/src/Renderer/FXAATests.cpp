@@ -182,8 +182,8 @@ TEST_CASE("FXAA: independent impulse and infinite stripe arithmetic includes bot
 		for (int shape = 0; shape < 4; ++shape)
 		{
 			CAPTURE(shape);
-			std::fill(fixture.Pixels.begin(), fixture.Pixels.end(), glm::vec4(shape == 1 ? 1 : 0));
-			fixture.Pixels[32 * 65 + 32] = glm::vec4(shape == 1 ? 0 : 1);
+			std::fill(fixture.Pixels.begin(), fixture.Pixels.end(), glm::vec4(shape == 1 ? 1.0f : 0.0f));
+			fixture.Pixels[32 * 65 + 32] = glm::vec4(shape == 1 ? 0.0f : 1.0f);
 			if (shape >= 2)
 				for (int i = 0; i < 65; ++i)
 					fixture.Pixels[shape == 2 ? 32 * 65 + i : i * 65 + 32] = glm::vec4(1);
@@ -288,8 +288,8 @@ TEST_CASE("FXAA: asymmetric complete filter applies the analytic edge offset in 
 					CAPTURE(transpose);
 					CAPTURE(sign);
 					CAPTURE(inverted);
-					std::fill(fixture.Pixels.begin(), fixture.Pixels.end(), glm::vec4(inverted ? 0 : 1));
-					auto write = [&](int x, int y) { fixture.Pixels[transpose ? x * 41 + y : y * 41 + x] = glm::vec4(inverted ? 1 : 0); };
+					std::fill(fixture.Pixels.begin(), fixture.Pixels.end(), glm::vec4(inverted ? 0.0f : 1.0f));
+					auto write = [&](int x, int y) { fixture.Pixels[transpose ? x * 41 + y : y * 41 + x] = glm::vec4(inverted ? 1.0f : 0.0f); };
 					for (int x = 0; x < 41; ++x)
 						write(x, 20 + sign);
 					write(18, 20);
@@ -321,7 +321,7 @@ TEST_CASE("FXAA: geometric coverage references quantify edge error separately fr
 			};
 			for (uint32_t y = 0; y < 41; ++y)
 				for (uint32_t x = 0; x < 41; ++x)
-					fixture.Pixels[y * 41 + x] = glm::vec4(inside(x + 0.5, y + 0.5) ? 1 : 0);
+					fixture.Pixels[y * 41 + x] = glm::vec4(inside(x + 0.5, y + 0.5) ? 1.0f : 0.0f);
 			const auto result = fixture.Run();
 			for (uint32_t y = 2; y < 39; ++y)
 				for (uint32_t x = 2; x < 39; ++x)
@@ -352,7 +352,7 @@ TEST_CASE("FXAA: geometric coverage references quantify edge error separately fr
 		// unlike a filter that improves edge error by indiscriminately blurring the image.
 		for (uint32_t y = 0; y < 41; ++y)
 			for (uint32_t x = 0; x < 41; ++x)
-				fixture.Pixels[y * 41 + x] = glm::vec4(y == 20 ? 1 : 0);
+				fixture.Pixels[y * 41 + x] = glm::vec4(y == 20 ? 1.0f : 0.0f);
 		const auto detail = fixture.Run();
 		NearDithered(detail[20 * 41 + 20], 7.0 / 9);
 		NearDithered(detail[16 * 41 + 20], 0);
