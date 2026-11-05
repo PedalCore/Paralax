@@ -30,8 +30,8 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    # Windows software Vulkan tests plus compilation exceed 45 minutes on hosted runners.
-    timeout-minutes: ${{ startsWith(matrix.os, 'windows-') && 60 || 45 }}
+    # Windows and sanitizer compilation plus software Vulkan tests can exceed 45 minutes.
+    timeout-minutes: ${{ (startsWith(matrix.os, 'windows-') || contains(matrix.extra, '-DPX_SANITIZERS=')) && 60 || 45 }}
     strategy:
       fail-fast: false
       matrix:
