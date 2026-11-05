@@ -267,6 +267,8 @@ TEST_CASE("RenderProfiler: nested sections wait for every used timer and retain 
 	FakeQueries queries;
 	RenderProfiler profiler(nullptr, 64, 1, &queries);
 	REQUIRE(profiler.BeginFrame(true, nullptr, Context(1), 0));
+	profiler.BeginSection(nullptr, RenderTimingSection::ClusterBuild);
+	profiler.EndSection(nullptr, RenderTimingSection::ClusterBuild);
 	profiler.BeginSection(nullptr, RenderTimingSection::Scene);
 	profiler.BeginSection(nullptr, RenderTimingSection::AmbientOcclusion);
 	profiler.EndSection(nullptr, RenderTimingSection::AmbientOcclusion);
@@ -277,12 +279,14 @@ TEST_CASE("RenderProfiler: nested sections wait for every used timer and retain 
 	profiler.EndSection(nullptr, RenderTimingSection::Scene);
 	profiler.BeginSection(nullptr, RenderTimingSection::AntiAliasing);
 	profiler.EndSection(nullptr, RenderTimingSection::AntiAliasing);
-	profiler.EndFrame(nullptr, 2, true, false, 2, true, true);
+	profiler.EndFrame(nullptr, 2, true, false, 2, true, true, true);
 	profiler.Submitted(0);
 	const auto total = static_cast<size_t>(RenderTimingSection::Total);
+	const auto cluster = static_cast<size_t>(RenderTimingSection::ClusterBuild);
 	const auto scene = static_cast<size_t>(RenderTimingSection::Scene);
 	const auto ao = static_cast<size_t>(RenderTimingSection::AmbientOcclusion);
 	const auto aa = static_cast<size_t>(RenderTimingSection::AntiAliasing);
+	queries.Timers[cluster]->Seconds = 0.001f;
 	queries.Timers[total]->Seconds = 0.015f;
 	queries.Timers[scene]->Seconds = 0.010f;
 	queries.Timers[ao]->Seconds = 0.003f;
@@ -296,6 +300,9 @@ TEST_CASE("RenderProfiler: nested sections wait for every used timer and retain 
 	queries.Timers[scene]->Ready = true;
 	profiler.Poll(0.2);
 	REQUIRE(profiler.GetLatest());
+	CHECK(profiler.GetLatest()->Context.ClusteredLightingActive);
+	CHECK(*profiler.GetLatest()->Milliseconds[cluster] == doctest::Approx(1.0));
+	CHECK(std::string(RenderProfiler::GetSectionName(RenderTimingSection::ClusterBuild)) == "clusterBuild");
 	CHECK(profiler.GetLatest()->Context.AmbientOcclusionActive);
 	CHECK_FALSE(profiler.GetLatest()->Context.BloomActive);
 	CHECK(profiler.GetLatest()->Context.EffectiveAA == 2);
@@ -313,6 +320,6 @@ TEST_CASE("RenderProfiler: nested sections wait for every used timer and retain 
 	CHECK(*profiler.GetLatest()->Milliseconds[aa] == doctest::Approx(2.0));
 	CHECK_FALSE(profiler.GetLatest()->Milliseconds[static_cast<size_t>(RenderTimingSection::Shadows)]);
 	CHECK_FALSE(profiler.GetLatest()->Milliseconds[static_cast<size_t>(RenderTimingSection::Bloom)]);
-	CHECK(queries.Reads == 6);
-	CHECK(queries.Resets == 6);
+	CHECK(queries.Reads == 7);
+	CHECK(queries.Resets == 7);
 }

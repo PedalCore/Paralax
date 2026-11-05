@@ -13,6 +13,7 @@
 #include "Paralax/Renderer/LocalShadowSelection.h"
 #include "Paralax/Renderer/ProbeGI.h"
 #include "Paralax/Renderer/RenderProfiler.h"
+#include "Paralax/Renderer/ClusteredLighting.h"
 #include "Paralax/Renderer/RenderScale.h"
 #include "Paralax/Renderer/SceneRendererTypes.h"
 #include "Paralax/Renderer/TextRenderer.h"
@@ -105,6 +106,7 @@ namespace Paralax {
 	{
 		RenderPath Path = RenderPath::Forward;
 		bool ProfilingEnabled = false;
+		bool ClusteredLightingEnabled = false;
 		float InternalRenderScale = 1.0f;
 		AntiAliasingMode AntiAliasing = AntiAliasingMode::Off;
 		float AAHistoryWeight = 0.9f;
@@ -193,6 +195,12 @@ namespace Paralax {
 	struct SceneRenderStats
 	{
 		uint64_t RenderFrame = 0;
+		bool ClusteredLightingRequested = false, ClusteredLightingActive = false;
+		std::string ClusteredLightingFallbackReason;
+		glm::uvec3 ClusterGrid{};
+		uint32_t ClusterCells = 0, ClusterDispatches = 0;
+		uint64_t ClusterLogicalBytes = 0, ClusterOwnedBytes = 0, ClusterAllocationAttempts = 0, ClusterBackingAttempts = 0;
+		uint64_t ClusterPrefixUploadBytes = 0, ClusterLightTestsUpperBound = 0;
 		AntiAliasingMode RequestedAA = AntiAliasingMode::Off, EffectiveAA = AntiAliasingMode::Off;
 		std::string AAFallbackReason, AAResetReason;
 		bool AAHistoryValid = false;
@@ -350,6 +358,7 @@ namespace Paralax {
 		bool PrepareVisibilityDraws();
 		void RenderVisibilityOpaque();
 		void RenderTemporalGuides(TemporalAA& history);
+		void InvalidateViewBindings();
 
 	private:
 		GraphicsDevice& m_GraphicsDevice;
@@ -373,6 +382,8 @@ namespace Paralax {
 		TemporalAA m_TemporalAA;
 		SpatialAA m_SpatialAA;
 		FXAA m_FXAA;
+		ClusteredLighting m_Clusters;
+		std::string m_ReportedClusterFailure;
 		ScreenSpaceReflections m_Reflections;
 		ReflectionHistory m_ReflectionHistory;
 		PostEffectResourceFactory* m_EffectFactory;
@@ -424,6 +435,7 @@ namespace Paralax {
 		uint32_t m_NextProbeMarkerBinding = 0;
 		std::unordered_map<uint64_t, nvrhi::GraphicsPipelineHandle> m_ProbeMarkerPipelines;
 		nvrhi::BindingSetHandle m_ViewBindings;
+		nvrhi::IBindingSet* m_ActiveViewBindings = nullptr; // Owned by baseline or m_Clusters for this frame.
 		nvrhi::BindingSetHandle m_ShadowViewBindings;
 		nvrhi::BindingSetHandle m_TonemapBindings;
 		nvrhi::InputLayoutHandle m_InputLayout;

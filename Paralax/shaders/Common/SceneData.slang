@@ -1,6 +1,7 @@
 // Data layouts shared between the C++ SceneRenderer (Paralax/Renderer/SceneRendererTypes.h) and shaders.
 // Keep both in sync: sizes are verified with static_asserts on the C++ side.
 module SceneData;
+import Common.ClusteredLighting;
 
 public
 static const uint MaxCascades = 4;
@@ -52,6 +53,8 @@ public
 	float4 AmbientFill; // rgb color, w intensity
 public
 	float4 ScreenEffects; // x: screen AO enabled
+public
+	ClusterGridConstants Clusters;
 };
 
 // Point and spot lights. Type: 0 = point, 1 = spot.

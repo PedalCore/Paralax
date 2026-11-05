@@ -30,6 +30,7 @@ namespace Paralax {
 			MakeField<&SceneRendererSettings::InternalRenderScale>("InternalRenderScale", FieldOptions().Range(0.5f, 2.0f).Describe("Scene raster scale: below 1 upscales; 1.5 or 2 supersamples with linear HDR area reduction. UI/text stay native. Failed scale retries after scale, output size or text-depth requirement changes.")),
 			MakeField<&SceneRendererSettings::AntiAliasing>("AntiAliasing", FieldOptions().Enum({"Off", "Spatial", "Temporal", "FXAA"}).Describe("Temporal uses conservative motion history; FXAA filters native encoded color without history or jitter.")),
 			MakeField<&SceneRendererSettings::AAHistoryWeight>("AAHistoryWeight", FieldOptions().Range(0.0f, 0.95f)),
+			MakeField<&SceneRendererSettings::ClusteredLightingEnabled>("ClusteredLightingEnabled", FieldOptions().Describe("Opt-in conservative local-light cell masks; preserves light order and falls back when unavailable.")),
 			MakeField<&SceneRendererSettings::ProfilingEnabled>("ProfilingEnabled", FieldOptions().Describe("Nonblocking GPU pass timestamps and separate CPU Render duration; profiling can add GPU overhead.")),
 			MakeField<&SceneRendererSettings::SSAOEnabled>("SSAOEnabled", FieldOptions().Describe("Screen-space occlusion of diffuse environment, probe lighting and fill.")),
 			MakeField<&SceneRendererSettings::SSAORadius>("SSAORadius", FieldOptions().Range(0.01f, 10.0f)),
@@ -243,6 +244,7 @@ namespace Paralax {
 		, m_TemporalAA(device, m_EffectBudget, effectFactory)
 		, m_SpatialAA(device, m_EffectBudget, effectFactory)
 		, m_FXAA(device, m_EffectBudget, effectFactory)
+		, m_Clusters(device, m_EffectBudget, effectFactory)
 		, m_Reflections(device, m_EffectBudget, effectFactory)
 		, m_ReflectionHistory(device, m_EffectBudget, effectFactory)
 		, m_EffectFactory(effectFactory)
@@ -255,9 +257,10 @@ namespace Paralax {
 	SceneRenderer::~SceneRenderer()
 	{
 		m_GraphicsDevice.WaitForIdle();
-		m_ViewBindings = nullptr;
+		InvalidateViewBindings();
 		m_TonemapBindings = nullptr;
 		m_CommandList = nullptr;
+		m_Clusters.Release();
 		m_ReflectionHistory.Release();
 		m_Reflections.Release();
 		m_AmbientOcclusion.Release();
@@ -307,6 +310,7 @@ namespace Paralax {
 		m_LightBuffer = m_Device->createBuffer(nvrhi::BufferDesc()
 												   .setByteSize(sizeof(GPU::Light) * GPU::MaxLights)
 												   .setStructStride(sizeof(GPU::Light))
+												   .setCanHaveRawViews(true)
 												   .setInitialState(nvrhi::ResourceStates::ShaderResource)
 												   .setKeepInitialState(true)
 												   .setDebugName("Lights"));
@@ -373,7 +377,7 @@ namespace Paralax {
 		view.bindings = {
 			nvrhi::BindingLayoutItem::PushConstants(s_PushConstantSlot, sizeof(GPU::DrawConstants)),
 			nvrhi::BindingLayoutItem::VolatileConstantBuffer(0),
-			nvrhi::BindingLayoutItem::StructuredBuffer_SRV(0),
+			nvrhi::BindingLayoutItem::RawBuffer_SRV(0),
 			nvrhi::BindingLayoutItem::Texture_SRV(1),
 			nvrhi::BindingLayoutItem::Texture_SRV(2),
 			nvrhi::BindingLayoutItem::Texture_SRV(3),
@@ -480,7 +484,7 @@ namespace Paralax {
 				m_TargetFailure = textures && (!nextHDR || !nextDepth) ? textures->GetFailureReason() : "scene target allocation failed";
 				return false;
 			}
-			m_ViewBindings = nullptr;
+			InvalidateViewBindings();
 			m_TonemapBindings = nullptr;
 			m_Text.InvalidateDepthFramebuffers(m_DepthTarget);
 			m_Text.InvalidateDepthFramebuffers(m_RenderScale.GetDepth());
@@ -1030,6 +1034,7 @@ namespace Paralax {
 	void SceneRenderer::CollectLights(Scene& scene, const CameraView& camera, LocalShadowHistory* history)
 	{
 		const auto identity = SceneToken(scene);
+		m_Stats.ShadowedLocalLightIDs.clear();
 		std::vector<GPU::Light> lights;
 		std::vector<LocalShadowCandidate> candidates;
 		const auto cameraPlanes = ExtractFrustumPlanes(camera.Projection * camera.View);
@@ -1202,7 +1207,7 @@ namespace Paralax {
 				nvrhi::GraphicsState state;
 				state.pipeline = resolve ? m_Visibility.GetResolvePipeline() : m_Visibility.GetPipeline(draw.DoubleSided, draw.Mirrored);
 				state.framebuffer = resolve ? m_Deferred.GetFramebuffer() : m_Visibility.GetFramebuffer();
-				state.bindings = {m_ViewBindings, draw.Material, m_ProbeGI.GetBindings(), m_Visibility.GetBindings(*draw.Mesh, resolve)};
+				state.bindings = {m_ActiveViewBindings, draw.Material, m_ProbeGI.GetBindings(), m_Visibility.GetBindings(*draw.Mesh, resolve)};
 				state.viewport.addViewportAndScissorRect(nvrhi::Viewport(float(m_Width), float(m_Height)));
 				m_CommandList->setGraphicsState(state);
 				GPU::DrawConstants constants = MakeDrawConstants(draw.World);
@@ -1249,7 +1254,7 @@ namespace Paralax {
 					state.pipeline = m_AmbientOcclusion.GetGuidePipeline(draw.DoubleSided, draw.Mirrored);
 					state.framebuffer = m_AmbientOcclusion.GetGuideFramebuffer();
 				}
-				state.bindings = {m_ViewBindings, draw.Material, m_ProbeGI.GetBindings()};
+				state.bindings = {m_ActiveViewBindings, draw.Material, m_ProbeGI.GetBindings()};
 				state.vertexBuffers = {nvrhi::VertexBufferBinding().setBuffer(draw.Mesh->VertexBuffer)};
 				state.indexBuffer = nvrhi::IndexBufferBinding().setBuffer(draw.Mesh->IndexBuffer).setFormat(nvrhi::Format::R32_UINT);
 				state.viewport.addViewportAndScissorRect(viewport);
@@ -1294,7 +1299,7 @@ namespace Paralax {
 		if (m_Stats.EffectivePath != RenderPath::Forward)
 		{
 			renderAO();
-			m_Deferred.Resolve(m_CommandList, m_ViewBindings, m_ProbeGI.GetBindings(),
+			m_Deferred.Resolve(m_CommandList, m_ActiveViewBindings, m_ProbeGI.GetBindings(),
 							   m_Reflections.IsReady() ? m_Reflections.GetOpaquePipeline(false, false) : nullptr,
 							   m_Reflections.IsReady() ? m_Reflections.GetOpaqueFramebuffer() : nullptr);
 			++m_Stats.DrawCalls;
@@ -1307,7 +1312,7 @@ namespace Paralax {
 			nvrhi::GraphicsState state;
 			state.pipeline = m_SkyPipeline;
 			state.framebuffer = m_HDRFramebuffer;
-			state.bindings = {m_ViewBindings};
+			state.bindings = {m_ActiveViewBindings};
 			state.viewport.addViewportAndScissorRect(viewport);
 			m_CommandList->setGraphicsState(state);
 			const GPU::DrawConstants unused{};
@@ -1344,7 +1349,7 @@ namespace Paralax {
 				nvrhi::GraphicsState state;
 				state.pipeline = reactive ? history.GetReactivePipeline() : history.GetGuidePipeline(draw.DoubleSided, draw.Mirrored);
 				state.framebuffer = reactive ? history.GetReactiveFramebuffer() : history.GetGuideFramebuffer();
-				state.bindings = {m_ViewBindings, draw.Material, m_ProbeGI.GetBindings(), history.GetDrawBindings()};
+				state.bindings = {m_ActiveViewBindings, draw.Material, m_ProbeGI.GetBindings(), history.GetDrawBindings()};
 				state.vertexBuffers = {nvrhi::VertexBufferBinding().setBuffer(draw.Mesh->VertexBuffer)};
 				state.indexBuffer = nvrhi::IndexBufferBinding().setBuffer(draw.Mesh->IndexBuffer).setFormat(nvrhi::Format::R32_UINT);
 				state.viewport.addViewportAndScissorRect(nvrhi::Viewport(float(m_Width), float(m_Height)));
@@ -1409,6 +1414,13 @@ namespace Paralax {
 		m_ReflectionHistory.GetState().Reset(reason);
 	}
 
+	void SceneRenderer::InvalidateViewBindings()
+	{
+		m_ActiveViewBindings = nullptr;
+		m_Clusters.InvalidateView();
+		m_ViewBindings = nullptr;
+	}
+
 	void SceneRenderer::Render(Scene& scene, const CameraView& camera, nvrhi::IFramebuffer* output, LocalShadowHistory* shadowHistory, TemporalAA* temporalHistory, ReflectionHistory* reflectionHistory)
 	{
 		PX_CORE_VERIFY(m_Initialized, "SceneRenderer::Render called before a successful Initialize");
@@ -1441,6 +1453,10 @@ namespace Paralax {
 			failedScale.reset();
 		const bool cachedFailure = bool(failedScale);
 		glm::uvec2 internalSize = cachedFailure ? outputSize : requestedSize;
+		m_ActiveViewBindings = nullptr;
+		if (!m_Settings.ClusteredLightingEnabled || m_Width != internalSize.x || m_Height != internalSize.y ||
+			(internalSize.x > outputSize.x || internalSize.y > outputSize.y) != bool(m_SupersampleTargets))
+			m_Clusters.Release();
 		const bool fxaaRequested = m_Settings.AntiAliasing == AntiAliasingMode::FXAA && m_Settings.DebugView == RenderDebugView::None;
 		const bool temporalRequested = m_Settings.AntiAliasing == AntiAliasingMode::Temporal && m_Settings.DebugView == RenderDebugView::None;
 		const bool reflectionRequested = m_Settings.SSREnabled &&
@@ -1496,7 +1512,7 @@ namespace Paralax {
 		{
 			// Retire incompatible effects before the native-depth budget decision. Otherwise an
 			// affordable final configuration can fail only because its old pyramid is still live.
-			m_ViewBindings = nullptr;
+			InvalidateViewBindings();
 			m_TonemapBindings = nullptr;
 			m_AmbientOcclusion.Release();
 			m_Bloom.Release();
@@ -1527,6 +1543,14 @@ namespace Paralax {
 				return;
 			}
 		}
+		// A native-depth fallback may retry target/shadow preparation. Stage history until
+		// the final capacity is known so one render never advances its retention twice.
+		std::optional<LocalShadowHistory> stagedShadowHistory;
+		if (shadowHistory)
+			stagedShadowHistory = *shadowHistory;
+		CollectLights(scene, camera, stagedShadowHistory ? &*stagedShadowHistory : nullptr);
+		if (m_Lights.empty())
+			m_Clusters.Release();
 		const bool nativeDepthNeeded = worldText && internalSize != outputSize;
 		if (m_RenderScale.IsReady() && (!nativeDepthNeeded || !m_RenderScale.MatchesInputs(m_DepthTarget, outputInfo.width, outputInfo.height)))
 			m_Text.InvalidateDepthFramebuffers(m_RenderScale.GetDepth());
@@ -1539,6 +1563,11 @@ namespace Paralax {
 			if (!EnsureTargets(outputInfo.width, outputInfo.height))
 				return;
 		}
+		const uint32_t finalShadowCapacity = m_LocalShadowPipeline && m_LocalShadowMaskPipeline ? m_LocalShadowMaps.GetLayers() : 0;
+		if (finalShadowCapacity != m_Stats.LocalShadowCapacity)
+			CollectLights(scene, camera, shadowHistory);
+		else if (shadowHistory)
+			*shadowHistory = std::move(*stagedShadowHistory);
 		m_StaticLightingDirty |= nativeDepthBackingAttempts != m_RenderScale.GetBackingAttempts();
 		m_Stats.RequestedRenderScale = requestedScale;
 		m_Stats.EffectiveRenderScale = failedScale ? 1.0f : requestedScale;
@@ -1598,13 +1627,13 @@ namespace Paralax {
 		const bool aoRequested = m_Settings.SSAOEnabled && std::isfinite(m_Settings.SSAOStrength) && m_Settings.SSAOStrength > 0;
 		// Bindings can retain retired AO textures. Clear before replacement; stable frames reuse them.
 		if (m_AmbientOcclusion.IsReady() && (!aoRequested || !m_AmbientOcclusion.MatchesInputs(m_DepthTarget, m_Stats.EffectivePath == RenderPath::Forward ? nullptr : m_Deferred.GetReceiverGuide())))
-			m_ViewBindings = nullptr;
+			InvalidateViewBindings();
 		m_EffectBudget.CollectRetired();
 		m_Stats.SSAOActive = m_AmbientOcclusion.Prepare(aoRequested, m_DepthTarget,
 														m_Stats.EffectivePath == RenderPath::Forward ? nullptr : m_Deferred.GetReceiverGuide(), m_Resources.GetWhiteTexture(),
 														m_ViewConstants, m_InputLayout, m_ViewLayout, m_MaterialLayout, m_ProbeGI.GetLayout());
 		if (previousAO != m_AmbientOcclusion.GetTexture())
-			m_ViewBindings = nullptr;
+			InvalidateViewBindings();
 		// Unsupported preflight does not allocate backing and must not regenerate static lighting.
 		m_StaticLightingDirty |= aoBackingAttempts != m_AmbientOcclusion.GetBackingAttempts();
 		m_Stats.SSAOFallbackReason = m_AmbientOcclusion.GetFallbackReason();
@@ -1758,6 +1787,29 @@ namespace Paralax {
 		m_Stats.EffectPeakBytes = m_EffectBudget.GetPeakBytes();
 		m_Stats.EffectAllocationAttempts = m_AmbientOcclusion.GetAllocationAttempts() + m_Bloom.GetAllocationAttempts() + m_RenderScale.GetAllocationAttempts() + aa.GetAllocationAttempts() + m_SpatialAA.GetAllocationAttempts() + m_FXAA.GetAllocationAttempts() + m_SupersampleAllocationAttempts + m_Reflections.GetAllocationAttempts() + (reflections ? reflections->GetAllocationAttempts() : 0);
 
+		m_Stats.ClusteredLightingRequested = m_Settings.ClusteredLightingEnabled;
+		std::optional<ClusteredLightingGrid> clusterGrid;
+		bool clusterPrepared = false;
+		const auto clusterBacking = m_Clusters.GetBackingAttempts();
+		if (m_Settings.ClusteredLightingEnabled && !m_Lights.empty())
+		{
+			clusterGrid = ClusteredLightingGrid::Create(m_Width, m_Height, static_cast<uint32_t>(m_Lights.size()), camera.Near, camera.Far,
+														camera.View, rasterProjection, m_GraphicsDevice.GetInfo().Limits.MaxStorageBufferBytes);
+			if (clusterGrid)
+			{
+				clusterPrepared = m_Clusters.Prepare(*clusterGrid, m_ViewConstants);
+				m_Stats.ClusterGrid = {clusterGrid->GetConstants().Dimensions.z, clusterGrid->GetConstants().Dimensions.w, ClusteredLightingGrid::DepthSlices};
+				m_Stats.ClusterCells = clusterGrid->GetCellCount();
+				m_Stats.ClusterLogicalBytes = clusterGrid->GetBufferBytes();
+				m_Stats.ClusteredLightingFallbackReason = m_Clusters.GetFallbackReason();
+			}
+			else
+				m_Stats.ClusteredLightingFallbackReason = "unsupported clustered camera or grid";
+		}
+		else if (m_Settings.ClusteredLightingEnabled)
+			m_Stats.ClusteredLightingFallbackReason = "no admitted local lights";
+		m_StaticLightingDirty |= clusterBacking != m_Clusters.GetBackingAttempts();
+
 		if (m_StaticLightingDirty)
 		{
 			// The BRDF LUT and environment maps are written rarely (the LUT once, the maps when their inputs change) and
@@ -1789,13 +1841,41 @@ namespace Paralax {
 			sunShadows = light.CastShadows && m_Settings.Shadows;
 		}
 
-		CollectLights(scene, camera, shadowHistory);
 		if (!m_Lights.empty())
 			m_CommandList->writeBuffer(m_LightBuffer, m_Lights.data(), m_Lights.size() * sizeof(GPU::Light));
 		if (!m_LocalShadowSlots.empty())
 			m_CommandList->writeBuffer(m_LocalShadowBuffer, m_LocalShadowSlots.data(), m_LocalShadowSlots.size() * sizeof(GPU::LocalShadowSlot));
 
 		UpdateEnvironment(scene, hasSun ? sunDirection : glm::vec3(0.0f), sunColor);
+
+		const std::array<nvrhi::IResource*, 6> viewTextures{m_ShadowMap, m_EnvironmentMaps.Specular, m_EnvironmentMaps.Diffuse, m_Environment.GetBRDFLut(), m_EnvironmentMaps.Radiance, m_LocalShadowMaps.GetTexture()};
+		bool bindingsChanged = !m_ViewBindings;
+		if (m_ViewBindings)
+			for (size_t i = 0; i < viewTextures.size(); ++i)
+				bindingsChanged |= m_ViewBindings->getDesc()->bindings[3 + i].resourceHandle != viewTextures[i];
+		if (bindingsChanged)
+		{
+			InvalidateViewBindings();
+			nvrhi::BindingSetDesc set;
+			set.bindings = {
+				nvrhi::BindingSetItem::PushConstants(s_PushConstantSlot, sizeof(GPU::DrawConstants)),
+				nvrhi::BindingSetItem::ConstantBuffer(0, m_ViewConstants),
+				nvrhi::BindingSetItem::RawBuffer_SRV(0, m_LightBuffer),
+				nvrhi::BindingSetItem::Texture_SRV(1, m_ShadowMap),
+				nvrhi::BindingSetItem::Texture_SRV(2, m_EnvironmentMaps.Specular),
+				nvrhi::BindingSetItem::Texture_SRV(3, m_EnvironmentMaps.Diffuse),
+				nvrhi::BindingSetItem::Texture_SRV(4, m_Environment.GetBRDFLut()),
+				nvrhi::BindingSetItem::Texture_SRV(5, m_EnvironmentMaps.Radiance),
+				nvrhi::BindingSetItem::Texture_SRV(6, m_LocalShadowMaps.GetTexture()),
+				nvrhi::BindingSetItem::StructuredBuffer_SRV(7, m_LocalShadowBuffer),
+				nvrhi::BindingSetItem::Texture_SRV(8, m_AmbientOcclusion.IsReady() ? m_AmbientOcclusion.GetTexture() : m_Resources.GetWhiteTexture()),
+				nvrhi::BindingSetItem::Sampler(0, m_LinearWrap),
+				nvrhi::BindingSetItem::Sampler(1, m_LinearClamp),
+				nvrhi::BindingSetItem::Sampler(2, m_ShadowSampler),
+				nvrhi::BindingSetItem::Sampler(3, m_LocalShadowSampler),
+			};
+			m_ViewBindings = m_Device->createBindingSet(set, m_ViewLayout);
+		}
 
 		GPU::ViewConstants view{};
 		view.AmbientFill = glm::vec4(glm::clamp(m_Settings.AmbientFillColor, glm::vec3(0), glm::vec3(1)),
@@ -1818,7 +1898,49 @@ namespace Paralax {
 		view.Diagnostics = {m_Settings.EnvironmentSpecular ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
 		if (sunShadows)
 			ComputeCascades(camera, sunDirection, view);
+		m_ActiveViewBindings = m_ViewBindings;
+		if (clusterPrepared)
+		{
+			if (auto* clustered = m_Clusters.FinalizeView(m_ViewBindings, m_ViewLayout, view.Clusters))
+			{
+				m_ActiveViewBindings = clustered;
+				m_Stats.ClusteredLightingActive = true;
+			}
+			m_Stats.ClusteredLightingFallbackReason = m_Clusters.GetFallbackReason();
+		}
 		m_CommandList->writeBuffer(m_ViewConstants, &view, sizeof(view));
+		if (m_Stats.ClusteredLightingActive)
+		{
+			m_Profiler.BeginSection(m_CommandList, RenderTimingSection::ClusterBuild);
+			const bool dispatched = m_Clusters.Dispatch(m_CommandList, m_Lights);
+			m_Profiler.EndSection(m_CommandList, RenderTimingSection::ClusterBuild);
+			if (dispatched)
+			{
+				m_Stats.ClusterDispatches = 1;
+				m_Stats.ClusterPrefixUploadBytes = m_Lights.size() * sizeof(GPU::Light);
+				m_Stats.ClusterLightTestsUpperBound = uint64_t(m_Stats.ClusterCells) * m_Lights.size();
+			}
+			else
+			{
+				view.Clusters.State.y = 0;
+				m_ActiveViewBindings = m_ViewBindings;
+				m_Stats.ClusteredLightingActive = false;
+				m_Stats.ClusteredLightingFallbackReason = "cluster dispatch input mismatch";
+				m_CommandList->writeBuffer(m_ViewConstants, &view, sizeof(view));
+			}
+		}
+		m_Stats.ClusterOwnedBytes = m_Clusters.GetOwnedBytes();
+		m_Stats.ClusterAllocationAttempts = m_Clusters.GetAllocationAttempts();
+		m_Stats.ClusterBackingAttempts = m_Clusters.GetBackingAttempts();
+		m_Stats.EffectOwnedBytes = m_EffectBudget.GetUsedBytes();
+		m_Stats.EffectPeakBytes = m_EffectBudget.GetPeakBytes();
+		m_Stats.EffectAllocationAttempts += m_Clusters.GetAllocationAttempts();
+		if (m_Stats.ClusteredLightingFallbackReason != m_ReportedClusterFailure)
+		{
+			m_ReportedClusterFailure = m_Stats.ClusteredLightingFallbackReason;
+			if (!m_ReportedClusterFailure.empty() && !m_Lights.empty())
+				PX_CORE_WARN("Clustered lighting unavailable: {}", m_ReportedClusterFailure);
+		}
 
 		Entity volume;
 		uint32_t enabledVolumes = 0;
@@ -1875,34 +1997,6 @@ namespace Paralax {
 		{
 			m_QueuedGIUpdates = 0;
 			m_ProbeGI.Disable(m_CommandList);
-		}
-
-		const std::array<nvrhi::IResource*, 6> viewTextures{m_ShadowMap, m_EnvironmentMaps.Specular, m_EnvironmentMaps.Diffuse, m_Environment.GetBRDFLut(), m_EnvironmentMaps.Radiance, m_LocalShadowMaps.GetTexture()};
-		bool bindingsChanged = !m_ViewBindings;
-		if (m_ViewBindings)
-			for (size_t i = 0; i < viewTextures.size(); ++i)
-				bindingsChanged |= m_ViewBindings->getDesc()->bindings[3 + i].resourceHandle != viewTextures[i];
-		if (bindingsChanged)
-		{
-			nvrhi::BindingSetDesc set;
-			set.bindings = {
-				nvrhi::BindingSetItem::PushConstants(s_PushConstantSlot, sizeof(GPU::DrawConstants)),
-				nvrhi::BindingSetItem::ConstantBuffer(0, m_ViewConstants),
-				nvrhi::BindingSetItem::StructuredBuffer_SRV(0, m_LightBuffer),
-				nvrhi::BindingSetItem::Texture_SRV(1, m_ShadowMap),
-				nvrhi::BindingSetItem::Texture_SRV(2, m_EnvironmentMaps.Specular),
-				nvrhi::BindingSetItem::Texture_SRV(3, m_EnvironmentMaps.Diffuse),
-				nvrhi::BindingSetItem::Texture_SRV(4, m_Environment.GetBRDFLut()),
-				nvrhi::BindingSetItem::Texture_SRV(5, m_EnvironmentMaps.Radiance),
-				nvrhi::BindingSetItem::Texture_SRV(6, m_LocalShadowMaps.GetTexture()),
-				nvrhi::BindingSetItem::StructuredBuffer_SRV(7, m_LocalShadowBuffer),
-				nvrhi::BindingSetItem::Texture_SRV(8, m_AmbientOcclusion.IsReady() ? m_AmbientOcclusion.GetTexture() : m_Resources.GetWhiteTexture()),
-				nvrhi::BindingSetItem::Sampler(0, m_LinearWrap),
-				nvrhi::BindingSetItem::Sampler(1, m_LinearClamp),
-				nvrhi::BindingSetItem::Sampler(2, m_ShadowSampler),
-				nvrhi::BindingSetItem::Sampler(3, m_LocalShadowSampler),
-			};
-			m_ViewBindings = m_Device->createBindingSet(set, m_ViewLayout);
 		}
 
 		m_Profiler.BeginSection(m_CommandList, RenderTimingSection::Shadows);
@@ -2020,7 +2114,7 @@ namespace Paralax {
 		m_Stats.TextGlyphs = m_Text.Render(m_CommandList, scene, rasterProjection * camera.View, output,
 										   m_RenderScale.IsReady() ? m_RenderScale.GetDepth() : m_DepthTarget.Get());
 		m_Profiler.EndSection(m_CommandList, RenderTimingSection::Overlays);
-		m_Profiler.EndFrame(m_CommandList, static_cast<uint32_t>(m_Stats.EffectivePath), m_Stats.SSAOActive, m_Stats.BloomActive, static_cast<uint32_t>(m_Stats.EffectiveAA), m_Stats.SSRActive, m_Stats.SSRHistoryActive);
+		m_Profiler.EndFrame(m_CommandList, static_cast<uint32_t>(m_Stats.EffectivePath), m_Stats.SSAOActive, m_Stats.BloomActive, static_cast<uint32_t>(m_Stats.EffectiveAA), m_Stats.SSRActive, m_Stats.SSRHistoryActive, m_Stats.ClusteredLightingActive);
 		m_CommandList->close();
 		const double submittedAt = ProfilingTimeSeconds();
 		m_Device->executeCommandList(m_CommandList);

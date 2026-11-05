@@ -8,7 +8,7 @@ import Common.ProbeGI;
 public
 ConstantBuffer<ViewConstants> g_View : register(b0, space0);
 public
-StructuredBuffer<GPULight> g_Lights : register(t0, space0);
+ByteAddressBuffer g_LightData : register(t0, space0);
 public
 Texture2DArray<float> g_ShadowMap : register(t1, space0);
 public

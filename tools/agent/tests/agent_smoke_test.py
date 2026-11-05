@@ -108,7 +108,9 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
     # statistics are the capture's, whose camera sees the ground and the ball (and no point or spot lights).
     captured, stats = editor.batch([("render.capture", {"path": str(image), "width": 320, "height": 180}), ("render.stats", {})])
     check(not isinstance(captured, AgentError) and not isinstance(stats, AgentError), f"batch failed: {captured}, {stats}")
-    check(set(stats) == {"renderFrame", "antiAliasing", "requestedRenderScale", "effectiveRenderScale", "internalSize", "outputSize", "scaleFallbackReason", "nativeDepthPasses", "upscaler", "profiling", "drawCalls", "shadowDrawCalls", "triangles", "culledSubmeshes", "textGlyphs", "lights",
+    check(set(stats) == {"clusteredLightingRequested", "clusteredLightingActive", "clusteredLightingFallbackReason",
+                         "clusterGrid", "clusterCells", "clusterDispatches", "clusterLogicalBytes", "clusterOwnedBytes",
+                         "clusterAllocationAttempts", "clusterBackingAttempts", "clusterPrefixUploadBytes", "clusterLightTestsUpperBound", "renderFrame", "antiAliasing", "requestedRenderScale", "effectiveRenderScale", "internalSize", "outputSize", "scaleFallbackReason", "nativeDepthPasses", "upscaler", "profiling", "drawCalls", "shadowDrawCalls", "triangles", "culledSubmeshes", "textGlyphs", "lights",
                          "staticLightingGenerations", "requestedLocalShadows", "shadowedLocalLights", "localShadowLayers",
                          "localShadowCapacity", "localShadowDrawCalls", "localShadowAllocationAttempts", "shadowedLocalLightIDs",
                          "requestedRenderPath", "effectiveRenderPath", "renderPathFallbackReason",
@@ -124,6 +126,12 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
     for key in ("surfaceOwnedBytes", "surfaceAllocationAttempts", "surfaceResolveDrawCalls", "visibilityOwnedBytes",
                 "visibilityAllocationAttempts", "visibilityGeometryBytes", "visibilityResolveDrawCalls"):
         check(type(stats[key]) is int and stats[key] == 0, f"default Forward consumed optional resources: {key}={stats[key]}")
+    check(not stats["clusteredLightingRequested"] and not stats["clusteredLightingActive"]
+          and stats["clusteredLightingFallbackReason"] == "" and stats["clusterGrid"] == [0, 0, 0],
+          "disabled cluster state changed")
+    for key in ("clusterCells", "clusterDispatches", "clusterLogicalBytes", "clusterOwnedBytes",
+                "clusterAllocationAttempts", "clusterBackingAttempts", "clusterPrefixUploadBytes", "clusterLightTestsUpperBound"):
+        check(type(stats[key]) is int and stats[key] == 0, f"disabled clustering consumed resources: {key}")
     check(captured["stats"] == stats, "capture did not include statistics from its own frame")
     check(stats["requestedLocalShadows"] == 0 and stats["shadowedLocalLights"] == 0 and stats["localShadowLayers"] == 0
           and stats["localShadowDrawCalls"] == 0 and stats["shadowedLocalLightIDs"] == [], "empty local-light set consumed shadow slots")
@@ -185,6 +193,22 @@ def exercise_rpc(editor: AgentClient, output: Path) -> None:
     check(fxaa_restore == ambient_saved and editor.call("render.settings.get") == ambient_saved,
           "FXAA batch did not restore exact settings")
     print("agent smoke: FXAA batch passed", flush=True)
+
+    cluster_light = editor.call("entity.create", name="Cluster diagnostic lamp", components={
+        "Transform": {"Translation": [0, 2, 1]}, "PointLight": {"Range": 5, "Intensity": 1}})["id"]
+    cluster_set, cluster_capture, cluster_restore = editor.batch([
+        ("render.settings.set", {"settings": {"ClusteredLightingEnabled": True, "GIEnabled": False}}),
+        ("render.capture", {"path": str(output / "Clustered.png"), "width": 129, "height": 97}),
+        ("render.settings.set", {"settings": ambient_saved}),
+    ])
+    cluster_stats = cluster_capture["stats"]
+    check(cluster_set["ClusteredLightingEnabled"] and cluster_stats["clusteredLightingActive"]
+          and cluster_stats["clusterDispatches"] == 1 and cluster_stats["clusterCells"] > 0
+          and cluster_stats["clusterPrefixUploadBytes"] == cluster_stats["lights"] * 64,
+          f"clustered capture did not execute: {cluster_stats}")
+    check(cluster_restore == ambient_saved, "clustered capture did not restore settings")
+    editor.call("entity.destroy", id=cluster_light)
+    print("agent smoke: clustered lighting batch passed", flush=True)
 
     print("agent smoke: temporal phase begin", flush=True)
     # A batch prevents viewport frames between reset/state and two fresh deterministic captures.

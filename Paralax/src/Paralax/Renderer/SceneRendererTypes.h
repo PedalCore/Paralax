@@ -5,11 +5,22 @@
 #include <glm/glm.hpp>
 
 #include <cstdint>
+#include <cstddef>
 
 namespace Paralax::GPU {
 
 	inline constexpr uint32_t MaxCascades = 4;
 	inline constexpr uint32_t MaxLights = 256;
+
+	// Embedded in the view contract when enabled; vec4 packing avoids scalar-array cbuffer padding.
+	struct ClusterGridConstants
+	{
+		glm::uvec4 Dimensions{}; // viewport width/height, tile count x/y
+		glm::uvec4 State{};      // admitted count, effective flag, reserved
+		glm::vec4 Depth[5]{};    // 17 boundaries followed by three zero padding values
+	};
+	static_assert(sizeof(ClusterGridConstants) == 112);
+	static_assert(offsetof(ClusterGridConstants, State) == 16 && offsetof(ClusterGridConstants, Depth) == 32);
 
 	struct ViewConstants
 	{
@@ -35,8 +46,9 @@ namespace Paralax::GPU {
 		glm::vec4 Diagnostics;   // x: include environment specular
 		glm::vec4 AmbientFill;   // rgb color, w intensity
 		glm::vec4 ScreenEffects; // x: screen AO enabled
+		ClusterGridConstants Clusters{};
 	};
-	static_assert(sizeof(ViewConstants) == 4 * 64 + 3 * 16 + MaxCascades * 64 + 4 * 16 + 80, "ViewConstants layout mismatch");
+	static_assert(sizeof(ViewConstants) == 4 * 64 + 3 * 16 + MaxCascades * 64 + 4 * 16 + 80 + sizeof(ClusterGridConstants), "ViewConstants layout mismatch");
 
 	struct Light
 	{
@@ -46,6 +58,8 @@ namespace Paralax::GPU {
 		glm::vec4 Params;
 	};
 	static_assert(sizeof(Light) == 64);
+	static_assert(offsetof(Light, PositionRange) == 0 && offsetof(Light, ColorIntensity) == 16);
+	static_assert(offsetof(Light, DirectionCos) == 32 && offsetof(Light, Params) == 48);
 
 	// Keeping the exact raster matrices also makes face orientation identical during sampling.
 	struct LocalShadowSlot

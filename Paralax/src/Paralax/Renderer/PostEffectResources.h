@@ -85,6 +85,7 @@ namespace Paralax {
 		virtual nvrhi::BindingLayoutHandle CreateBindingLayout(nvrhi::IDevice* device, const nvrhi::BindingLayoutDesc& desc) { return device->createBindingLayout(desc); }
 		virtual nvrhi::FramebufferHandle CreateFramebuffer(nvrhi::IDevice* device, const nvrhi::FramebufferDesc& desc) { return device->createFramebuffer(desc); }
 		virtual nvrhi::BindingSetHandle CreateBindingSet(nvrhi::IDevice* device, const nvrhi::BindingSetDesc& desc, nvrhi::IBindingLayout* layout) { return device->createBindingSet(desc, layout); }
+		virtual nvrhi::ComputePipelineHandle CreateComputePipeline(nvrhi::IDevice* device, const nvrhi::ComputePipelineDesc& desc) { return device->createComputePipeline(desc); }
 		virtual nvrhi::GraphicsPipelineHandle CreatePipeline(nvrhi::IDevice* device, const nvrhi::GraphicsPipelineDesc& desc, const nvrhi::FramebufferInfo& info) { return device->createGraphicsPipeline(desc, info); }
 	};
 
@@ -128,7 +129,7 @@ namespace Paralax {
 		const char* m_FailureReason = "";
 	};
 
-	// Main-thread-only structured-buffer allocations under the same peak-live budget as textures.
+	// Main-thread-only structured/raw-buffer allocations under the same peak-live budget as textures.
 	// Graphics/budget/factory outlive it. Clear waits for retirement; external references stay charged.
 	class PostEffectBuffers
 	{
@@ -139,6 +140,8 @@ namespace Paralax {
 		PostEffectBuffers& operator=(const PostEffectBuffers&) = delete;
 		// Ordinary GPU-only structured buffers only. Invalid input or allocation failure returns null.
 		nvrhi::IBuffer* Create(uint64_t bytes, uint32_t stride, const char* name);
+		// GPU-only raw SRV/UAV storage. Size must be a nonzero multiple of four; failures return null.
+		nvrhi::IBuffer* CreateRaw(uint64_t bytes, const char* name);
 		void Clear();
 		uint64_t GetOwnedBytes() const;
 		uint64_t GetAllocationAttempts() const { return m_AllocationAttempts; }
@@ -146,6 +149,7 @@ namespace Paralax {
 		const char* GetFailureReason() const { return m_FailureReason; }
 
 	private:
+		nvrhi::IBuffer* CreateStorage(uint64_t bytes, uint32_t stride, bool raw, const char* name);
 		struct Allocation
 		{
 			PostEffectBudget::Reservation Reservation;

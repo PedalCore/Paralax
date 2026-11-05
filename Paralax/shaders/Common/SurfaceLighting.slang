@@ -1,5 +1,7 @@
 // Shared direct, shadow, probe and environment lighting plus diagnostic decomposition.
 module SurfaceLighting;
+import Common.ClusteredLighting;
+import Common.LightData;
 import Common.SceneBindings;
 import Common.SceneData;
 import Common.SurfaceContract;
@@ -235,9 +237,12 @@ float4 ShadeSurfaceWithSpecular(MaterialSurface material, float2 pixel, float vi
 		directSpecular += contribution.Specular;
 	}
 
-	for (uint i = 0; i < g_View.LightCount; i++)
+	uint cell = ClusterLookup(g_View.ViewProjection, g_View.View, g_View.Clusters, surface.Position);
+	ClusterLightIterator lightIterator = ClusterBeginLights(cell);
+	uint i;
+	while (ClusterNextLight(g_LightData, g_View.LightCount, lightIterator, i))
 	{
-		GPULight light = g_Lights[i];
+		GPULight light = LoadRawLight(g_LightData, i);
 		float3 toLight = light.PositionRange.xyz - surface.Position;
 		float distanceSquared = dot(toLight, toLight);
 		if (distanceSquared > light.PositionRange.w * light.PositionRange.w)
