@@ -58,6 +58,14 @@ jobs:
             libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev \
             libwayland-dev libxkbcommon-dev wayland-protocols \
             mesa-vulkan-drivers vulkan-validationlayers libvulkan1 xvfb xauth
+          # Keep software Vulkan independent of the installed Mesa ICD enumeration order.
+          shopt -s nullglob
+          lavapipe_icds=(/usr/share/vulkan/icd.d/lvp_icd*.json)
+          if [[ ${#lavapipe_icds[@]} != 1 ]]; then
+            echo "::error::Expected exactly one installed lavapipe ICD, found ${#lavapipe_icds[@]}"
+            exit 1
+          fi
+          echo "VK_DRIVER_FILES=${lavapipe_icds[0]}" >> "$GITHUB_ENV"
           # GPU tests run on lavapipe (software Vulkan) and must not be skipped on Linux.
           echo "PX_REQUIRE_GPU=1" >> "$GITHUB_ENV"
           echo "PX_REQUIRE_VALIDATION_LAYER=1" >> "$GITHUB_ENV"
