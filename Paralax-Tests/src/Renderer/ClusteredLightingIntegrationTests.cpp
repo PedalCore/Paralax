@@ -424,26 +424,40 @@ TEST_CASE("ClusteredLighting: native depth fallback recovers shadow capacity and
 	CHECK(graphics.GetValidationErrorCount() == errors);
 }
 
-TEST_CASE("ClusteredLighting: scaled resized and private views retain independent temporal and reflection histories")
-{
-	if (!Testing::RequireTestGraphicsDevice())
-		return;
-	auto& graphics = *Testing::GetTestGraphicsDevice();
-	const auto errors = graphics.GetValidationErrorCount();
+namespace {
+	void ViewTransitions(RenderPath path)
 	{
-		AssetManager assets;
-		Scene scene("ClusterViewTransitions");
-		BuildScene(scene, assets);
-		SceneRenderer renderer(graphics, assets);
-		REQUIRE(renderer.Initialize());
-		Configure(renderer);
-		auto& settings = renderer.GetSettings();
-		settings.GIEnabled = settings.Shadows = false;
-		settings.ClusteredLightingEnabled = settings.SSREnabled = settings.SSRTemporalEnabled = settings.SSAOEnabled = true;
-		settings.AntiAliasing = AntiAliasingMode::Temporal;
-		Output output(graphics.GetDevice(), 65, 49), capture(graphics.GetDevice(), 91, 59);
-		const auto camera = CameraView::LookAt({0, 1, 4}, {0, 0, 0}, glm::radians(60.0f), 65.0f / 49);
-		for (auto path : {RenderPath::Forward, RenderPath::Deferred, RenderPath::Visibility})
+		if (!Testing::RequireTestGraphicsDevice())
+			return;
+		auto& graphics = *Testing::GetTestGraphicsDevice();
+		const auto errors = graphics.GetValidationErrorCount();
+		{
+			AssetManager assets;
+			Scene scene("ClusterViewTransitions");
+			BuildScene(scene, assets);
+			SceneRenderer renderer(graphics, assets);
+			REQUIRE(renderer.Initialize());
+			Configure(renderer);
+			auto& settings = renderer.GetSettings();
+			settings.GIEnabled = settings.Shadows = false;
+			settings.ClusteredLightingEnabled = settings.SSREnabled = settings.SSRTemporalEnabled = settings.SSAOEnabled = true;
+			settings.AntiAliasing = AntiAliasingMode::Temporal;
+			Output output(graphics.GetDevice(), 65, 49), capture(graphics.GetDevice(), 91, 59);
+			const auto camera = CameraView::LookAt({0, 1, 4}, {0, 0, 0}, glm::radians(60.0f), 65.0f / 49);
+			// Keep each path below the per-test software Vulkan time budget, but retain a live path transition.
+			settings.Path = path == RenderPath::Forward ? RenderPath::Visibility : path == RenderPath::Deferred ? RenderPath::Forward
+																												: RenderPath::Deferred;
+			settings.InternalRenderScale = 2.0f;
+			for (uint32_t frame = 0; frame < 2; ++frame)
+			{
+				renderer.Render(scene, camera, output.Framebuffer);
+				REQUIRE(renderer.GetStats().EffectivePath == settings.Path);
+				REQUIRE(renderer.GetStats().ClusteredLightingActive);
+				REQUIRE(renderer.GetStats().EffectiveAA == AntiAliasingMode::Temporal);
+				REQUIRE(renderer.GetStats().SSRHistoryActive);
+				REQUIRE(renderer.GetStats().SSRHistoryEligible == (frame > 0));
+				REQUIRE(renderer.GetStats().SSRHistoryCompletedFrames == frame + 1);
+			}
 			for (float scale : {0.5f, 1.0f, 2.0f})
 			{
 				CAPTURE(path);
@@ -479,15 +493,29 @@ TEST_CASE("ClusteredLighting: scaled resized and private views retain independen
 				renderer.Render(scene, camera, output.Framebuffer);
 				CHECK(renderer.GetStats().ClusterAllocationAttempts == attempts);
 			}
-		const auto backing = renderer.GetStats().ClusterBackingAttempts;
-		settings.SSAOEnabled = false;
-		renderer.Render(scene, camera, output.Framebuffer);
-		CHECK(renderer.GetStats().ClusteredLightingActive);
-		CHECK(renderer.GetStats().ClusterBackingAttempts == backing);
-		settings.ClusteredLightingEnabled = false;
-		renderer.Render(scene, camera, output.Framebuffer);
-		CHECK(renderer.GetStats().ClusterOwnedBytes == 0);
-		CHECK(renderer.GetStats().ClusterDispatches == 0);
+			const auto backing = renderer.GetStats().ClusterBackingAttempts;
+			settings.SSAOEnabled = false;
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(renderer.GetStats().ClusteredLightingActive);
+			CHECK(renderer.GetStats().ClusterBackingAttempts == backing);
+			settings.ClusteredLightingEnabled = false;
+			renderer.Render(scene, camera, output.Framebuffer);
+			CHECK(renderer.GetStats().ClusterOwnedBytes == 0);
+			CHECK(renderer.GetStats().ClusterDispatches == 0);
+		}
+		CHECK(graphics.GetValidationErrorCount() == errors);
 	}
-	CHECK(graphics.GetValidationErrorCount() == errors);
+}
+
+TEST_CASE("ClusteredLighting: Forward scaled resized and private views retain independent histories")
+{
+	ViewTransitions(RenderPath::Forward);
+}
+TEST_CASE("ClusteredLighting: Deferred scaled resized and private views retain independent histories")
+{
+	ViewTransitions(RenderPath::Deferred);
+}
+TEST_CASE("ClusteredLighting: Visibility scaled resized and private views retain independent histories")
+{
+	ViewTransitions(RenderPath::Visibility);
 }
